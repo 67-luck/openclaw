@@ -791,9 +791,10 @@ export function validateActionsArtifactBinding(params) {
     // Environment protection can expose any nonterminal Actions transition
     // while approval propagates. Exact producer-job success remains mandatory.
     const active = ACTIVE_SAME_RUN_STATUSES.has(run.status) && run.conclusion === null;
-    const failed = run.status === "completed" && run.conclusion === "failure";
-    if (!active && !failed) {
-      throw new Error("Current producer workflow attempt must still be active or failed.");
+    const sealedTerminal =
+      run.status === "completed" && ["success", "failure"].includes(run.conclusion);
+    if (!active && !sealedTerminal) {
+      throw new Error("Current producer workflow attempt must still be active or sealed.");
     }
   } else if (
     run.status !== "completed" ||
@@ -830,14 +831,16 @@ export function validateActionsArtifactProducerJob(params) {
     throw new Error("Actions artifact producer job must be unique.");
   }
   const [producerJob] = matches;
+  const producerCompleted =
+    producerJob.status === "completed" &&
+    typeof producerJob.conclusion === "string" &&
+    producerJob.conclusion.length > 0;
   if (
     producerJob.run_id !== expected.runId ||
     producerJob.run_attempt !== expected.runAttempt ||
     producerJob.head_sha !== expected.workflowSha ||
-    producerJob.status !== "completed" ||
-    (expected.producerStepName
-      ? !["success", "failure"].includes(producerJob.conclusion)
-      : producerJob.conclusion !== "success")
+    !producerCompleted ||
+    (!expected.producerStepName && producerJob.conclusion !== "success")
   ) {
     throw new Error("Actions artifact producer job did not complete successfully.");
   }

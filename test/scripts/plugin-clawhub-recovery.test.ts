@@ -193,6 +193,14 @@ describe("sealed ClawHub recovery manifest", () => {
       const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
       const body = typeof init?.body === "string" ? init.body : undefined;
       requests.push({ url, method: init?.method ?? "GET", body });
+      if (init?.method !== "POST" && url.endsWith("/attempt-1")) {
+        return Response.json({
+          attemptId: "attempt-1",
+          name: pending.name,
+          version,
+          publicationStatus: "failed",
+        });
+      }
       if (init?.method === "POST") {
         return Response.json({
           recoveredFromAttemptId: "attempt-1",
@@ -203,6 +211,7 @@ describe("sealed ClawHub recovery manifest", () => {
         });
       }
       return Response.json({
+        attemptId: "attempt-2",
         name: pending.name,
         version,
         publicationStatus: "published",
@@ -219,6 +228,11 @@ describe("sealed ClawHub recovery manifest", () => {
     expect(result).toMatchObject({ complete: true, recovered: [{ attemptId: "attempt-2" }] });
     expect(requests).toEqual([
       {
+        url: "https://clawhub.example/api/v1/publish/attempts/attempt-1",
+        method: "GET",
+        body: undefined,
+      },
+      {
         url: "https://clawhub.example/api/v1/publish/attempts/attempt-1/recover",
         method: "POST",
         body: JSON.stringify({ manualOverrideReason: "Parent failed after sealed staging" }),
@@ -229,6 +243,31 @@ describe("sealed ClawHub recovery manifest", () => {
         body: undefined,
       },
     ]);
+  });
+
+  it("does not recover a stale manifest entry that has already published", async () => {
+    const manifest = createClawHubRecoveryManifest(transactions, [pending]);
+    const requests: string[] = [];
+    const result = await executeClawHubRecoveryManifest({
+      manifest,
+      reason: "Parent failed after sealed staging",
+      token: "fixture-token",
+      registry: "https://clawhub.example",
+      fetchImpl: async (input, init) => {
+        expect(init?.method ?? "GET").toBe("GET");
+        const url = input instanceof Request ? input.url : String(input);
+        requests.push(url);
+        return Response.json({
+          attemptId: pending.attemptId,
+          name: pending.name,
+          version,
+          publicationStatus: "published",
+        });
+      },
+      wait: async () => {},
+    });
+    expect(result).toEqual({ schemaVersion: 1, complete: true, recovered: [] });
+    expect(requests).toEqual(["https://clawhub.example/api/v1/publish/attempts/attempt-1"]);
   });
 
   it("keeps automated recovery behind approval and preserves the manifest before cancellation", () => {

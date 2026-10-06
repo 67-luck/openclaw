@@ -165,6 +165,39 @@ async function requestRecovery(path, { registry, token, fetchImpl, body }) {
   return JSON.parse(text);
 }
 
+function validateRecoveryAttempt(attempt, expected) {
+  if (
+    !attempt ||
+    typeof attempt !== "object" ||
+    attempt.attemptId !== expected.attemptId ||
+    attempt.name !== expected.name ||
+    attempt.version !== expected.version ||
+    !["pending", "published", "blocked", "failed", "expired"].includes(attempt.publicationStatus)
+  ) {
+    throw new Error(`ClawHub recovery status changed the sealed transaction: ${expected.name}.`);
+  }
+  return attempt;
+}
+
+async function waitForRecoveryAttempt(expected, context, deadline) {
+  for (;;) {
+    const attempt = validateRecoveryAttempt(
+      await requestRecovery(
+        `/api/v1/publish/attempts/${encodeURIComponent(expected.attemptId)}`,
+        context,
+      ),
+      expected,
+    );
+    if (attempt.publicationStatus !== "pending") {
+      return attempt;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`ClawHub recovery timed out: ${expected.name}.`);
+    }
+    await context.wait(10_000);
+  }
+}
+
 export async function executeClawHubRecoveryManifest({
   manifest: rawManifest,
   reason,
@@ -187,6 +220,15 @@ export async function executeClawHubRecoveryManifest({
     if (entry.publicationStatus === "published") {
       continue;
     }
+    const deadline = Date.now() + timeoutMilliseconds;
+    const context = { registry, token, fetchImpl, wait };
+    const original = await waitForRecoveryAttempt(entry, context, deadline);
+    if (original.publicationStatus === "published") {
+      continue;
+    }
+    if (original.publicationStatus !== "failed") {
+      throw new Error(`ClawHub recovery ${original.publicationStatus}: ${entry.name}.`);
+    }
     const started = await requestRecovery(
       `/api/v1/publish/attempts/${encodeURIComponent(entry.attemptId)}/recover`,
       {
@@ -204,7 +246,11 @@ export async function executeClawHubRecoveryManifest({
     ) {
       throw new Error(`ClawHub recovery response changed the sealed transaction: ${entry.name}.`);
     }
-    const deadline = Date.now() + timeoutMilliseconds;
+    validateRecoveryAttempt(started, {
+      attemptId: started.attemptId,
+      name: entry.name,
+      version: entry.version,
+    });
     let current = started;
     while (current.publicationStatus !== "published") {
       if (["blocked", "failed", "expired"].includes(current.publicationStatus)) {
@@ -218,9 +264,11 @@ export async function executeClawHubRecoveryManifest({
         `/api/v1/publish/attempts/${encodeURIComponent(started.attemptId)}`,
         { registry, token, fetchImpl },
       );
-      if (current.name !== entry.name || current.version !== entry.version) {
-        throw new Error(`ClawHub recovery status changed the sealed transaction: ${entry.name}.`);
-      }
+      validateRecoveryAttempt(current, {
+        attemptId: started.attemptId,
+        name: entry.name,
+        version: entry.version,
+      });
     }
     recovered.push({
       name: entry.name,

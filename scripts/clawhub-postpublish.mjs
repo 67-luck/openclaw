@@ -126,6 +126,41 @@ async function listRunArtifacts(runId, context) {
   throw new Error("ClawHub postpublish artifact listing is incomplete.");
 }
 
+async function listRunJobs(run, context) {
+  const key = `${run.id}/${run.run_attempt}`;
+  let pending = context.runJobs.get(key);
+  if (!pending) {
+    pending = (async () => {
+      const jobs = [];
+      let total;
+      for (let page = 1; page <= 20; page += 1) {
+        const result = await githubJson(
+          `actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`,
+          context,
+        );
+        total ??= result.total_count;
+        if (
+          !Number.isSafeInteger(total) ||
+          total < 1 ||
+          total > 2000 ||
+          result.total_count !== total ||
+          !Array.isArray(result.jobs) ||
+          result.jobs.length === 0
+        ) {
+          break;
+        }
+        jobs.push(...result.jobs);
+        if (jobs.length === total) {
+          return { total_count: total, jobs };
+        }
+      }
+      throw new Error("ClawHub dispatch producer job inventory is incomplete.");
+    })();
+    context.runJobs.set(key, pending);
+  }
+  return await pending;
+}
+
 async function downloadArtifact(artifact, run, context, maxArchiveBytes, producer) {
   const structuredProducer = producer && typeof producer === "object" ? producer : undefined;
   const producerStepName = typeof producer === "string" ? producer : structuredProducer?.stepName;
@@ -188,33 +223,6 @@ async function downloadArtifact(artifact, run, context, maxArchiveBytes, produce
       workflowSha: run.head_sha,
     },
   });
-}
-
-async function listRunJobs(run, context) {
-  const jobs = [];
-  let total;
-  for (let page = 1; page <= 20; page += 1) {
-    const result = await githubJson(
-      `actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`,
-      context,
-    );
-    total ??= result.total_count;
-    if (
-      !Number.isSafeInteger(total) ||
-      total < 1 ||
-      total > 2000 ||
-      result.total_count !== total ||
-      !Array.isArray(result.jobs) ||
-      result.jobs.length === 0
-    ) {
-      break;
-    }
-    jobs.push(...result.jobs);
-    if (jobs.length === total) {
-      return { total_count: total, jobs };
-    }
-  }
-  throw new Error("ClawHub dispatch producer job inventory is incomplete.");
 }
 
 function dispatchExecutionTimes(job, step) {
@@ -365,6 +373,7 @@ export async function verifyClawHubPostpublish({
     fetchImpl,
     archiveDir: join(outputDir, "archives"),
     parentStatePolicy,
+    runJobs: new Map(),
   };
   const parent = await githubJson(`actions/runs/${runId}/attempts/${runAttempt}`, context);
   requireRun(parent, expectedParent, parentStatePolicy);
@@ -499,13 +508,14 @@ export async function verifyClawHubPostpublish({
     throw new Error("ClawHub parent receipt does not bind the triggering run attempt.");
   }
   let child;
+  const completedProducer = parentStatePolicy !== "completed-success";
   const childDeadline = Date.now() + 30 * 60 * 1000;
   for (;;) {
     child = await githubJson(
       `actions/runs/${identity.runId}/attempts/${identity.runAttempt}`,
       context,
     );
-    validateClawHubWorkflowRun(child, identity);
+    validateClawHubWorkflowRun(child, identity, { completedProducer });
     if (child.status === "completed") {
       break;
     }
@@ -516,7 +526,10 @@ export async function verifyClawHubPostpublish({
       setTimeout(resolve, 10_000);
     });
   }
-  validateClawHubWorkflowRun(child, identity, { terminal: true });
+  validateClawHubWorkflowRun(child, identity, {
+    terminal: !completedProducer,
+    completedProducer,
+  });
   const childQualifiedRef = child.path.split("@")[1];
   if (childQualifiedRef !== undefined && childQualifiedRef !== identity.fullRef) {
     throw new Error("Child workflow full ref mismatch.");
@@ -531,6 +544,7 @@ export async function verifyClawHubPostpublish({
     runGhJson: runGh
       ? (path) => JSON.parse(runGh(["api", `repos/${REPOSITORY}/${path}`, "--method", "GET"]))
       : undefined,
+    completedProducer,
   });
   const transactions = downloaded.transactions;
   validateClawHubParentAuthorization(receipt, transactions);
@@ -600,6 +614,13 @@ export async function verifyClawHubPostpublish({
           child,
           context,
           130 * 1024 * 1024,
+          completedProducer
+            ? {
+                stepName: "Upload ClawHub package artifact",
+                jobName: `Pack ClawHub package (${entry.name})`,
+                runStatePolicy: "completed-producer-success",
+              }
+            : undefined,
         );
         const packageFiles = inspectActionsArtifactZip(packageZip, 1, {
           maxEntryBytes: 120 * 1024 * 1024,

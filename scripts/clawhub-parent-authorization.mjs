@@ -399,7 +399,7 @@ export function validateClawHubParentAuthorization(receipt, transactions) {
 export function validateClawHubWorkflowRun(
   run,
   identity,
-  { parent = false, terminal = false } = {},
+  { parent = false, terminal = false, completedProducer = false } = {},
 ) {
   validateClawHubIdentity(identity);
   const expected = parent
@@ -440,7 +440,9 @@ export function validateClawHubWorkflowRun(
   const active =
     ["queued", "pending", "waiting", "in_progress"].includes(run.status) && run.conclusion === null;
   const success = run.status === "completed" && run.conclusion === "success";
-  if (!(terminal ? success : active || success)) {
+  const completed =
+    run.status === "completed" && typeof run.conclusion === "string" && run.conclusion.length > 0;
+  if (!(completedProducer ? active || completed : terminal ? success : active || success)) {
     throw new Error("ClawHub workflow is not in an authorized state.");
   }
   return run;
@@ -458,11 +460,13 @@ export async function downloadClawHubTransactions({
   runGhJson = api,
   fetchImpl,
   archivePath,
+  completedProducer = false,
 }) {
   validateClawHubIdentity(identity);
   const run = validateClawHubWorkflowRun(
     runGhJson(`actions/runs/${identity.runId}/attempts/${identity.runAttempt}`),
     identity,
+    { completedProducer },
   );
   const name = clawHubTransactionsArtifactName(identity);
   const listed = runGhJson(`actions/runs/${identity.runId}/artifacts?name=${name}&per_page=100`);
