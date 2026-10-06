@@ -161,8 +161,11 @@ export async function dispatchSessionsSendFollowup(
         );
   try {
     if (start.ok && completionTurn) {
-      const { registerSubagentRun, adoptSubagentRunForRequesterTurn } =
-        await import("../subagents/registry/subagent-registry.js");
+      const {
+        registerSubagentRun,
+        adoptSubagentRunForRequesterTurn,
+        adoptKilledSubagentRunForRequesterTurn,
+      } = await import("../subagents/registry/subagent-registry.js");
       // Acceptance already owns the input; retained custody owns recording its result obligation.
       const assertCompletionCurrent = () =>
         request ? request.custody.assertCurrent() : assertCurrent();
@@ -193,33 +196,71 @@ export async function dispatchSessionsSendFollowup(
             );
           }
         } else {
-          await registerSubagentRun(
-            {
-              runId: start.runId,
-              childSessionKey,
-              sessionEntry: options.targetSession,
-              childAgentId: params.sessionStoreTarget.agentId,
-              requesterSessionKey: options.requesterSessionKey,
-              requesterDisplayKey: options.requesterSessionKey,
-              requesterAgentId: options.requesterAgentId,
-              requesterTurnRunId: completionTurn,
-              requesterOrigin: replyContext.requesterOrigin,
-              task: options.message,
-              cleanup: "keep",
-              spawnMode: "session",
-              expectsCompletionMessage: true,
-              completionTarget: "parent",
-              completionRequesterSessionId: replyContext.requesterSession?.sessionId,
-              completionRequesterLifecycleRevision:
-                replyContext.requesterSession?.lifecycleRevision,
-            },
-            {
-              assertCurrent: assertCompletionCurrent,
-              assertPublicationCurrent: () => request?.custody.assertCurrent(),
-              acceptedRunReplay: true,
-            },
+          const stopped = getLatestLiveSubagentRunByChildSessionKey(
+            childSessionKey,
+            (entry) =>
+              entry.requesterSessionKey === options.requesterSessionKey &&
+              entry.requesterAgentId === options.requesterAgentId &&
+              entry.requesterTurnRunId === completionTurn &&
+              entry.expectsCompletionMessage === true &&
+              entry.killReconciliation?.killedAt !== undefined &&
+              entry.killReconciliation.supersededAt === undefined,
+            params.sessionStoreTarget.agentId,
           );
-          accepted = { runId: start.runId, childSessionKey, expectsCompletionMessage: true };
+          const adopted = stopped
+            ? await adoptKilledSubagentRunForRequesterTurn({
+                expected: stopped,
+                nextRunId: start.runId,
+                task: options.message,
+                assertCurrent: assertCompletionCurrent,
+              })
+            : false;
+          if (stopped && !adopted) {
+            throw new Error(
+              "Stopped child completion could not transfer to its accepted successor.",
+            );
+          }
+          if (!adopted) {
+            await registerSubagentRun(
+              {
+                runId: start.runId,
+                childSessionKey,
+                sessionEntry: options.targetSession,
+                childAgentId: params.sessionStoreTarget.agentId,
+                requesterSessionKey: options.requesterSessionKey,
+                requesterDisplayKey: options.requesterSessionKey,
+                requesterAgentId: options.requesterAgentId,
+                requesterTurnRunId: completionTurn,
+                requesterOrigin: replyContext.requesterOrigin,
+                task: options.message,
+                cleanup: "keep",
+                spawnMode: "session",
+                expectsCompletionMessage: true,
+                completionTarget: "parent",
+                completionRequesterSessionId: replyContext.requesterSession?.sessionId,
+                completionRequesterLifecycleRevision:
+                  replyContext.requesterSession?.lifecycleRevision,
+              },
+              {
+                assertCurrent: assertCompletionCurrent,
+                assertPublicationCurrent: () => request?.custody.assertCurrent(),
+                acceptedRunReplay: true,
+              },
+            );
+          }
+          const completion = getLatestLiveSubagentRunByChildSessionKey(
+            childSessionKey,
+            (entry) => entry.runId === start.runId,
+            params.sessionStoreTarget.agentId,
+          );
+          if (!completion) {
+            throw new Error("Accepted child completion was not retained by its registry owner.");
+          }
+          accepted = {
+            runId: completion.taskRunId ?? completion.runId,
+            childSessionKey,
+            expectsCompletionMessage: true,
+          };
         }
         return accepted;
       };

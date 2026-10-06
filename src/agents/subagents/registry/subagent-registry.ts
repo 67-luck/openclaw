@@ -623,6 +623,8 @@ const subagentRunManager = createSubagentRunManager({
 });
 
 export const replaceSubagentRunAfterSteerCore = subagentRunManager.replaceSubagentRunAfterSteer;
+export const adoptKilledSubagentRunForRequesterTurn =
+  subagentRunManager.adoptKilledSubagentRunForRequesterTurn;
 export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
 export function registerSubagentRun(
