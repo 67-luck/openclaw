@@ -225,10 +225,9 @@ export function verifyAssistantMediaTicket(
     return undefined;
   }
   try {
+    const decodedPayload = Buffer.from(encodedPayload, "base64url").toString("utf8");
     // SAFETY: The verified signature binds these bytes to a payload minted by this module.
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    ) as Partial<AssistantMediaTicketPayload>;
+    const payload = JSON.parse(decodedPayload) as Partial<AssistantMediaTicketPayload>;
     const valid =
       payload.scope === CONTROL_UI_ASSISTANT_MEDIA_TICKET_SCOPE &&
       typeof payload.source === "string" &&
