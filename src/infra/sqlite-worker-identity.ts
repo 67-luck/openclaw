@@ -164,7 +164,7 @@ export function assertExistingDatabaseIdentity(
   if (
     !file.isFile() ||
     `file:${file.dev}:${file.ino}` !== expected ||
-    (expectedBirthtime !== undefined && file.birthtimeNs.toString() !== expectedBirthtime)
+    (expectedBirthtime !== undefined && readDatabaseIdentityBirthtime(file) !== expectedBirthtime)
   ) {
     throw new Error("SQLite database file identity changed before existing-only open");
   }

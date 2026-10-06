@@ -108,6 +108,24 @@ export function scrollTranscriptToEnd(
   }
 }
 
+export function retargetTranscriptEndAfterRows(
+  state: TranscriptOffsetState,
+  instance: Virtualizer<HTMLDivElement, HTMLElement>,
+  canFollow: boolean,
+  follow: (behavior: ScrollBehavior) => void,
+): boolean {
+  if (!canFollow || state.pendingScrollOffset || state.touchActive) {
+    return false;
+  }
+  const behavior = state.scrollCommand?.target === "end" ? state.scrollCommand.behavior : "auto";
+  follow(behavior);
+  const max = maxTranscriptScrollOffset(instance.scrollElement);
+  if (max !== null) {
+    instance.scrollToOffset(max, { behavior });
+  }
+  return true;
+}
+
 export function scrollTranscriptOffset(
   state: TranscriptOffsetState,
   offset: number,

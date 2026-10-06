@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
-import { takeControlUiScreenshotFrame } from "../test-helpers/control-ui-e2e-screenshot.ts";
+import { takeControlUiElementScreenshot } from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   controlUiSessionUrl,
   installMockGateway,
@@ -149,15 +149,10 @@ suite.define(() => {
             .getByText("Incoming detail 25.", { exact: true })
             .waitFor({ state: "attached" });
           await waitForChatScrollIdle(page);
-          const frame = await takeControlUiScreenshotFrame(
-            page,
-            thread,
-            [page.locator(".agent-chat__composer-combobox textarea")],
-            {
-              animations: "disabled",
-            },
-          );
-          await writeFile(path.join(artifacts, "after-incoming-turn.png"), frame.png);
+          const frame = await takeControlUiElementScreenshot(page, thread, [
+            page.locator(".agent-chat__composer-combobox textarea"),
+          ]);
+          await writeFile(path.join(artifacts, "after-incoming-turn.png"), frame);
           const after = await thread.evaluate((element) => {
             const sampling = element as HTMLElement & {
               scrollSamples: number[];

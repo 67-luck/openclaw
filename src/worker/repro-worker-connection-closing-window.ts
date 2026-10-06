@@ -78,14 +78,14 @@ server.on("connection", (peer) => {
           },
         }),
       );
-    } else if (method === "worker.gatewayTool.invoke" && id) {
+    } else if (method === "worker.sessions.send" && id) {
       requestCount += 1;
       peer.send(
         JSON.stringify({
           type: "res",
           id,
           ok: true,
-          payload: { content: [], details: { accepted: true } },
+          payload: { resultJson: JSON.stringify({ content: [] }) },
         }),
       );
     }
@@ -107,18 +107,11 @@ const connection = createWorkerConnection({
       if (event === "close" && !raceStarted) {
         raceStarted = true;
         parentPort?.postMessage({ type: "closing-window", readyState: socket.readyState }, []);
-        const request = connection.invokeGatewayTool(
-          {
-            generation: "closing-window-surface",
-            toolId: "sessions_send",
-            toolCallId: "closing-window-call",
-            arguments: {
-              sessionKey: "agent:main:closing-window",
-              message: "retry after reconnect",
-            },
-          },
-          { replay: true },
-        );
+        const request = connection.requestSessionsSend({
+          toolCallId: "closing-window-call",
+          sessionKey: "agent:main:closing-window",
+          message: "retry after reconnect",
+        });
         void request.then(
           async (response) => {
             if (!response.ok) {
@@ -136,7 +129,7 @@ const connection = createWorkerConnection({
               {
                 type: "completed",
                 requestCount,
-                result: response.payload,
+                result: response.payload.resultJson,
               },
               [],
             );
@@ -164,15 +157,11 @@ const connection = createWorkerConnection({
 });
 
 await connection.start();
-await connection.invokeGatewayTool(
-  {
-    generation: "closing-window-surface",
-    toolId: "sessions_send",
-    toolCallId: "open-control-call",
-    arguments: { sessionKey: "agent:main:closing-window", message: "open control" },
-  },
-  { replay: true },
-);
+await connection.requestSessionsSend({
+  toolCallId: "open-control-call",
+  sessionKey: "agent:main:closing-window",
+  message: "open control",
+});
 parentPort?.on("message", (message: { type?: string }) => {
   if (message.type === "close") {
     firstPeer?.terminate();

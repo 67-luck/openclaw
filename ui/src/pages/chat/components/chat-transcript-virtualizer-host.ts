@@ -41,6 +41,7 @@ import {
   isTranscriptMaintenanceScroll,
   isTranscriptProgrammaticScroll,
   observeTranscriptOffset,
+  retargetTranscriptEndAfterRows,
   scrollTranscriptOffset,
   scrollTranscriptToEnd,
 } from "./chat-transcript-offset-observer.ts";
@@ -372,19 +373,22 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     if (interactionResizePending) {
       this.endAnchor.cancelReconcile();
     } else if (this.connected) {
-      this.endAnchor.scheduleReconcile(() => {
-        if (this.connected && !this.offsetState.pendingInteractionAnchor) {
-          this.commitComposerResize(true);
-          this.reconcileImplicitEndAnchor();
-          this.endAnchor.reconcile(
-            this.scrollElement,
-            this.canAutoFollow(),
-            this.offsetState.pendingScrollOffset !== null || this.offsetState.touchActive,
-            this.followEnd,
-          );
-        }
-      });
+      this.endAnchor.scheduleReconcile(() => this.reconcileEndAnchor());
     }
+  }
+
+  private reconcileEndAnchor(): void {
+    if (!this.connected || this.offsetState.pendingInteractionAnchor) {
+      return;
+    }
+    this.commitComposerResize(true);
+    this.reconcileImplicitEndAnchor();
+    this.endAnchor.reconcile(
+      this.scrollElement,
+      this.canAutoFollow(),
+      this.offsetState.pendingScrollOffset !== null || this.offsetState.touchActive,
+      this.followEnd,
+    );
   }
 
   disconnect(): void {
@@ -725,6 +729,20 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
 
   private syncRows(nextKeys: readonly string[]): void {
     const virtualizer = this.virtualizerController.getVirtualizer();
+    if (this.canAutoFollow() && this.endAnchor.recordViewport(this.scrollElement)) {
+      this.endAnchor.scheduleRowModelReconcile(() => {
+        if (
+          !retargetTranscriptEndAfterRows(
+            this.offsetState,
+            virtualizer,
+            this.canAutoFollow(),
+            (behavior) => this.scrollToEnd({ source: "auto", behavior }),
+          )
+        ) {
+          this.reconcileEndAnchor();
+        }
+      });
+    }
     this.rowKeys = Object.freeze(nextKeys);
     const rowIndexesByKey = new Map(this.rowKeys.map((key, index) => [key, index]));
     this.rowIndexesByKey = rowIndexesByKey;

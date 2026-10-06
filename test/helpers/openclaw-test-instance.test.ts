@@ -364,11 +364,14 @@ if (kind === "signal") { process.stderr.write(refusal + " fixture\\n"); process.
 if (kind === "held-unrelated") await waitForControl(controlUrl + "/wait");
 if (kind === "unrelated" || kind === "held-unrelated") { process.stderr.write("unrelated startup failure\\n"); process.exit(1); }
 const server = createServer(async (req, res) => {
-  if (req.url === "/readyz" && kind === "held-ready") await waitForControl(controlUrl + "/wait");
-  const ready = req.url === "/readyz" && kind !== "never-ready";
-  const startup = req.url === "/startupz";
-  res.writeHead(ready || startup ? 200 : 404, { "content-type": "application/json" });
-  res.end(JSON.stringify(startup ? { ok: true, status: "started" } : { ready }));
+  if (req.url === "/startupz") {
+    if (kind === "held-ready") await waitForControl(controlUrl + "/wait");
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ ok: true, status: "started" }));
+    return;
+  }
+  res.writeHead(req.url === "/readyz" ? 200 : 404, { "content-type": "application/json" });
+  res.end(JSON.stringify({ ready: req.url === "/readyz" && kind !== "never-ready" }));
 });
 process.on("SIGTERM", () => server.close(() => process.exit(0))); server.listen(port, "127.0.0.1");
 `,
