@@ -79,7 +79,7 @@ export async function withProjectedSessionTranscriptWriteLock<
     locked: SessionTranscriptWriteLockAccessorContext,
   ): SessionTranscriptWriteLockAccessorContext => ({
     readEvents: () => whileOpen(locked.readEvents),
-    readMessageFacts: (params) => whileOpen(() => locked.readMessageFacts(params)),
+    readMessageFacts: (query) => whileOpen(() => locked.readMessageFacts(query)),
     replaceEvents: (events) => whileOpen(() => locked.replaceEvents(events)),
     appendMessage: (options) => whileOpen(() => locked.appendMessage(options)),
     appendMessageWithMessageSequence: (options) =>
