@@ -1,8 +1,5 @@
 import type { IncognitoSessionOperations } from "../config/sessions/session-incognito-contract.js";
-import type {
-  SqliteWalPeriodicRequest,
-  SqliteWalPeriodicResult,
-} from "../infra/sqlite-wal-write-admission.js";
+import type { SqliteWalPeriodicRequest } from "../infra/sqlite-wal-write-admission.js";
 import type {
   SqliteWorkerEphemeralTarget,
   SqliteWorkerStore,
@@ -13,6 +10,7 @@ import type {
   SqliteWorkerAdmissionRequest,
 } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
+import type { SqliteWalMaintenanceDispatchResult } from "../infra/sqlite-worker-wal.types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { AgentDatabaseRegistryChange } from "./openclaw-agent-db-registry-listing.js";
 import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-domain.js";
@@ -118,7 +116,10 @@ export type AgentDatabaseIncognitoAuthority = { assertCurrent(): void };
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations &
   RegisteredAgentWorkerOperations & {
-    "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
+    "database.walMaintenance": {
+      input: SqliteWalPeriodicRequest;
+      output: SqliteWalMaintenanceDispatchResult;
+    };
     "database.prepareWrite": { input: undefined; output: void };
   };
 

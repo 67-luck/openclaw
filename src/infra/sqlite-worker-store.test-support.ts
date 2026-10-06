@@ -3,17 +3,22 @@ import { existsSync, linkSync, renameSync, writeFileSync } from "node:fs";
 import { parentPort, threadId } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Generated } from "kysely";
+import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "./kysely-sync.js";
 import { openNodeSqliteDatabase, resolveExistingSqliteFileUri } from "./node-sqlite.js";
 import { captureSqliteReaderOwner, type SqliteReaderOwner } from "./sqlite-reader-lifecycle.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
+import { startSqliteWalWorkerMaintenance } from "./sqlite-wal-periodic.js";
+import type { SqliteWalPeriodicRequest } from "./sqlite-wal-write-admission.js";
+import { configureSqliteWalMaintenance } from "./sqlite-wal.js";
 import {
   SQLITE_WORKER_PREPARE_COMMAND,
   type SqliteWorkerEphemeralTarget,
   type SqliteWorkerPreparedBackend,
 } from "./sqlite-worker-contract.js";
 import { requestSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
+import type { SqliteWalMaintenanceDispatchResult } from "./sqlite-worker-wal.types.js";
 
 let pendingCloses = 0;
 type ReplyOwnership = { kind: string; before: number; after: number };
@@ -42,6 +47,7 @@ if (parentPort) {
 }
 
 export type FixtureOpenInput =
+  | { type: "wal" }
   | { type: "link"; existingPath: string }
   | { type: "observe"; markerPath: string }
   | { type: "prepare"; markerPath: string; gatePath: string; reject?: boolean; guarded?: boolean }
@@ -57,6 +63,10 @@ type Receipt = {
   };
 };
 export type FixtureOperations = {
+  "database.walMaintenance": {
+    input: SqliteWalPeriodicRequest;
+    output: SqliteWalMaintenanceDispatchResult;
+  };
   append: { input: { value: string }; output: Receipt };
   read: { input: undefined; output: string[] };
   takeReplyOwnership: { input: undefined; output: ReplyOwnership[] };
@@ -116,8 +126,23 @@ function createFixtureBackend(
   const db = openNodeSqliteDatabase(
     existingOnly ? resolveExistingSqliteFileUri(databasePath) : databasePath,
   );
+  if (input?.type === "wal") {
+    db.exec("PRAGMA auto_vacuum=INCREMENTAL");
+  }
   if (!existingOnly) {
     db.exec("CREATE TABLE IF NOT EXISTS entries (id INTEGER PRIMARY KEY, value TEXT NOT NULL)");
+  }
+  const wal =
+    input?.type === "wal"
+      ? configureSqliteWalMaintenance(db, {
+          databasePath,
+          busyTimeoutMs: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+        })
+      : undefined;
+  if (wal) {
+    db.exec(
+      "WITH RECURSIVE rows(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM rows WHERE n<16) INSERT INTO entries(value) SELECT zeroblob(8192) FROM rows; DELETE FROM entries",
+    );
   }
   const query = getNodeSqliteKysely<{ entries: { id: Generated<number>; value: string } }>(db);
   const actor = randomUUID();
@@ -128,11 +153,11 @@ function createFixtureBackend(
   let delayedClose: { markerPath: string; reject: boolean } | undefined;
   function append(value: string): Receipt {
     runSqliteImmediateTransactionSync(db, () => {
-      if (input?.type === "prepare" && input.guarded) {
+      if (input?.type === "wal" || (input?.type === "prepare" && input.guarded)) {
         requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
       }
       executeSqliteQuerySync(db, query.insertInto("entries").values({ value }));
-      if (input?.type === "prepare" && input.guarded) {
+      if (input?.type === "wal" || (input?.type === "prepare" && input.guarded)) {
         requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
       }
     });
@@ -151,14 +176,27 @@ function createFixtureBackend(
         : {}),
     };
   }
-  function closeNative(): void {
-    clearNodeSqliteKyselyCacheForDatabase(db);
-    db.close();
-    if (failClose) {
-      throw new Error("Fixture native database closed with a cleanup failure");
-    }
+  function closeNative(): void | Promise<void> {
+    const dispose = () => {
+      clearNodeSqliteKyselyCacheForDatabase(db);
+      db.close();
+      if (failClose) {
+        throw new Error("Fixture native database closed with a cleanup failure");
+      }
+    };
+    return wal
+      ? wal.stop().then(() => {
+          wal.close();
+          dispose();
+        })
+      : dispose();
   }
   return {
+    assertSettled() {
+      if (!db.isOpen || db.isTransaction) {
+        throw new Error("Fixture operation left its native database unsettled");
+      }
+    },
     [SQLITE_WORKER_PREPARE_COMMAND](commandType) {
       if (input?.type !== "prepare" || commandType !== "append" || prepared) {
         return undefined;
@@ -175,6 +213,14 @@ function createFixtureBackend(
       });
     },
     execute(command) {
+      if (command.type === "database.walMaintenance") {
+        if (!wal) {
+          throw new Error("Fixture did not admit WAL maintenance");
+        }
+        return startSqliteWalWorkerMaintenance(wal, command.input, (stage) =>
+          requestSqliteWorkerOperationAdmission({ stage, facts: undefined }),
+        );
+      }
       if (command.type === "takeReplyOwnership") {
         return replyOwnership.splice(0);
       }
@@ -216,7 +262,7 @@ function createFixtureBackend(
         return (async () => {
           try {
             await Promise.resolve();
-            closeNative();
+            await closeNative();
             writeFileSync(markerPath, "native database closed");
             if (reject) {
               throw Object.assign(new Error("Fixture delayed cleanup rejected"), {

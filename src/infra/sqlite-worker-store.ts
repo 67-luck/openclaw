@@ -1,6 +1,7 @@
 import { isMainThread } from "node:worker_threads";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hydrateOpenClawStateWorkerError } from "../state/openclaw-state-worker-error.js";
+import { inheritSqliteWalMaintenanceScope } from "./sqlite-wal-maintenance-driver.js";
 import { SqliteWorkerBroker } from "./sqlite-worker-broker.js";
 import type {
   SqliteWorkerInputPreparation,
@@ -33,7 +34,7 @@ function withCallerErrors<T>(result: Promise<T>): Promise<T> {
 function bindCallerExecute<Operations extends SqliteWorkerOperations>(
   scope: Pick<SqliteWorkerStore<Operations>, "execute">,
 ): Pick<SqliteWorkerStore<Operations>, "execute"> {
-  return {
+  const bound: Pick<SqliteWorkerStore<Operations>, "execute"> = {
     execute: (command, options) => {
       const result = withCallerErrors(scope.execute(command, options));
       // The broker also observes abandoned command rejections while draining them.
@@ -41,6 +42,8 @@ function bindCallerExecute<Operations extends SqliteWorkerOperations>(
       return result;
     },
   };
+  inheritSqliteWalMaintenanceScope(scope, bound);
+  return bound;
 }
 
 export {

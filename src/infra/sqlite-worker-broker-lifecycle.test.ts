@@ -14,7 +14,8 @@ import type { SqliteWorkerOperationSettlement } from "./sqlite-worker-operation-
 
 const createCpuTrackedWorker = vi.hoisted(() => vi.fn());
 vi.mock("./worker-cpu.js", () => ({ createCpuTrackedWorker }));
-vi.mock("./bun-sqlite-library.js", () => ({
+vi.mock("./bun-sqlite-library.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./bun-sqlite-library.js")>()),
   ensureSqliteLibrarySelected: () => {},
 }));
 

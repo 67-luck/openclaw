@@ -1,4 +1,4 @@
-import { createDeferredCore } from "../shared/deferred.js";
+import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { ensureSqliteLibrarySelected } from "./bun-sqlite-library.js";
 import { resolveNodeCompileCacheEnv } from "./node-compile-cache-env.js";
@@ -19,7 +19,12 @@ import type {
   StoreClient,
   PreparedSqliteWorkerOpen,
 } from "./sqlite-worker-broker.types.js";
-import { SqliteWorkerError, type SqliteWorkerReply } from "./sqlite-worker-contract.js";
+import {
+  SqliteWorkerError,
+  type SqliteWorkerBootstrap,
+  type SqliteWorkerReply,
+} from "./sqlite-worker-contract.js";
+import { createSqliteWorkerWalRegistry } from "./sqlite-worker-wal-registry.js";
 import { createCpuTrackedWorker } from "./worker-cpu.js";
 
 /** The broker retains these maps; this owner drains clients before native close custody. */
@@ -41,6 +46,7 @@ export function createSqliteWorkerLifecycle({
   ) => Promise<unknown>;
   fail: (slot: Slot, error: unknown) => void;
 }) {
+  const walRegistry = createSqliteWorkerWalRegistry();
   async function acquireSlot(
     options: PreparedSqliteWorkerOpen,
     limits: { maxWorkers: number; maxStores: number },
@@ -98,19 +104,45 @@ export function createSqliteWorkerLifecycle({
     options.assertCurrent?.();
     // Slot listeners share this closure scope; never capture the opening admission in it.
     const { carrierUrl } = options;
-    const { worker, exited } = runInDetachedAsyncContext(() => ({
-      worker: createCpuTrackedWorker(carrierUrl, {
-        resourceLimits: { maxOldGenerationSizeMb: 512 },
-        env: resolveNodeCompileCacheEnv(),
-        execArgv: resolveRuntimeWorkerThreadExecArgv(carrierUrl),
-      }),
-      exited: createDeferredCore(),
-    }));
+    const wal = walRegistry.createSlot({
+      runtimeGeneration: options.runtimeGeneration,
+      onFailure: (error) => fail(slot, error),
+      assertCurrent(id) {
+        const actor = [...slot.actors].find((candidate) => candidate.id === id);
+        if (
+          !actor ||
+          actors.get(actor.key) !== actor ||
+          slot.failed ||
+          slot.retiring ||
+          actor.backendClosed
+        ) {
+          throw new Error("SQLite WAL native owner is no longer admitted");
+        }
+      },
+    });
+    let launched: { worker: Slot["worker"]; exited: Deferred };
+    try {
+      launched = runInDetachedAsyncContext(() => ({
+        worker: createCpuTrackedWorker(carrierUrl, {
+          resourceLimits: { maxOldGenerationSizeMb: 512 },
+          env: resolveNodeCompileCacheEnv(),
+          execArgv: resolveRuntimeWorkerThreadExecArgv(carrierUrl),
+          workerData: { sqliteWalPort: wal.port } satisfies SqliteWorkerBootstrap,
+          transferList: [wal.port],
+        }),
+        exited: createDeferredCore(),
+      }));
+    } catch (error: unknown) {
+      void wal.close().catch(() => {});
+      throw error;
+    }
+    const { worker, exited } = launched;
     const slot: Slot = {
       ...(options.target ? { ephemeral: true as const } : {}),
       runtimeGeneration: options.runtimeGeneration,
       ...(borrowedGenerationSlot ? { borrowedGenerationSlot: true as const } : {}),
       worker,
+      wal,
       receiveReply: (reply) => receiveSqliteWorkerReply(slot, reply, replyOwner),
       actors: new Set(),
       queue: [],
@@ -118,6 +150,7 @@ export function createSqliteWorkerLifecycle({
       exited: false,
       pendingOpens: 1,
     };
+    void exited.promise.catch(() => {});
     const replyOwner = createReplyOwner(slot);
     slots.add(slot);
     worker.on("message", (reply: SqliteWorkerReply) => slot.receiveReply(reply));
@@ -126,12 +159,15 @@ export function createSqliteWorkerLifecycle({
     worker.once("exit", (code) => {
       slot.exited = true;
       fail(slot, new Error(`SQLite worker exited with code ${code}`));
-      for (const actor of slot.actors) {
-        actor.backendClosed = true;
-        actor.markNativeStopped();
-      }
-      slots.delete(slot);
-      exited.resolve();
+      wal.revoke();
+      void wal.close().then(() => {
+        for (const actor of slot.actors) {
+          actor.backendClosed = true;
+          actor.markNativeStopped();
+        }
+        slots.delete(slot);
+        exited.resolve();
+      }, exited.reject);
     });
     worker.unref();
     return slot;
@@ -283,6 +319,7 @@ export function createSqliteWorkerLifecycle({
   }
 
   function retire(slot: Slot): Promise<void> {
+    slot.wal.revoke();
     slot.retiring ??= (async () => {
       const errors: unknown[] = [];
       if (!slot.exited) {
@@ -311,5 +348,6 @@ export function createSqliteWorkerLifecycle({
     forget,
     retireEmpty,
     retire,
+    closeWal: () => walRegistry.close(),
   };
 }

@@ -1,6 +1,6 @@
 import { isPromise } from "node:util/types";
 import { deserialize, serialize } from "node:v8";
-import { parentPort } from "node:worker_threads";
+import { parentPort, workerData } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { routeLogsToStderr } from "../logging/console.js";
 import { flushLogger } from "../logging/logger.js";
@@ -16,12 +16,14 @@ import {
   SQLITE_WORKER_PREPARE_ADMITTED,
   SQLITE_WORKER_OPERATION_CLEANUP,
   SQLITE_WORKER_CLOSE_RECEIPT,
+  SQLITE_WORKER_RUN_MAINTENANCE,
   type SqliteWorkerCloseReceipt,
   type SqliteWorkerPreparedBackend,
   type SqliteWorkerCommand,
   type SqliteWorkerOperations,
   type SqliteWorkerReply,
   type SqliteWorkerRequest,
+  type SqliteWorkerBootstrap,
 } from "./sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "./sqlite-worker-identity.js";
 import {
@@ -40,6 +42,7 @@ import {
   createSqliteWorkerTransferReceiver,
   type SqliteWorkerTransferFrame,
 } from "./sqlite-worker-transfer.js";
+import { createSqliteWorkerWalContext } from "./sqlite-worker-wal-context.js";
 import { cancelWorkerIdleGc, scheduleWorkerIdleGc } from "./worker-idle-gc.js";
 import { ownedWorkerBytes } from "./worker-transfer-bytes.js";
 
@@ -47,6 +50,9 @@ if (!parentPort) {
   throw new Error("SQLite store worker requires its host port");
 }
 const port = parentPort;
+// SAFETY: The paired broker supplies this typed bootstrap and transfers its lifecycle port once.
+const bootstrap = workerData as SqliteWorkerBootstrap;
+const walContext = createSqliteWorkerWalContext(bootstrap.sqliteWalPort);
 // Results use the host port; diagnostics must preserve the caller's structured stdout.
 routeLogsToStderr();
 const actors = new Map<number, SqliteWorkerPreparedBackend<SqliteWorkerOperations>>();
@@ -64,9 +70,28 @@ let sourceLoaderRegistered = false;
 let nativeCleanupFailure: OpenClawStateWorkerErrorPayload | undefined;
 let operationAdmission: { actor: number; context: SqliteWorkerOperationContext } | undefined;
 
+function recordNativeCleanupFailure(error: unknown): void {
+  const failure = error instanceof Error ? error : new Error(String(error));
+  nativeCleanupFailure =
+    encodeOpenClawStateWorkerError(failure, { includeOrdinary: true }) ??
+    encodeOpenClawStateWorkerError(new Error("SQLite worker operation cleanup failed"), {
+      includeOrdinary: true,
+    });
+}
+
+async function joinWalTransitions(pending: Promise<void>): Promise<void> {
+  try {
+    await pending;
+  } catch (error) {
+    recordNativeCleanupFailure(error);
+  }
+}
+
 function runWithActorFacts<T>(actor: number, operation: () => T): T {
   const context = stateContexts.get(actor);
-  return context ? runWithSqliteWorkerStateContext(context, operation) : operation();
+  return walContext
+    .forActor(actor)
+    .run(() => (context ? runWithSqliteWorkerStateContext(context, operation) : operation()));
 }
 
 function runInActorContext<T>(actor: number, operation: () => T): T {
@@ -102,15 +127,28 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         stateContexts.set(request.actor, request.stateContext);
       }
     }
-    const executeCommand = async (command: unknown) => {
+    const executeCommand = async (command: unknown, unit?: number) => {
       const backend = actors.get(request.actor);
       if (!backend) {
         throw new Error("SQLite worker actor is closed");
       }
-      // SAFETY: The broker serialized a command from this actor's typed store contract.
-      const typedCommand = command as SqliteWorkerCommand<SqliteWorkerOperations>;
+      const work:
+        | { kind: "backend"; command: SqliteWorkerCommand<SqliteWorkerOperations> }
+        | { kind: "maintenance"; unit: number } =
+        unit === undefined
+          ? {
+              kind: "backend",
+              // SAFETY: The broker serialized a command from this actor's typed store contract.
+              command: command as SqliteWorkerCommand<SqliteWorkerOperations>,
+            }
+          : { kind: "maintenance", unit };
+      const typedCommand = work.kind === "backend" ? work.command : undefined;
       return withSqliteReaderOwner(
-        { operation: typedCommand.type, ownerKind: "worker", actorId: request.actor },
+        {
+          operation: typedCommand?.type ?? "database.walMaintenance",
+          ownerKind: "worker",
+          actorId: request.actor,
+        },
         async () => {
           const assertSettled = () => {
             const settlement: unknown = runInActorContext(request.actor, () => ({
@@ -147,7 +185,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
               throw error;
             }
             try {
-              if (verified && backend[SQLITE_WORKER_OPERATION_CLEANUP]) {
+              if (verified && typedCommand && backend[SQLITE_WORKER_OPERATION_CLEANUP]) {
                 const cleanup: unknown = runInActorContext(request.actor, () => ({
                   cleanup: backend[SQLITE_WORKER_OPERATION_CLEANUP]?.(typedCommand),
                 })).cleanup;
@@ -163,15 +201,7 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
                 assertSettled();
               }
             } catch (error) {
-              const cleanupError = error instanceof Error ? error : new Error(String(error));
-              nativeCleanupFailure =
-                encodeOpenClawStateWorkerError(cleanupError, { includeOrdinary: true }) ??
-                encodeOpenClawStateWorkerError(
-                  new Error("SQLite worker operation cleanup failed"),
-                  {
-                    includeOrdinary: true,
-                  },
-                );
+              recordNativeCleanupFailure(error);
             } finally {
               // Cleanup can still request live source authority; preserve the prior native outcome.
               if (operationAdmission) {
@@ -182,19 +212,21 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
               }
             }
           };
-          const loading = backend[SQLITE_WORKER_PREPARE_COMMAND]?.(typedCommand.type);
+          const loading = typedCommand
+            ? backend[SQLITE_WORKER_PREPARE_COMMAND]?.(typedCommand.type)
+            : undefined;
           if (loading) {
             await loading;
           }
           try {
             // Preparation carries captured facts without retaining synchronous admission authority.
-            const preparation = runWithActorFacts(request.actor, () =>
-              backend.prepare?.(typedCommand),
-            );
+            const preparation = typedCommand
+              ? runWithActorFacts(request.actor, () => backend.prepare?.(typedCommand))
+              : undefined;
             if (preparation !== undefined) {
               await preparation;
             }
-            if (backend[SQLITE_WORKER_PREPARE_ADMITTED]) {
+            if (typedCommand && backend[SQLITE_WORKER_PREPARE_ADMITTED]) {
               // Only the synchronous prefix inherits authority; deferred preparation does not.
               const admitted = runInActorContext(request.actor, () => ({
                 preparation: backend[SQLITE_WORKER_PREPARE_ADMITTED]?.(typedCommand),
@@ -203,10 +235,23 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
                 await admitted;
               }
             }
-            value = runInActorContext(request.actor, () => ({
-              // SAFETY: The typed host command is serialized once; framing validates complete reconstruction.
-              result: backend.execute(typedCommand),
-            })).result;
+            const admissionReady = walContext.joinTransitions();
+            if (admissionReady !== undefined) {
+              assertSettled();
+              await admissionReady;
+            }
+            value = runInActorContext(request.actor, () => {
+              if (work.kind === "maintenance") {
+                return {
+                  result: walContext.runUnit(
+                    request.actor,
+                    work.unit,
+                    backend[SQLITE_WORKER_RUN_MAINTENANCE],
+                  ),
+                };
+              }
+              return { result: backend.execute(work.command) };
+            }).result;
           } catch (error) {
             // Cleanup can replace the refusal; only settled command failures retain its provenance.
             const admissionRefused =
@@ -214,6 +259,10 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
               operationAdmission.context.refusal !== undefined &&
               operationAdmission.context.refusal === error;
             settleCommand({ error });
+            const failedTransitions = walContext.joinTransitions();
+            if (failedTransitions !== undefined) {
+              await joinWalTransitions(failedTransitions);
+            }
             commandAdmissionRefused = admissionRefused;
             throw error;
           }
@@ -231,6 +280,15 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
             throw new Error("SQLite worker operations must remain synchronous");
           }
           settleCommand();
+          if (work.kind === "maintenance") {
+            // The pass retains its local result until the host acknowledges native settlement.
+            value = undefined;
+          }
+          const transitions = walContext.joinTransitions();
+          if (transitions !== undefined) {
+            // A late resource failure retires the actor without discarding a committed result.
+            await joinWalTransitions(transitions);
+          }
         },
       );
     };
@@ -360,6 +418,10 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
         (SQLITE_WORKER_CLOSE_RECEIPT in backend &&
           backend[SQLITE_WORKER_CLOSE_RECEIPT] !== undefined &&
           typeof backend[SQLITE_WORKER_CLOSE_RECEIPT] !== "function") ||
+        (SQLITE_WORKER_RUN_MAINTENANCE in backend &&
+          backend[SQLITE_WORKER_RUN_MAINTENANCE] !== undefined &&
+          (typeof backend[SQLITE_WORKER_RUN_MAINTENANCE] !== "function" ||
+            typeof backend.assertSettled !== "function")) ||
         (backend.assertSettled !== undefined && typeof backend.assertSettled !== "function") ||
         (backend.prepare !== undefined && typeof backend.prepare !== "function")
       ) {
@@ -367,6 +429,10 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
       }
       // SAFETY: The validated backend and its typed client own the private command contract.
       actors.set(request.actor, backend as SqliteWorkerPreparedBackend<SqliteWorkerOperations>);
+      const admissionReady = walContext.joinTransitions();
+      if (admissionReady !== undefined) {
+        await admissionReady;
+      }
     } else if (request.type === "close") {
       const backend = actors.get(request.actor);
       if (!backend) {
@@ -374,6 +440,10 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
       }
       try {
         await runInActorContext(request.actor, () => backend.close());
+        const transitions = walContext.joinTransitions();
+        if (transitions !== undefined) {
+          await transitions;
+        }
         closeReceipt = runInActorContext(request.actor, () =>
           backend[SQLITE_WORKER_CLOSE_RECEIPT]?.(),
         );
@@ -383,6 +453,9 @@ async function receive(request: SqliteWorkerRequest): Promise<void> {
       }
       actors.delete(request.actor);
       stateContexts.delete(request.actor);
+      walContext.retireActor(request.actor);
+    } else if (request.type === "maintenance") {
+      await executeCommand(undefined, request.unit);
     } else {
       await executeCommand(deserialize(request.input));
     }

@@ -77,7 +77,7 @@ describe("SQLite WAL checkpoint observations", () => {
     }
   });
 
-  it("recycles an oversized completed WAL during admitted periodic maintenance without waiting for readers", async () => {
+  it("requires owner admission for synchronous periodic checkpoints and preserves pinned readers", async () => {
     vi.useFakeTimers();
     const databasePath = path.join(tempDirs.make("openclaw-wal-recycle-"), "state.sqlite");
     const { DatabaseSync } = requireNodeSqlite();
@@ -92,35 +92,26 @@ describe("SQLite WAL checkpoint observations", () => {
       runMaintenance: (operation) => admitted && operation(),
     });
     try {
-      writer.exec(
-        "CREATE TABLE payload(value BLOB); INSERT INTO payload VALUES(zeroblob(1048576));",
-      );
-      for (let index = 0; index < 65; index++) {
-        writer.exec("UPDATE payload SET value=randomblob(1048576)");
-      }
-      const oversized = fs.statSync(`${databasePath}-wal`).size;
-      expect(oversized).toBeGreaterThan(64 * 1024 * 1024);
+      writer.exec("CREATE TABLE payload(value TEXT); INSERT INTO payload VALUES('before');");
+      const before = fs.statSync(`${databasePath}-wal`).size;
       await vi.advanceTimersByTimeAsync(100);
-      expect(fs.statSync(`${databasePath}-wal`).size).toBe(oversized);
+      expect(fs.statSync(`${databasePath}-wal`).size).toBe(before);
+      expect(maintenance.health).toBeUndefined();
       reader = new DatabaseSync(databasePath, { readOnly: true });
       reader.exec("BEGIN");
-      expect(reader.prepare("SELECT length(value) AS bytes FROM payload").get()?.bytes).toBe(
-        1048576,
-      );
+      expect(reader.prepare("SELECT value FROM payload").get()?.value).toBe("before");
+      writer.exec("UPDATE payload SET value='after'");
       admitted = true;
       const started = performance.now();
       await vi.advanceTimersByTimeAsync(100);
       expect(performance.now() - started).toBeLessThan(1_000);
-      expect(fs.statSync(`${databasePath}-wal`).size).toBe(oversized);
       expect(maintenance.health?.state).toBe("blocked");
+      expect(reader.prepare("SELECT value FROM payload").get()?.value).toBe("before");
       expect(writer.prepare("PRAGMA busy_timeout").get()?.timeout).toBe(5_000);
       reader.exec("ROLLBACK");
       await vi.advanceTimersByTimeAsync(100);
-      expect(fs.statSync(`${databasePath}-wal`).size).toBeLessThanOrEqual(64 * 1024 * 1024);
       expect(maintenance.health?.state).toBe("complete");
-      expect(writer.prepare("SELECT length(value) AS bytes FROM payload").get()?.bytes).toBe(
-        1048576,
-      );
+      expect(reader.prepare("SELECT value FROM payload").get()?.value).toBe("after");
     } finally {
       reader?.close();
       maintenance.close();

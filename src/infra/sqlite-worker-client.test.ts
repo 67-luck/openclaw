@@ -97,7 +97,7 @@ it("attributes queued commands without changing wire bytes or exposing private c
       const command = { type, input: { value: "synthetic-private-payload" } };
       await expect(store.execute(command)).resolves.toBe("committed");
       expect(dispatch).toHaveBeenLastCalledWith(
-        serialize(command),
+        { type: "execute", input: serialize(command) },
         undefined,
         undefined,
         undefined,

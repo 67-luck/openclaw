@@ -341,16 +341,18 @@ export class SqliteWorkerBroker {
       actor: owned,
       isDraining: () => this.draining !== undefined,
       isAvailable: () => !owned.slot.failed && !owned.cleanupState && !owned.retirementRequested,
-      dispatch: (payload, signal, scope, assertCurrent, createAdmission, requestClass) =>
+      dispatch: (request, signal, scope, assertCurrent, createAdmission, requestClass) =>
         this.enqueue(
           owned.slot,
           {
-            type: "execute",
+            ...request,
             actor: owned.id,
-            input: payload,
             ...(scope?.stateContext ? { stateContext: scope.stateContext } : {}),
           },
-          sqliteWorkerRequestBytes(payload, scope?.stateContext),
+          sqliteWorkerRequestBytes(
+            request.type === "execute" ? request.input : new Uint8Array(),
+            scope?.stateContext,
+          ),
           {
             signal,
             requestClass,
@@ -658,6 +660,7 @@ export class SqliteWorkerBroker {
     }
     const error = toErrorObject(reason, "SQLite worker failed");
     slot.failed = new SqliteWorkerError(error.message, "unavailable");
+    slot.wal.revoke();
     for (const actor of slot.actors) {
       if (actor.backendClosed) {
         continue;
@@ -709,6 +712,11 @@ export class SqliteWorkerBroker {
       const errors = results.flatMap((result) =>
         result.status === "rejected" ? [result.reason] : [],
       );
+      try {
+        await this.lifecycle.closeWal();
+      } catch (error) {
+        errors.push(error);
+      }
       await this.inputAdmission.joinPreparations();
       if (errors.length) {
         throw new AggregateError(errors, "SQLite worker host cleanup failed");

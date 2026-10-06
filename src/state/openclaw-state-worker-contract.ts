@@ -33,12 +33,10 @@ import type {
 import type * as deviceAuth from "../infra/device-auth-store.kernel.js";
 import type { DeviceIdentity } from "../infra/device-identity-store.js";
 import type { SqliteFileGeneration } from "../infra/sqlite-file-generation.js";
-import type {
-  SqliteWalPeriodicRequest,
-  SqliteWalPeriodicResult,
-} from "../infra/sqlite-wal-write-admission.js";
+import type { SqliteWalPeriodicRequest } from "../infra/sqlite-wal-write-admission.js";
 import type { SqliteWorkerPreparedBackend } from "../infra/sqlite-worker-contract.js";
 import type { SqliteWorkerAdmissionFactory } from "../infra/sqlite-worker-operation-admission.js";
+import type { SqliteWalMaintenanceDispatchResult } from "../infra/sqlite-worker-wal.types.js";
 import type {
   InterruptedUpdateSettlement,
   InterruptedUpdateSettlementResult,
@@ -91,7 +89,10 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
       input: Parameters<typeof reserveWorktreeCapacityInWorker>[0];
       output: ReturnType<typeof reserveWorktreeCapacityInWorker>;
     };
-    "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
+    "database.walMaintenance": {
+      input: SqliteWalPeriodicRequest;
+      output: SqliteWalMaintenanceDispatchResult;
+    };
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };

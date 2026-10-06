@@ -1,6 +1,7 @@
 import type { Worker } from "node:worker_threads";
 import type { OpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import type { RuntimeWorkerGeneration } from "./runtime-worker-generation.js";
+import type { SqliteWalPeriodicResult } from "./sqlite-wal-write-admission.js";
 import type {
   SqliteWorkerRequest,
   SqliteWorkerReply,
@@ -17,6 +18,8 @@ import type {
   createSqliteWorkerTransferOwner,
   createSqliteWorkerTransferReceiver,
 } from "./sqlite-worker-transfer.js";
+import type { SqliteWorkerWalSlot } from "./sqlite-worker-wal-registry.js";
+import type { SqliteWalMaintenanceDispatchResult } from "./sqlite-worker-wal.types.js";
 import type { WorkerRequestObservation } from "./worker-request-diagnostics.js";
 export type RequestBody = SqliteWorkerRequest extends infer Request
   ? Request extends SqliteWorkerRequest
@@ -55,6 +58,7 @@ export type Slot = {
   runtimeGeneration?: RuntimeWorkerGeneration;
   borrowedGenerationSlot?: true;
   worker: Worker;
+  wal: SqliteWorkerWalSlot;
   receiveReply(reply: SqliteWorkerReply): void;
   actors: Set<Actor>;
   queue: Job[];
@@ -121,6 +125,11 @@ export type StoreClient = {
     options: { signal?: AbortSignal },
     scope?: OperationScope,
   ): Promise<unknown>;
+  runMaintenance(
+    start: () => Promise<SqliteWalMaintenanceDispatchResult>,
+    options: { signal?: AbortSignal },
+    scope: OperationScope,
+  ): Promise<SqliteWalPeriodicResult>;
 };
 
 export type SqliteWorkerStoreOptions = {

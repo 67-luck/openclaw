@@ -4,7 +4,7 @@ import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { registerListener } from "../shared/listeners.js";
 import { hasErrnoCode } from "./errno.js";
 import { formatErrorMessage } from "./errors.js";
-import { compareValidSemver } from "./semver.js";
+import { supportsNodeSqliteWalObservation } from "./node-sqlite.js";
 import { normalizeSqliteNumber, readFiniteSqliteNumber } from "./sqlite-number.js";
 import {
   readSqliteReaderDiagnosticsForPath,
@@ -17,10 +17,7 @@ export type SqliteWalCheckpointMode = "PASSIVE" | "FULL" | "RESTART" | "TRUNCATE
 
 /** Unknown modes backfill on older SQLite; never issue NOOP without native support. */
 export function readSqliteWalState(database: DatabaseSync) {
-  const version = database /* sqlite-allow-raw -- Gate the non-mutating WAL observation. */
-    .prepare("SELECT sqlite_version() AS version")
-    .get()?.version;
-  return typeof version === "string" && (compareValidSemver(version, "3.53.0") ?? -1) >= 0
+  return supportsNodeSqliteWalObservation()
     ? database.prepare("PRAGMA main.wal_checkpoint(NOOP)").get() // sqlite-allow-raw -- Observe without copying WAL pages.
     : undefined;
 }
@@ -312,11 +309,13 @@ export function createSqliteWalCheckpoint(
     },
     recordError: recordCheckpointError,
     inspectIdle(this: void): boolean {
-      const { busy, logFrames, checkpointedFrames } = readCheckpointResult(
-        checkpoint(database, "PASSIVE"),
-      );
-      // An incomplete PASSIVE checkpoint can belong to another connection's reader.
-      // A local native reader instead refuses the checkpoint; non-WAL results are negative.
+      const row = readSqliteWalState(database);
+      if (!row) {
+        return false;
+      }
+      const { busy, logFrames, checkpointedFrames } = readCheckpointResult(row);
+      // NOOP refuses a local native reader without copying pages. Older runtimes
+      // retire idle handles rather than perform I/O merely to justify retention.
       return (
         busy === 0 && logFrames >= 0 && checkpointedFrames >= 0 && checkpointedFrames <= logFrames
       );

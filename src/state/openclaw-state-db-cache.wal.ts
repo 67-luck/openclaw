@@ -2,6 +2,7 @@ import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { isAbortError } from "../infra/abort-signal.js";
 import type { SqliteWalHealth } from "../infra/sqlite-wal-checkpoint.js";
+import { runSqliteWalWorkerMaintenance } from "../infra/sqlite-wal-maintenance-driver.js";
 import {
   registerSqliteWalWorkerMaintenance,
   type SqliteWalPeriodicRequest,
@@ -133,10 +134,7 @@ export function createStateDatabaseWalOwner(
           const result = await runOpenClawStateWorkerOperation(
             context,
             (worker) =>
-              worker.execute(
-                { type: "database.walMaintenance", input: request },
-                { signal: controller.signal },
-              ),
+              runSqliteWalWorkerMaintenance(worker, request, { signal: controller.signal }),
             {
               existingOnly: true,
               assertCurrent,

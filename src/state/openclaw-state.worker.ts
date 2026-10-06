@@ -6,6 +6,10 @@ import {
 import { refreshSqlitePlannerStatistics } from "../infra/sqlite-planner-statistics.js";
 import { assertNoActiveSqliteReaders } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import {
+  bindSqliteWalPeriodicAdmission,
+  startSqliteWalWorkerMaintenance,
+} from "../infra/sqlite-wal-periodic.js";
 import { SQLITE_WORKER_PREPARE_COMMAND } from "../infra/sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
@@ -118,6 +122,9 @@ function createSharedStateWorkerBackend(
   let borrow = nativeDatabase ? retainOpenClawStateDatabase(nativeDatabase) : undefined;
   let closed = false;
   let secretSchemaAdmitted = false;
+  const admitMaintenance = (stage: "transaction" | "commit") => {
+    requestSqliteWorkerOperationAdmission({ stage, facts: undefined });
+  };
   const open = (): OpenClawStateDatabase => {
     if (!nativeDatabase) {
       const opened = openOpenClawStateDatabase({
@@ -135,11 +142,13 @@ function createSharedStateWorkerBackend(
     ) {
       throw new Error("Shared-state worker lost its retained native database");
     }
-    return openOpenClawStateDatabase({
+    const admitted = openOpenClawStateDatabase({
       database: nativeDatabase,
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
     });
+    bindSqliteWalPeriodicAdmission(admitted.walMaintenance, admitMaintenance);
+    return admitted;
   };
   return {
     [SQLITE_WORKER_PREPARE_COMMAND](commandType) {
@@ -197,6 +206,24 @@ function createSharedStateWorkerBackend(
     execute(command) {
       if (closed) {
         throw new Error("Shared-state worker is closed");
+      }
+      if (command.type === "database.walMaintenance") {
+        const database = open();
+        return startSqliteWalWorkerMaintenance(
+          database.walMaintenance,
+          command.input,
+          admitMaintenance,
+          () =>
+            runOpenClawStateWriteTransaction(
+              ({ db }) => {
+                admitMaintenance("transaction");
+                refreshSqlitePlannerStatistics(db);
+                admitMaintenance("commit");
+              },
+              { database },
+              { busyTimeoutMs: 0, operationLabel: "state.planner-statistics" },
+            ),
+        );
       }
       if (provisionRegistry.has(command)) {
         return provisionRegistry.execute(command, {
@@ -280,25 +307,6 @@ function createSharedStateWorkerBackend(
           command.input.selector,
           { path: context.databasePath, env: getSqliteWorkerStateContext().environment },
           command.input.artifactPreservingReadOnly,
-        );
-      }
-      if (command.type === "database.walMaintenance") {
-        const database = open();
-        const admit = (stage: "transaction" | "commit") => {
-          requestSqliteWorkerOperationAdmission({ stage, facts: undefined });
-        };
-        return (
-          database.walMaintenance.maintainPeriodic?.(command.input, admit, () =>
-            runOpenClawStateWriteTransaction(
-              ({ db }) => {
-                admit("transaction");
-                refreshSqlitePlannerStatistics(db);
-                admit("commit");
-              },
-              { database },
-              { busyTimeoutMs: 0, operationLabel: "state.planner-statistics" },
-            ),
-          ) ?? { reclaimedPages: 0 }
         );
       }
       if (command.type === "database.inspectIdle") {

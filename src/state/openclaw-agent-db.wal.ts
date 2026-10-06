@@ -1,3 +1,4 @@
+import { runSqliteWalWorkerMaintenance } from "../infra/sqlite-wal-maintenance-driver.js";
 import { registerSqliteWalWorkerMaintenance } from "../infra/sqlite-wal-write-admission.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import type { OpenClawAgentDatabase } from "./openclaw-agent-db-contract.js";
@@ -72,7 +73,8 @@ export function registerOpenClawAgentWalMaintenance(
                   }, binding.attachment),
                 }),
               },
-              (worker) => worker.execute({ type: "database.walMaintenance", input: request }),
+              (worker) =>
+                runSqliteWalWorkerMaintenance(worker, request, { signal: controller.signal }),
             );
             assertCurrent();
             execution.assertCurrent();

@@ -31,6 +31,10 @@ import {
   type SqliteWorkerTransferHandle,
 } from "./sqlite-worker-transfer.js";
 
+function isExecutionRequest(request: SqliteWorkerRequest): boolean {
+  return request.type === "execute" || request.type === "maintenance";
+}
+
 export function dispatchSqliteWorkerJob(
   slot: Slot,
   job: Job,
@@ -327,7 +331,7 @@ export function receiveSqliteWorkerReply(
       owner.dispatch();
       return;
     }
-    if (job.request.type !== "execute" || reply.retire) {
+    if (!isExecutionRequest(job.request) || reply.retire) {
       const refusedOpen =
         job.request.type === "open" && reply.openOutcome === "refused-before-agent-open";
       const failure =
@@ -336,7 +340,7 @@ export function receiveSqliteWorkerReply(
           : error;
       owner.fail(
         failure,
-        job.request.type !== "execute" ? failure : undefined,
+        !isExecutionRequest(job.request) ? failure : undefined,
         refusedOpen ? "refused-before-agent-open" : undefined,
       );
       return;
@@ -439,7 +443,7 @@ export function settleFailedSqliteWorkerJobs({
         currentError ??
         new SqliteWorkerError(
           `SQLite worker stopped before its result was received: ${error.message}`,
-          current.request.type === "execute" && current.nativeDispatched
+          isExecutionRequest(current.request) && current.nativeDispatched
             ? "outcome-unknown"
             : "unavailable",
         );
@@ -491,7 +495,7 @@ export function settleSqliteWorkerJob(
       admissionCleanupFailures,
       "SQLite worker admission cleanup failed",
     );
-    if (failure === undefined && job.request.type === "execute") {
+    if (failure === undefined && isExecutionRequest(job.request)) {
       process.emitWarning(cleanupError);
     } else {
       failure =

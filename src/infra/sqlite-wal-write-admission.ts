@@ -38,21 +38,8 @@ export function registerSqliteWalWorkerMaintenance(
   execute: NonNullable<MaintenanceAdmission["execute"]>,
   cancel?: MaintenanceAdmission["cancel"],
 ): void {
-  const previous = Number(
-    // sqlite-allow-raw -- Checkpoint policy belongs to the WAL owner.
-    database.prepare("PRAGMA wal_autocheckpoint;").get()?.wal_autocheckpoint ?? 0,
-  );
   database.exec("PRAGMA wal_autocheckpoint = 0;"); // sqlite-allow-raw -- Checkpoint policy belongs to the WAL owner.
-  admissions.set(database, {
-    execute,
-    cancel: () => {
-      // Without its worker the writer falls back to the bounded inline threshold.
-      if (previous > 0 && database.isOpen && !database.isTransaction) {
-        database.exec(`PRAGMA wal_autocheckpoint = ${previous};`); // sqlite-allow-raw -- Restore the connection-local threshold.
-      }
-      return cancel?.();
-    },
-  });
+  admissions.set(database, { execute, cancel });
 }
 
 export function cancelSqliteWalWriteAdmission(database: DatabaseSync): void | Promise<void> {
@@ -62,10 +49,12 @@ export function cancelSqliteWalWriteAdmission(database: DatabaseSync): void | Pr
 export function createSqliteWalMaintenanceScheduler(
   database: DatabaseSync,
   operation: (request: SqliteWalPeriodicRequest) => SqliteWalPeriodicResult,
+  isCurrent: () => boolean,
   prepare: (maxPages: number) => SqliteWalPeriodicRequest | undefined,
   observe: (snapshot: SqliteWalCheckpointSnapshot) => void,
   onError: (error: unknown) => void,
   pageBudget: () => number,
+  execute?: (request: SqliteWalPeriodicRequest) => Promise<SqliteWalPeriodicResult | undefined>,
 ): () => Promise<void> {
   let pending: Promise<void> | undefined;
   return () => {
@@ -74,24 +63,30 @@ export function createSqliteWalMaintenanceScheduler(
         // A zero budget runs one checkpoint-only pass without vacuum units.
         let remaining = pageBudget();
         let continuation = false;
+        // The dedicated connection owns checkpoint-only wakes outside the writer FIFO.
+        if (remaining === 0 && (execute || admissions.get(database)?.execute)) {
+          return;
+        }
         while (true) {
+          if (!isCurrent()) {
+            return;
+          }
           const request = prepare(remaining);
-          // A delegated writer's checkpoint-only tick would round-trip through its worker
-          // and race store replacement; worker connections to the same WAL tick inline.
-          if (!request || (remaining === 0 && admissions.get(database)?.execute)) {
+          if (!request) {
             return;
           }
           request.continuation = continuation;
           let result: SqliteWalPeriodicResult | undefined;
           const admitted = () => {
-            if (prepare(remaining)) {
+            if (isCurrent()) {
               result = operation(request);
             }
           };
           const admission = admissions.get(database);
-          if (admission?.execute) {
-            result = await admission.execute(request);
-            if (!prepare(remaining)) {
+          const dispatch = execute ?? admission?.execute;
+          if (dispatch) {
+            result = await dispatch(request);
+            if (!isCurrent()) {
               return;
             }
             if (result?.checkpoint) {
@@ -114,7 +109,7 @@ export function createSqliteWalMaintenanceScheduler(
       };
       pending = run()
         .catch((error: unknown) => {
-          if (prepare(0)) {
+          if (isCurrent()) {
             onError(error);
           }
         })

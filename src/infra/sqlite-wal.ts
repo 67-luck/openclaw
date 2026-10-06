@@ -6,11 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { GatewayScheduler } from "./gateway-scheduler.js";
-import {
-  normalizeSqliteNonNegativeInteger,
-  runWithSqliteBusyTimeout,
-  setSqliteBusyTimeout,
-} from "./sqlite-busy-timeout.js";
+import { normalizeSqliteNonNegativeInteger, setSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
 import {
@@ -20,6 +16,12 @@ import {
   type SqliteWalHealth,
 } from "./sqlite-wal-checkpoint.js";
 import { resolvePathJournalPolicy } from "./sqlite-wal-filesystem.js";
+import { createSqliteWalPeriodicMaintenance } from "./sqlite-wal-periodic.js";
+import {
+  SQLITE_WAL_IDLE_CHECKPOINT_MS,
+  SQLITE_WAL_PRESSURE_TICK_MS,
+  SQLITE_WAL_RECYCLING_BYTES,
+} from "./sqlite-wal-policy.js";
 import {
   reclaimSqliteWalFreePages,
   type SqliteWalReclamationOptions,
@@ -36,24 +38,16 @@ import {
   type SqliteWalPeriodicRequest,
   type SqliteWalPeriodicResult,
 } from "./sqlite-wal-write-admission.js";
+import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
+import { captureSqliteWorkerWalContext } from "./sqlite-worker-wal-context.js";
 
 export type { SqliteWalHealth } from "./sqlite-wal-checkpoint.js";
 export type { SqliteWalReclamationResult } from "./sqlite-wal-reclamation.js";
 
-// WAL maintenance configures SQLite write-ahead logging and schedules bounded
-// checkpoints so state databases do not accumulate unbounded WAL files.
-// Inline automatic checkpoints run on the committing connection, and while a
-// reader keeps the log from resetting every later commit above this threshold
-// retries one and syncs the database file. Worker-maintained writers disable it
-// when they register their owner and skip checkpoint-only ticks; worker
-// connections tick inline, so this threshold only bounds an unmaintained writer.
+// Timer-disabled SDK/CLI connections retain the inline fallback. Scheduled
+// writers leave checkpointing to maintenance; broker I/O runs on its own connection.
 const DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES = 16_384;
-const DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS = 10 * 1000;
 const DEFAULT_SQLITE_WAL_CHECKPOINT_INTERVAL_MS = 30 * 60 * 1000;
-// SQLite applies this ceiling when a fully checkpointed WAL resets on the next
-// commit. It matches the inline autocheckpoint threshold so only pathological
-// high-water marks pay the truncation cost.
-const DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 const JOURNAL_MODE_RETRY_INTERVAL_MS = 10;
 const JOURNAL_MODE_RETRY_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
@@ -238,20 +232,19 @@ export function configureSqliteWalMaintenance(
   if (options.busyTimeoutMs !== undefined) {
     setSqliteBusyTimeout(db, options.busyTimeoutMs);
   }
-  const autoCheckpointPages = normalizeSqliteNonNegativeInteger(
-    options.autoCheckpointPages ?? DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES,
-    "autoCheckpointPages",
-  );
   const checkpointIntervalMs = normalizeSqliteNonNegativeInteger(
     options.checkpointIntervalMs ?? DEFAULT_SQLITE_WAL_CHECKPOINT_INTERVAL_MS,
     "checkpointIntervalMs",
   );
+  const autoCheckpointPages = normalizeSqliteNonNegativeInteger(
+    options.autoCheckpointPages ??
+      (checkpointIntervalMs > 0 ? 0 : DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES),
+    "autoCheckpointPages",
+  );
   const timerIntervalMs = Math.min(checkpointIntervalMs, MAX_TIMER_TIMEOUT_MS);
   // Checkpoint-only ticks keep commits off the checkpoint between periodic passes.
   const checkpointTickMs =
-    checkpointIntervalMs > DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS
-      ? DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS
-      : 0;
+    checkpointIntervalMs > SQLITE_WAL_IDLE_CHECKPOINT_MS ? SQLITE_WAL_PRESSURE_TICK_MS : 0;
   const checkpointMode = options.checkpointMode ?? "TRUNCATE";
   const periodicCheckpointMode = options.checkpointMode ?? "PASSIVE";
   const journalPolicy = options.databasePath
@@ -273,19 +266,38 @@ export function configureSqliteWalMaintenance(
     };
   }
   enableMacosCheckpointFullfsync(db);
-  db.exec(`PRAGMA wal_autocheckpoint = ${autoCheckpointPages};`);
-  db.exec(`PRAGMA journal_size_limit = ${DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES};`);
+  db.exec(`PRAGMA journal_size_limit = ${SQLITE_WAL_RECYCLING_BYTES};`);
   const tripwireDatabasePath =
     process.platform === "linux" && options.databasePath && fs.existsSync(options.databasePath)
       ? fs.realpathSync.native(options.databasePath)
       : undefined;
   let invalidated = false;
   let splitBrainDetectionEnabled = Boolean(tripwireDatabasePath);
-  const checkpointOwner = createSqliteWalCheckpoint(
-    db,
-    options,
-    DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES,
-  );
+  const checkpointOwner = createSqliteWalCheckpoint(db, options, SQLITE_WAL_RECYCLING_BYTES);
+  const context = timerIntervalMs > 0 ? captureSqliteWorkerWalContext() : undefined;
+  const physical =
+    context && options.databasePath
+      ? readDatabasePathIdentitySync(options.databasePath)
+      : undefined;
+  const checkpointLease =
+    physical && context
+      ? context.register(
+          {
+            databasePath: physical.canonicalPath,
+            identity: physical.key,
+            birthtime: physical.birthtime,
+            databaseLabel: options.databaseLabel,
+          },
+          checkpointOwner.adopt,
+        )
+      : undefined;
+  db.exec(`PRAGMA wal_autocheckpoint = ${autoCheckpointPages};`);
+  let closing = false;
+  void checkpointLease?.ready.catch((error: unknown) => {
+    if (!closing) {
+      checkpointOwner.recordError(error);
+    }
+  });
   const runCheckpoint = checkpointOwner.checkpoint;
 
   const runMaintenance = (operation: () => boolean): boolean => {
@@ -325,71 +337,41 @@ export function configureSqliteWalMaintenance(
 
   const scope = maintenanceScheduler.scope();
   const maintenanceId = `sqlite-wal:${++nextMaintenanceId}`;
+  const walPath = options.databasePath ? `${options.databasePath}-wal` : undefined;
+  let lastCheckpointAt = scope.now();
   // The periodic pass sets the vacuum budget; the next run consumes it, ticks add none.
   let nextPageBudget = 0;
-  const maintainPeriodic = (
-    request: SqliteWalPeriodicRequest,
-    admit?: (stage: "transaction" | "commit") => void,
-    maintain?: () => void,
-  ): SqliteWalPeriodicResult => {
-    if (invalidated) {
-      return { reclaimedPages: 0 };
-    }
-    if (request.checkpoint) {
-      checkpointOwner.adopt(request.checkpoint);
-    }
-    let reclaimedPages = 0;
-    const quiet = request.maxPages === 0;
-    const runTickCheckpoint = (mode: SqliteWalCheckpointMode) =>
-      checkpointOwner.checkpoint(mode, { quiet });
-    runMaintenance(() => {
-      const reclaimed = reclaimSqliteWalFreePages(db, runTickCheckpoint, {
-        checkpointMode: request.checkpointMode,
-        maxPages: request.maxPages,
-        beforeMutation: () => admit?.("transaction"),
-        onCommit: () => admit?.("commit"),
-      });
-      const checkpointed = reclaimed.checkpointCompleted;
-      if (
-        checkpointed &&
-        reclaimed.freePagesBefore !== null &&
-        reclaimed.remainingFreePages !== null
-      ) {
-        reclaimedPages = Math.min(
-          reclaimed.vacuumPagesRequested,
-          reclaimed.freePagesBefore - reclaimed.remainingFreePages,
-        );
-      }
-      if (
-        checkpointed &&
-        request.checkpointMode === "PASSIVE" &&
-        (checkpointOwner.health?.walBytes ?? 0) > DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES
-      ) {
-        // A completed PASSIVE checkpoint need not recycle its high-water file
-        // until another commit. Try once without waiting for readers or writers.
-        admit?.("transaction");
-        runWithSqliteBusyTimeout(db, 0, () => runTickCheckpoint("TRUNCATE"));
-      }
-      if (checkpointed && request.maxPages > 0 && !request.continuation) {
-        try {
-          maintain?.();
-        } catch (error) {
-          if (!isSqliteLockError(error)) {
-            throw error;
-          }
-        }
-      }
-      return checkpointed;
-    });
-    return { reclaimedPages, checkpoint: checkpointOwner.snapshot };
-  };
+  const { periodic: maintainPeriodic, deferred } = createSqliteWalPeriodicMaintenance(
+    db,
+    checkpointOwner,
+    runMaintenance,
+    () => {
+      lastCheckpointAt = scope.now();
+    },
+    checkpointLease,
+  );
   const maintain = createSqliteWalMaintenanceScheduler(
     db,
     maintainPeriodic,
-    (maxPages) =>
-      timerIntervalMs > 0 && !scope.signal.aborted && !invalidated
-        ? { maxPages, checkpointMode: periodicCheckpointMode, checkpoint: checkpointOwner.snapshot }
-        : undefined,
+    () => timerIntervalMs > 0 && !scope.signal.aborted && !invalidated,
+    (maxPages) => {
+      const now = scope.now();
+      if (
+        maxPages === 0 &&
+        now >= lastCheckpointAt &&
+        now - lastCheckpointAt < SQLITE_WAL_IDLE_CHECKPOINT_MS &&
+        (!walPath ||
+          (fs.statSync(walPath, { throwIfNoEntry: false })?.size ?? 0) <=
+            SQLITE_WAL_RECYCLING_BYTES)
+      ) {
+        return undefined;
+      }
+      return {
+        maxPages,
+        checkpointMode: periodicCheckpointMode,
+        checkpoint: checkpointOwner.snapshot,
+      };
+    },
     checkpointOwner.adopt,
     (error) => checkpointOwner.recordError(error),
     () => {
@@ -397,6 +379,7 @@ export function configureSqliteWalMaintenance(
       nextPageBudget = 0;
       return budget;
     },
+    deferred,
   );
   if (timerIntervalMs > 0) {
     runInSqliteMaintenanceContext(() =>
@@ -430,7 +413,7 @@ export function configureSqliteWalMaintenance(
       }),
     );
   }
-  if (checkpointTickMs > 0) {
+  if (checkpointTickMs > 0 && !checkpointLease) {
     runInSqliteMaintenanceContext(() =>
       scope.schedule({
         id: `${maintenanceId}:tick`,
@@ -442,8 +425,9 @@ export function configureSqliteWalMaintenance(
   }
 
   const beginClose = () => {
+    closing = true;
     runInSqliteMaintenanceContext(() => scope.beginClose());
-    return cancelSqliteWalWriteAdmission(db);
+    return Promise.all([cancelSqliteWalWriteAdmission(db), checkpointLease?.stop()]);
   };
 
   return {
@@ -462,7 +446,7 @@ export function configureSqliteWalMaintenance(
       }
     },
     close: (closeOptions) => {
-      void beginClose();
+      void beginClose().catch(checkpointOwner.recordError);
       if (invalidated) {
         return false;
       }

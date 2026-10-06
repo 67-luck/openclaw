@@ -5,7 +5,12 @@ import type { Result } from "@openclaw/normalization-core/result";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-lifecycle-errors.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
+  bindSqliteWalPeriodicAdmission,
+  startSqliteWalWorkerMaintenance,
+} from "../infra/sqlite-wal-periodic.js";
+import {
   SQLITE_WORKER_OPERATION_CLEANUP,
+  SQLITE_WORKER_RUN_MAINTENANCE,
   SQLITE_WORKER_PREPARE_ADMITTED,
   type SqliteWorkerCommand,
   type SqliteWorkerPreparedBackend,
@@ -316,6 +321,10 @@ function openAgentDatabaseBackend(
         ...(startupJournalRequested ? { agentDeletionJournalPresent: readDeletionJournal() } : {}),
       },
     });
+    bindSqliteWalPeriodicAdmission(database.walMaintenance, admit);
+    if (shared) {
+      bindSqliteWalPeriodicAdmission(shared.walMaintenance, admit);
+    }
     return database;
   };
   const admit = (
@@ -456,7 +465,19 @@ function openAgentDatabaseBackend(
       throw new Error("Agent database execution owner is closed");
     }
   };
+  const withRequestPreparation = <T>(startupJournal: boolean, operation: () => T): T => {
+    startupJournalRequested = startupJournal;
+    try {
+      return operation();
+    } finally {
+      startupJournalRequested = false;
+    }
+  };
   const executeCommand = (command: SqliteWorkerCommand<AgentDatabaseOperations>) => {
+    if (command.type === "database.walMaintenance") {
+      const opened = openWriter();
+      return startSqliteWalWorkerMaintenance(opened.walMaintenance, command.input, admit);
+    }
     if (
       command.type === "database.domain.bind" ||
       command.type === "database.domain.publish" ||
@@ -469,16 +490,19 @@ function openAgentDatabaseBackend(
       openWriter();
       return undefined;
     }
-    if (command.type === "database.walMaintenance") {
-      return (
-        openWriter().walMaintenance.maintainPeriodic?.(command.input, admit) ?? {
-          reclaimedPages: 0,
-        }
-      );
-    }
     return registry.execute(command, context);
   };
   return {
+    [SQLITE_WORKER_RUN_MAINTENANCE](operation) {
+      assertOpen();
+      if (!database) {
+        throw new Error("Agent maintenance lost its retained primary database");
+      }
+      return withRequestPreparation(readRequestPreparation(), () => {
+        openWriter();
+        return operation();
+      });
+    },
     ...createAgentDatabaseExecutionCloser(() => {
       closed = true;
       return {
@@ -570,19 +594,16 @@ function openAgentDatabaseBackend(
     },
     execute(command) {
       assertOpen();
+      let prepared: boolean;
       if (command.type === "database.domain.publish") {
         if (publicationStartupJournal === undefined) {
           throw new Error("Agent publication lost its request-local preparation facts");
         }
-        startupJournalRequested = publicationStartupJournal;
+        prepared = publicationStartupJournal;
       } else {
-        startupJournalRequested = readRequestPreparation();
+        prepared = readRequestPreparation();
       }
-      try {
-        return executeCommand(command);
-      } finally {
-        startupJournalRequested = false;
-      }
+      return withRequestPreparation(prepared, () => executeCommand(command));
     },
   };
 }

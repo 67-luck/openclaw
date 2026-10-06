@@ -40,6 +40,7 @@ export function observeSqliteWalPeriodicWork(select: () => boolean = () => true)
     };
   };
   return {
+    advanceBy: clock.advanceBy,
     restore: () => {
       Object.defineProperty(GatewayScheduler.prototype, "scope", scopeDescriptor);
     },

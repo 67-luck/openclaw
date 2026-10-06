@@ -1159,16 +1159,31 @@ accepted cleanup through the Gateway close prelude before shared-state teardown.
 Public media APIs remain asynchronous; trust policy, schemas, retention, durability,
 and update behavior are unchanged.
 
-Published agent and shared-state database timers dispatch periodic WAL checkpoints
-and bounded page reclamation through those same writers. The existing timer keeps
-its cadence and page budget, releases writer custody between units, and installs
-the worker's checkpoint health only while its original database owner is current.
-Native checkpoint work and file-size diagnostics run in the worker. Linux
-sidecar containment retains its synchronous scan at timer entry, before identity
-admission can refuse dispatch or close can clean up the original handle. Host
-admission and physical-identity checks remain on the host.
-Existing worker-local maintenance and synchronous offline/close checkpoints retain
-their owners; durability, schemas, retention, and update behavior are unchanged.
+State and agent writer admission retains a dedicated WAL checkpoint connection
+outside the writer worker. Connections are shared by physical database within the
+runtime generation, including shared-state handles borrowed by several actors.
+Scheduled writers disable automatic checkpoints in COMMIT. A maintenance worker
+runs PASSIVE on WAL growth or idle wakes without entering the writer FIFO. Above
+1 GiB, a completed PASSIVE permits a nonwaiting RESTART attempt. Readers preserve
+their snapshots and can defer WAL reuse; the threshold does not impose a hard cap
+by cancelling readers or blocking ordinary writes.
+
+Bounded page reclamation keeps its 30-minute cadence and page budget. One native
+maintenance pass coalesces timer and host requests. The host retains its operation
+and awaits the pass receipt outside the writer FIFO, dispatching synchronous
+vacuum and planner units with fresh transaction and commit grants. Worker-local
+timer work uses the same pass owner; ready units enter as separate admitted jobs
+before a later caller's write, without consuming that write's grants. Maintenance
+checkpoint waits leave the writer FIFO free, and host-driven maintenance can finish while
+the database is idle. The receipt carries the completed result and checkpoint
+health back to the original host owner.
+Native-handle retirement revokes checkpoint admission and joins accepted work;
+observations from retired generations cannot replace current health. Linux
+sidecar containment still scans at timer entry before identity admission or close.
+Idle checks use non-copying NOOP where SQLite supports it; older runtimes retire
+idle handles instead. Explicit offline and final-close checkpoints preserve the
+synchronous SDK contract: await `stop()` before `close()` during orderly cleanup.
+Schemas, retention, `synchronous=NORMAL`, and update behavior are unchanged.
 
 Worker authority requests wait for the retained host owner's grant or refusal;
 host scheduling delays do not expire that authority. The host still checks current

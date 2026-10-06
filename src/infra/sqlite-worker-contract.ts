@@ -7,6 +7,7 @@ import type { SqliteWorkerStateContext } from "./sqlite-worker-state-context.js"
 import type { SqliteWorkerTransferHandle } from "./sqlite-worker-transfer.js";
 
 export type SqliteWorkerOperations = Record<string, { input: unknown; output: unknown }>;
+export type SqliteWorkerBootstrap = { sqliteWalPort: MessagePort };
 /** Process-private locator; live owner admission remains separate from this identity. */
 export type SqliteWorkerEphemeralTarget = {
   kind: "ephemeral";
@@ -38,6 +39,7 @@ export const SQLITE_WORKER_PREPARE_COMMAND = Symbol.for("openclaw.sqliteWorkerPr
 export const SQLITE_WORKER_PREPARE_ADMITTED = Symbol.for("openclaw.sqliteWorkerPrepareAdmitted");
 export const SQLITE_WORKER_OPERATION_CLEANUP = Symbol.for("openclaw.sqliteWorkerOperationCleanup");
 export const SQLITE_WORKER_CLOSE_RECEIPT = Symbol.for("openclaw.sqliteWorkerCloseReceipt");
+export const SQLITE_WORKER_RUN_MAINTENANCE = Symbol.for("openclaw.sqliteWorkerRunMaintenance");
 
 /** Internal preparation and cleanup facts; public SDK operation and close contracts stay unchanged. */
 export type SqliteWorkerPreparedBackend<Operations extends SqliteWorkerOperations> =
@@ -48,6 +50,8 @@ export type SqliteWorkerPreparedBackend<Operations extends SqliteWorkerOperation
     ): void | Promise<void>;
     [SQLITE_WORKER_OPERATION_CLEANUP]?(command: SqliteWorkerCommand<Operations>): void;
     [SQLITE_WORKER_CLOSE_RECEIPT]?(): SqliteWorkerCloseReceipt | undefined;
+    /** Install request-local native facts for a separately admitted synchronous WAL unit. */
+    [SQLITE_WORKER_RUN_MAINTENANCE]?<T>(this: void, operation: () => T): T;
   };
 
 export type SqliteWorkerStore<Operations extends SqliteWorkerOperations> = {
@@ -77,6 +81,7 @@ export type SqliteWorkerRequest = {
       preparation?: Uint8Array;
     }
   | { type: "execute"; input: Uint8Array }
+  | { type: "maintenance"; unit: number }
   | { type: "execute-start"; transfer: SqliteWorkerTransferHandle }
   | { type: "execute-frame"; input: Uint8Array }
   | { type: "result-next"; transferId: number }

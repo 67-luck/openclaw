@@ -185,14 +185,18 @@ it("analyzes once per periodic pass, preserves retained snapshots, and admits ru
       admission.service();
     });
   const execute = (input: walAdmission.SqliteWalPeriodicRequest) =>
-    runWithSqliteWorkerStateContext(context, () =>
-      withSqliteWorkerOperationAdmission({ port: admission.port }, () =>
-        backend.execute({ type: "database.walMaintenance", input }),
-      ),
-    );
+    z
+      .object({ kind: z.literal("complete"), result: z.object({ reclaimedPages: z.number() }) })
+      .parse(
+        runWithSqliteWorkerStateContext(context, () =>
+          withSqliteWorkerOperationAdmission({ port: admission.port }, () =>
+            backend.execute({ type: "database.walMaintenance", input }),
+          ),
+        ),
+      ).result;
   // Preserve real scheduler continuation and native command execution while exposing SQL counts.
-  walAdmission.registerSqliteWalWorkerMaintenance(database.db, async (request) =>
-    z.object({ reclaimedPages: z.number() }).parse(execute(request)),
+  walAdmission.registerSqliteWalWorkerMaintenance(database.db, (request) =>
+    Promise.resolve(execute(request)),
   );
   const statements = vi.spyOn(database.db, "exec");
   const analyses = () =>
