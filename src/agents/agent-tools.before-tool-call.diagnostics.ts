@@ -312,7 +312,7 @@ function canonicalSkillFile(value: string | undefined): string | undefined {
     : undefined;
 }
 
-export function resolvedSkillUsageMatch(params: {
+function resolvedSkillUsageMatch(params: {
   activation: SkillUsageMatch["activation"];
   skill: Pick<Skill, "name" | "filePath"> & Partial<Pick<Skill, "source" | "sourceInfo">>;
 }): SkillUsageMatch {

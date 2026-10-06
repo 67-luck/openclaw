@@ -52,7 +52,6 @@ export {
   readWorkspaceStateSnapshotFromDatabase,
   registerWorkspaceStateAliasIdentitiesInTransaction,
   registerWorkspaceStateAliasesInTransaction,
-  WORKSPACE_ATTESTATION_RECENT_MS,
   WORKSPACE_CONTENT_RELOCATION_MIGRATION_KIND,
   WORKSPACE_LEGACY_STATE_MIGRATION_KIND,
   WORKSPACE_SETUP_STATE_VERSION,

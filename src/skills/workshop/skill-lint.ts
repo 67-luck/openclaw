@@ -23,7 +23,7 @@ function readDescription(content: string): string {
 }
 
 /** Authoring-convention findings for one SKILL.md, most useful first. */
-export function lintSkillMarkdown(content: string): SkillLintFinding[] {
+function lintSkillMarkdown(content: string): SkillLintFinding[] {
   const description = readDescription(content);
   const body = stripFrontmatterBlock(content);
   // Code is quoted material; only prose carries authoring style.
