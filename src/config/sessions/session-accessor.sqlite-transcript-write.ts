@@ -32,9 +32,10 @@ import {
 import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
 import {
+  assertSqliteTranscriptSnapshotUnchanged,
+  isSqliteTranscriptSnapshotUnchanged,
   readTranscriptEventRows,
   readTranscriptSnapshot,
-  type SqliteTranscriptSnapshotRow,
   type SqliteTranscriptSnapshotState,
 } from "./session-accessor.sqlite-read.js";
 import {
@@ -708,29 +709,4 @@ async function runNativeTranscriptWriteLock<T>(
     },
     "session.transcript.locked-write",
   );
-}
-
-function isSqliteTranscriptSnapshotUnchanged(
-  database: OpenClawAgentDatabase,
-  sessionId: string,
-  expected: readonly SqliteTranscriptSnapshotRow[],
-): boolean {
-  const current = readTranscriptEventRows(database, sessionId);
-  return (
-    current.length === expected.length &&
-    current.every(
-      (row, index) =>
-        row.seq === expected[index]?.seq && row.eventJson === expected[index]?.eventJson,
-    )
-  );
-}
-
-function assertSqliteTranscriptSnapshotUnchanged(
-  database: OpenClawAgentDatabase,
-  sessionId: string,
-  expected: readonly SqliteTranscriptSnapshotRow[],
-): void {
-  if (!isSqliteTranscriptSnapshotUnchanged(database, sessionId, expected)) {
-    throw new SqliteTranscriptMutationConflictError(sessionId);
-  }
 }

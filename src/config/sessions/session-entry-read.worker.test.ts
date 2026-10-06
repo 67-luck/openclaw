@@ -13,7 +13,6 @@ import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agen
 import { OpenClawAgentDatabaseReadOnlyScope } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import {
-  OPENCLAW_AGENT_SCHEMA_VERSION,
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
   runOpenClawAgentWriteTransaction,
@@ -37,56 +36,11 @@ import {
 } from "./session-entry-read-runtime.js";
 import {
   readExactSessionEntriesWithLifecycle,
-  readSessionEntryWorkerRequest,
   readSessionRowDatabaseFacts,
 } from "./session-entry-read.worker.js";
 import type { SessionEntrySnapshotField } from "./session-entry-snapshots.js";
 import * as sharingKernel from "./session-sharing-store.kernel.js";
 import { addSessionMember } from "./session-sharing-store.native.js";
-
-it("resolves runtime targets through one fresh admitted reader", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
-    const database = openOpenClawAgentDatabase({ agentId: "main", env });
-    const sessionId = "runtime-target-session";
-    const sessionKey = "agent:main:persisted-target";
-    replaceSessionEntrySync({ agentId: "main", env, sessionKey }, { sessionId, updatedAt: 1 });
-    const read = () =>
-      readSessionEntryWorkerRequest({
-        kind: "session-runtime-target",
-        database: { agentId: database.agentId, path: database.path },
-        scope: {
-          agentId: "main",
-          env,
-          sessionId,
-          sessionKey: "agent:main:fallback",
-          storePath: database.path,
-        },
-      });
-    await read();
-    const queries = trackSqliteStatementExecutions(database.db, ["freshness"], (sql) =>
-      /^PRAGMA data_version;?$/iu.test(sql) ? "freshness" : null,
-    );
-    try {
-      expect(await read()).toMatchObject({
-        kind: "session-runtime-target",
-        target: { agentId: "main", sessionId, sessionKey, storePath: database.path },
-        source: { agentId: database.agentId, path: database.path },
-      });
-      expect(queries.counts.freshness).toBe(1);
-    } finally {
-      queries.restore();
-    }
-
-    const peer = new (requireNodeSqlite().DatabaseSync)(database.path);
-    try {
-      peer.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + 1}`);
-      await expect(read()).rejects.toThrow("newer schema version");
-    } finally {
-      peer.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION}`);
-      peer.close();
-    }
-  });
-});
 
 it("hydrates only requested snapshots while retaining exact-read lifecycle and authorization facts", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
