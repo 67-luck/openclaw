@@ -367,22 +367,22 @@ export function createAgentSchemaInspectionWorker() {
     get snapshotCount() {
       return snapshotCount;
     },
-    async inspect(
+    inspect: async (
       input: AgentSchemaInspectionInput,
       callerSignal?: AbortSignal,
       snapshotPath?: string,
-    ): Promise<AgentSchemaInspection | null> {
+    ): Promise<AgentSchemaInspection | null> => {
       const result = await operations.inspect(input, callerSignal, snapshotPath);
       if (result && "schemas" in result) {
         throw new Error("Unexpected state schema inspection result");
       }
       return result;
     },
-    async inspectState(
+    inspectState: async (
       input: StateSchemaInspectionInput,
       callerSignal: AbortSignal | undefined,
       snapshotPath: string,
-    ): Promise<StateSchemaInspection> {
+    ): Promise<StateSchemaInspection> => {
       const result = await operations.inspect(input, callerSignal, snapshotPath, "state");
       if (!result || !("schemas" in result)) {
         throw new Error("Missing state schema inspection result");
