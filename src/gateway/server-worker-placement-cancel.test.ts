@@ -163,7 +163,6 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       }
       await replaceSessionEntry(target, {
         ...entry,
-        status: "running",
         lifecycleRunId: runId,
         startedAt: Date.now(),
       });
@@ -231,7 +230,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
       expect(context.chatAbortControllers.has(runId)).toBe(true);
       expect(owned.activeRunAbort.entry?.projectSessionTerminalPersistence).toBeInstanceOf(Promise);
       expect(reclaimEffectStarted).toBe(false);
-      expect(loadSessionEntry(target)?.status).toBe("running");
+      expect(loadSessionEntry(target)?.status).toBeUndefined();
       const late = await admit("during-terminal-write");
       expect(late.ok).toBe(false);
       expect(
@@ -261,7 +260,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         await heldWriter;
         await rejected;
         expect(reclaimEffectStarted).toBe(false);
-        expect(loadSessionEntry(target)?.status).toBe("running");
+        expect(loadSessionEntry(target)?.status).toBeUndefined();
         return;
       }
       releaseWriter.resolve();
