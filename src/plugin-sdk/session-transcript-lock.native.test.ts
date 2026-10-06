@@ -101,12 +101,17 @@ it("skips async preparation on replay and rejects a stale fresh preparation", as
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const scope = await seed(env);
     const database = openOpenClawAgentDatabase(scope);
-    const original = { role: "assistant", content: "original", idempotencyKey: "original" };
+    const original: {
+      role: string;
+      content: string;
+      idempotencyKey: string;
+      custom?: bigint;
+    } = { role: "assistant", content: "original", idempotencyKey: "original", custom: 1n };
     await withSessionTranscriptWriteLock(scope, (locked) =>
       locked.appendMessage({
         eventId: "original",
         message: original,
-        prepareMessageAfterIdempotencyCheck: (message) => {
+        prepareMessageAfterIdempotencyCheck: ({ custom: _custom, ...message }) => {
           expect(database.db.isTransaction).toBe(true);
           return message;
         },
@@ -127,9 +132,14 @@ it("skips async preparation on replay and rejects a stale fresh preparation", as
     await expect(
       withSessionTranscriptWriteLock(scope, (locked) =>
         locked.appendMessage({
-          message: { role: "assistant", content: "suppressed" },
+          message: { role: "assistant", content: "suppressed", custom: 1n },
           prepareMessageAfterIdempotencyCheckAsync: async () => undefined,
         }),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      withSessionTranscriptWriteLock(scope, (locked) =>
+        locked.appendMessage({ message: undefined }),
       ),
     ).resolves.toBeUndefined();
     await expect(

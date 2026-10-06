@@ -1,10 +1,13 @@
+import { isMainThread } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { ok, type Result } from "@openclaw/normalization-core/result";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
   type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { clearAllCliSessions } from "./cli-session-binding.js";
 import type {
   SessionTranscriptAccessScope,
@@ -26,13 +29,16 @@ import {
   readSessionIdentitySnapshot,
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
+import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import { prepareSessionIdentityPublication } from "./session-accessor.sqlite-identity.js";
 import {
   readTranscriptEventRows,
   readTranscriptSnapshot,
   type SqliteTranscriptSnapshotRow,
+  type SqliteTranscriptSnapshotState,
 } from "./session-accessor.sqlite-read.js";
 import {
+  captureLifecycleDatabaseScope,
   resolveSqliteTranscriptScope,
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
@@ -85,10 +91,6 @@ import {
 } from "./transcript-write-context.js";
 
 export { withTranscriptWriteTransaction } from "./session-accessor.sqlite-transcript-write-snapshot.js";
-
-type SqliteTranscriptSnapshotState =
-  | { kind: "current"; rows: SqliteTranscriptSnapshotRow[] }
-  | { kind: "stale" };
 
 export async function replaceTranscriptEvents(
   scope: SessionTranscriptAccessScope,
@@ -536,16 +538,49 @@ export async function withTranscriptWriteLock<T>(
   scope: SessionTranscriptWriteScope,
   run: (context: SessionTranscriptWriteLockAccessorContext) => Promise<T> | T,
 ): Promise<T> {
+  const fenced = withOwnedSessionTranscriptWriterFence(scope);
+  const resolved = resolveSqliteTranscriptScope(fenced);
+  if (!isMainThread || !supportsOpenClawAgentDatabaseExecution(toDatabaseOptions(resolved))) {
+    return runNativeTranscriptWriteLock(fenced, run);
+  }
+  const captured = captureLifecycleDatabaseScope(resolved);
+  const identity = readDatabasePathIdentitySync(captured.path);
+  const { withWorkerTranscriptWriteLock } = await import("./session-transcript-locked-write.js");
+  const current = readDatabasePathIdentitySync(captured.path);
+  if (current.key !== identity.key || current.birthtime !== identity.birthtime) {
+    throw new Error("Transcript lock changed its physical store");
+  }
+  return withWorkerTranscriptWriteLock(
+    { ...fenced, ...captured, storePath: captured.path },
+    run,
+    runNativeTranscriptWriteLock,
+  );
+}
+
+async function runNativeTranscriptWriteLock<T>(
+  scope: SessionTranscriptWriteScope,
+  run: (context: SessionTranscriptWriteLockAccessorContext) => Promise<T> | T,
+  alreadyLocked = false,
+  initialSnapshot?: SqliteTranscriptSnapshotState,
+  onSnapshot?: (snapshot: SqliteTranscriptSnapshotState | undefined) => void,
+): Promise<T> {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
   const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
   await restoreSessionColdTranscript({ ...fencedScope, sessionId: resolved.sessionId });
   const databaseOptions = toDatabaseOptions(resolved);
-  return await runExclusiveSqliteSessionWrite(
+  const acquire: typeof runExclusiveSqliteSessionWrite = alreadyLocked
+    ? async (_scope, operation) => operation()
+    : runExclusiveSqliteSessionWrite;
+  return await acquire(
     resolved,
     async () => {
-      let transcriptSnapshot: SqliteTranscriptSnapshotState | undefined;
+      let transcriptSnapshot = initialSnapshot;
       const context: SessionTranscriptWriteLockAccessorContext = {
+        publishUpdate: async (update) => {
+          assertOwnedTranscriptWriteCommit(fencedScope);
+          await publishTranscriptUpdate(fencedScope, update);
+        },
         readEvents: async () => {
           // openclaw-agent-db.ts cache rule: LRU eviction closes idle handles across caller awaits.
           const database = openOpenClawAgentDatabase(databaseOptions);
@@ -617,6 +652,7 @@ export async function withTranscriptWriteLock<T>(
             { operationLabel: "session.transcript.locked-append" },
           );
           transcriptSnapshot = nextSnapshotState;
+          onSnapshot?.(transcriptSnapshot);
           return result as TranscriptMessageAppendResult<typeof requested.message> | undefined;
         },
         appendMessageWithMessageSequence: async (requested) => {
@@ -657,6 +693,7 @@ export async function withTranscriptWriteLock<T>(
       };
       return await withTranscriptLockSettlement((queue) =>
         run({
+          publishUpdate: (update) => queue(() => context.publishUpdate(update)),
           readEvents: () => queue(context.readEvents),
           readMessageFacts: (params) => queue(() => context.readMessageFacts(params)),
           replaceEvents: (events) => queue(() => context.replaceEvents(events)),

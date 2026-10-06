@@ -1,10 +1,11 @@
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
+import { withinTest } from "../../test/helpers/promise.js";
 import {
   appendTranscriptEvent,
   listSessionEntriesCore,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
-import * as sqliteSessionScope from "../config/sessions/session-accessor.sqlite-scope.js";
+import * as sessionEntryWriter from "../config/sessions/session-entry-patch.js";
 import { historyLane } from "../config/sessions/session-transcript-worker-resources.js";
 import {
   SessionTranscriptWriterClaimReboundError,
@@ -240,7 +241,7 @@ describe("session transcript runtime SDK", () => {
     }
   });
 
-  it("serializes caller-checked idempotency inside scoped locked appends", async () => {
+  it("serializes caller-checked idempotency inside scoped locked appends", async ({ signal }) => {
     const scope = await createScope("caller-checked-lock-session");
     const steps: string[] = [];
     const firstRead = createDeferredCore();
@@ -266,12 +267,12 @@ describe("session transcript runtime SDK", () => {
       }
       return reply;
     });
-    const enqueueWrite = sqliteSessionScope.runExclusiveSqliteSessionWrite;
+    const enqueueWrite = sessionEntryWriter.runSessionEntryWorkerOperation;
     let queuedWrites = 0;
-    vi.spyOn(sqliteSessionScope, "runExclusiveSqliteSessionWrite").mockImplementation((...args) => {
-      const pending = enqueueWrite(...args);
-      // This owner enqueues synchronously; observe contention after delegating to the real queue.
-      if (args[2] === "session.transcript.locked-write" && ++queuedWrites === 2) {
+    vi.spyOn(sessionEntryWriter, "runSessionEntryWorkerOperation").mockImplementation((params) => {
+      const pending = enqueueWrite(params);
+      // Preparation reserves the existing FIFO before this worker owner first yields.
+      if (params.candidateKind === "session-transcript-locked" && ++queuedWrites === 2) {
         secondQueued.resolve();
       }
       return pending;
@@ -309,7 +310,10 @@ describe("session transcript runtime SDK", () => {
     const second = appendIfMissing();
     const writes = Promise.all([first, second]);
     try {
-      await Promise.race([Promise.all([firstRead.promise, secondQueued.promise]), writes]);
+      await withinTest(
+        Promise.race([Promise.all([firstRead.promise, secondQueued.promise]), writes]),
+        signal,
+      );
       expect(steps).toEqual(["first:read"]);
     } finally {
       secondTargetRead.resolve();

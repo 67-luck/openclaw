@@ -12,6 +12,11 @@ import type {
   SessionTranscriptContextVersion,
   SessionTranscriptWriteScope,
 } from "./session-accessor.sqlite-contract.js";
+import {
+  captureExternalSessionCommitGuard,
+  composeSessionSourceAssertion,
+  type SessionSourceAssertion,
+} from "./session-source-authority.js";
 import { SessionTranscriptWriterClaimReboundError } from "./session-transcript-writer-claim-error.js";
 import {
   captureSessionTranscriptStorageEnvironment,
@@ -284,10 +289,10 @@ export function withSessionTranscriptWriteAssertion<T>(
     {
       ...parent,
       sessionTarget: parent?.sessionTarget ?? target,
-      assertCommitAllowed: () => {
-        parent?.assertCommitAllowed?.();
-        assertCurrent();
-      },
+      assertCommitAllowed: composeSessionSourceAssertion([
+        captureExternalSessionCommitGuard(parent?.assertCommitAllowed),
+        captureExternalSessionCommitGuard(assertCurrent),
+      ]),
       withTranscriptWrite: parent ? (write) => parent.withTranscriptWrite(write) : trackAsyncWork,
     },
     run,
@@ -380,6 +385,7 @@ export function getOwnedSessionTranscriptInitialWriter(
 function assertTranscriptWriteContext(
   context: OwnedSessionTranscriptWriteContext | undefined,
   scope: SessionTranscriptWriteTarget,
+  assertCommitAllowed = context?.assertCommitAllowed,
 ): void {
   if (!context?.assertCommitAllowed && !context?.initialWriter) {
     return;
@@ -391,7 +397,7 @@ function assertTranscriptWriteContext(
   ) {
     throw new SessionTranscriptWriterClaimReboundError();
   }
-  context.assertCommitAllowed?.();
+  assertCommitAllowed?.();
   context.initialWriter?.assertActive();
 }
 
@@ -403,10 +409,13 @@ export function assertOwnedTranscriptWriteCommit(scope: SessionTranscriptWriteTa
 /** Retained post-commit work must revalidate its original owner, not its invocation context. */
 export function captureOwnedTranscriptWriteAssertion(
   scope: SessionTranscriptWriteTarget,
-): () => void {
+): SessionSourceAssertion {
   const context = ownedTranscriptWriteContext.getStore();
   const target = captureWriteTarget(scope);
-  return () => assertTranscriptWriteContext(context, target);
+  return composeSessionSourceAssertion(
+    [captureExternalSessionCommitGuard(context?.assertCommitAllowed)],
+    (assertSources) => assertTranscriptWriteContext(context, target, assertSources),
+  );
 }
 
 /** Applies the admitted-run fence inherited by a matching writer. */

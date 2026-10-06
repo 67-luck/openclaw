@@ -61,6 +61,10 @@ export type SqliteTranscriptSnapshotRow = {
   seq: number;
 };
 
+export type SqliteTranscriptSnapshotState =
+  | { kind: "current"; rows: SqliteTranscriptSnapshotRow[] }
+  | { kind: "stale" };
+
 export type SqliteTranscriptStorageRow = SqliteTranscriptSnapshotRow & {
   createdAt: number;
 };
