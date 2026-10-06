@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 export function createToolingDependencyFixture(root: string, staleAncestor = false) {
@@ -111,4 +111,69 @@ console.log("qualified bootstrap OK");
         timeout: 10_000,
       }),
   };
+}
+
+export function createToolingWorkspaceFixture(root: string, staleAncestor = false) {
+  const fixture = createToolingDependencyFixture(root, staleAncestor);
+  const workspace = join(fixture.checkout, "packages", "fixture");
+  const donor = join(fixture.tooling, "packages", "fixture");
+  mkdirSync(workspace, { recursive: true });
+  mkdirSync(join(donor, "node_modules"), { recursive: true });
+  writeFileSync(
+    join(workspace, "package.json"),
+    JSON.stringify({
+      name: "@fixture/workspace",
+      type: "module",
+      exports: "./index.mjs",
+      dependencies: { "fixture-pkg": "2.0.0", "workspace-only": "1.0.0" },
+    }),
+  );
+  // The donor's manifest and source are not the dependency contract.
+  writeFileSync(join(donor, "package.json"), JSON.stringify({ dependencies: {} }));
+  writeFileSync(join(donor, "index.mjs"), 'throw new Error("DONOR SOURCE EXECUTED");');
+  const installed = fixture.writePackage(
+    "fixture-pkg",
+    'export default "workspace"; export { default as privateValue } from "private-pkg";',
+    "2.0.0",
+    join(fixture.tooling, "node_modules", ".pnpm", "fixture-pkg@2.0.0"),
+  );
+  fixture.writePackage("private-pkg", 'export default "workspace private";', "3.0.0", installed);
+  const workspaceOnly = fixture.writePackage(
+    "workspace-only",
+    'export default "workspace only";',
+    "1.0.0",
+    join(fixture.tooling, "node_modules", ".pnpm", "workspace-only@1.0.0"),
+  );
+  for (const [name, target] of [
+    ["fixture-pkg", installed],
+    ["workspace-only", workspaceOnly],
+  ] as const) {
+    symlinkSync(
+      target,
+      join(donor, "node_modules", name),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  }
+  writeFileSync(
+    join(workspace, "index.mjs"),
+    `import assert from "node:assert/strict";
+import value, { privateValue } from "fixture-pkg";
+import only from "workspace-only";
+assert.equal(value, "workspace");
+assert.equal(privateValue, "workspace private");
+assert.equal(only, "workspace only");
+export default "current source";
+`,
+  );
+  writeFileSync(
+    join(fixture.checkout, "scripts/crabbox-wrapper.mts"),
+    `import assert from "node:assert/strict";
+import value from "fixture-pkg";
+import source from "../packages/fixture/index.mjs";
+assert.equal(value, "qualified");
+assert.equal(source, "current source");
+console.log("workspace bootstrap OK");
+`,
+  );
+  return { ...fixture, workspace, donor, installed };
 }

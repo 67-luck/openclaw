@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { createRequire, registerHooks } from "node:module";
+import { createRequire, findPackageJSON, registerHooks } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveConfiguredModulesDir } from "./tsx-cli-shim.mjs";
@@ -43,13 +43,14 @@ function readManifest(checkout) {
   return JSON.parse(readFileSync(join(checkout, "package.json"), "utf8"));
 }
 
-function qualifiedPackage(manifest, root, specifier, consumer) {
+function qualifiedPackage(manifest, root, specifier, consumer, owner = root) {
   const name = packageName(specifier);
   const required = declaredVersion(manifest, name);
   const modules = realpathSync(join(root, "node_modules"));
   // A workspace link would execute another checkout's source. Only installed
   // third-party packages can fill missing dependencies in this checkout.
-  const directory = contained(modules, join(modules, name));
+  const installedManifest = findPackageJSON(name, pathToFileURL(join(owner, "package.json")));
+  const directory = contained(modules, dirname(installedManifest));
   const installed = JSON.parse(readFileSync(join(directory, "package.json"), "utf8"));
   if (!required || installed.name !== name || installed.version !== required) {
     throw new Error(
@@ -165,31 +166,48 @@ if (root) {
   const checkout = params.get("checkout");
   const consumer = params.get("consumer");
   const manifest = readManifest(checkout);
-  const parentURL = pathToFileURL(join(root, "package.json")).href;
+  const owners = new Map();
   // Checkout source keeps what resolves inside the checkout; its other declared
   // packages belong to the qualified tooling root. An ancestor install can be
   // stale and either succeed with old exports or reject newer subpaths.
-  const rootOwned = (specifier, context) => {
+  const sourceOwner = (specifier, context) => {
     const importer = context.parentURL?.startsWith("file:")
       ? fileURLToPath(context.parentURL)
       : undefined;
-    return Boolean(
-      importer &&
-      isWithin(checkout, importer) &&
-      !relative(checkout, importer).split(sep).includes("node_modules") &&
-      declaredVersion(manifest, packageName(specifier)),
-    );
+    if (
+      !importer ||
+      !isWithin(checkout, importer) ||
+      relative(checkout, importer).split(sep).includes("node_modules")
+    ) {
+      return undefined;
+    }
+    const directory = dirname(importer);
+    if (!owners.has(directory)) {
+      const packageDirectory = dirname(findPackageJSON(pathToFileURL(importer)));
+      owners.set(directory, {
+        directory: packageDirectory,
+        manifest: readManifest(packageDirectory),
+      });
+    }
+    const owner = owners.get(directory);
+    const name = packageName(specifier);
+    return declaredVersion(owner.manifest, name)
+      ? owner
+      : declaredVersion(manifest, name)
+        ? { directory: checkout, manifest }
+        : undefined;
   };
   registerHooks({
     resolve(specifier, context, nextResolve) {
       if (isAbsolute(specifier) || /^(?:\.{1,2}(?:\/|$)|[a-z][a-z\d+.-]*:|#)/i.test(specifier)) {
         return nextResolve(specifier, context);
       }
+      const owner = sourceOwner(specifier, context);
       let resolved;
       try {
         resolved = nextResolve(specifier, context);
       } catch (error) {
-        if (error?.code !== "ERR_MODULE_NOT_FOUND" && !rootOwned(specifier, context)) {
+        if (error?.code !== "ERR_MODULE_NOT_FOUND" && !owner) {
           throw error;
         }
       }
@@ -200,13 +218,23 @@ if (root) {
           !target ||
           isWithin(checkout, target) ||
           !target.split(sep).includes("node_modules") ||
-          !rootOwned(specifier, context)
+          !owner
         ) {
           return resolved;
         }
       }
+      // Workspace source uses its own declared versions and the corresponding
+      // donor installation, while containment still excludes donor workspace source.
+      const donor = owner ? resolve(root, relative(checkout, owner.directory)) : root;
+      const parentURL = pathToFileURL(join(donor, "package.json")).href;
       resolved = nextResolve(specifier, { ...context, parentURL });
-      const directory = qualifiedPackage(manifest, root, specifier, consumer);
+      const directory = qualifiedPackage(
+        owner?.manifest ?? manifest,
+        root,
+        specifier,
+        consumer,
+        donor,
+      );
       contained(directory, fileURLToPath(resolved.url));
       return resolved;
     },
