@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import {
   createClawHubRecoveryManifest,
@@ -180,10 +180,29 @@ describe("sealed ClawHub recovery manifest", () => {
     });
   });
 
-  it("rejects an incomplete publish roster", () => {
-    expect(() => createClawHubRecoveryManifest(transactions, [])).toThrow(
-      "Missing ClawHub publish artifact",
+  it("seals unavailable packages without inventing an attempt ID", () => {
+    expect(createClawHubRecoveryManifest(transactions, []).packages).toEqual([
+      expect.objectContaining({
+        name: pending.name,
+        publicationStatus: "unavailable",
+      }),
+    ]);
+    expect(createClawHubRecoveryManifest(transactions, []).packages[0]).not.toHaveProperty(
+      "attemptId",
     );
+  });
+
+  it("refuses an unavailable package before recovering any staged attempt", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    await expect(
+      executeClawHubRecoveryManifest({
+        manifest: createClawHubRecoveryManifest(transactions, []),
+        reason: "Parent failed after sealed staging",
+        token: "fixture-token",
+        fetchImpl,
+      }),
+    ).rejects.toThrow("was not staged and has no recoverable attempt");
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("recovers only the exact staged attempts and waits for public completion", async () => {
@@ -305,5 +324,10 @@ describe("sealed ClawHub recovery manifest", () => {
     expect(child.jobs.seal_clawhub_recovery_manifest.steps.at(-1).with.name).toContain(
       "openclaw-clawhub-recovery-manifest-",
     );
+    expect(
+      child.jobs.seal_clawhub_recovery_manifest.steps.find(
+        (step: { name?: string }) => step.name === "Download package publication receipts",
+      )["continue-on-error"],
+    ).toBe(true);
   });
 });

@@ -60,7 +60,15 @@ export function createClawHubRecoveryManifest(transactionsInput, recordsInput) {
     const key = `${transaction.name}@${transaction.version}`;
     const record = records.get(key);
     if (!record) {
-      throw new Error(`Missing ClawHub publish artifact for ${key}.`);
+      return {
+        name: transaction.name,
+        version: transaction.version,
+        inventoryDigest: transaction.inventoryDigest,
+        artifactName: transaction.artifactName,
+        artifactSha256: transaction.artifactSha256,
+        artifactSize: transaction.artifactSize,
+        publicationStatus: "unavailable",
+      };
     }
     records.delete(key);
     if (record.attemptId) {
@@ -119,8 +127,10 @@ export function validateClawHubRecoveryManifest(manifest) {
   });
   for (const entry of manifest.packages) {
     if (
-      !["published", "pending", "failed"].includes(entry.publicationStatus) ||
-      (entry.publicationStatus !== "published" && !isClawHubPublishAttemptId(entry.attemptId))
+      !["published", "pending", "failed", "unavailable"].includes(entry.publicationStatus) ||
+      (["pending", "failed"].includes(entry.publicationStatus) &&
+        !isClawHubPublishAttemptId(entry.attemptId)) ||
+      (entry.publicationStatus === "unavailable" && entry.attemptId !== undefined)
     ) {
       throw new Error("Invalid ClawHub recovery manifest package state.");
     }
@@ -215,6 +225,12 @@ export async function executeClawHubRecoveryManifest({
   if (!trimmedReason || trimmedReason.length > 500 || !token) {
     throw new Error("ClawHub recovery requires a token and a 1-500 character reason.");
   }
+  const unavailable = manifest.packages.find((entry) => entry.publicationStatus === "unavailable");
+  if (unavailable) {
+    throw new Error(
+      `ClawHub package was not staged and has no recoverable attempt: ${unavailable.name}.`,
+    );
+  }
   const recovered = [];
   for (const entry of manifest.packages) {
     if (entry.publicationStatus === "published") {
@@ -299,8 +315,8 @@ async function main() {
   const operation = positionals[0];
   if (operation === "create") {
     positionals.shift();
-    if (!values.transactions || !values.output || !positionals.length) {
-      throw new Error("Create requires --transactions, --output, and publish JSON artifacts.");
+    if (!values.transactions || !values.output) {
+      throw new Error("Create requires --transactions and --output.");
     }
     const manifest = createClawHubRecoveryManifest(
       JSON.parse(readFileSync(values.transactions, "utf8")),

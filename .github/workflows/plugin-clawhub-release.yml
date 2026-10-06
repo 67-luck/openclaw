@@ -893,7 +893,7 @@ jobs:
         approve_plugins_clawhub_release,
       ]
     if: always() && github.event_name == 'workflow_dispatch' && needs.preview_plugins_clawhub.outputs.has_publish_candidates == 'true' && needs.pack_plugins_clawhub_artifacts.result == 'success' && (inputs.dry_run == true || needs.approve_plugins_clawhub_release.result == 'success')
-    uses: openclaw/clawhub/.github/workflows/package-publish.yml@7e2aa3cec5d35c91bb6163aa6676541d795876c5 # reviewed parent receipt contract; CLI honors Retry-After
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@196cb055c0c509d4180a63eb7fb318f0e3f1e704 # reviewed sealed receipt and failure-evidence contract
     permissions:
       actions: read
       contents: read
@@ -943,6 +943,7 @@ jobs:
           path: ${{ runner.temp }}/clawhub-recovery/transactions
 
       - name: Download package publication receipts
+        continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           pattern: "*-publish-json"
