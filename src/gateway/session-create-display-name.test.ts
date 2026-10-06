@@ -208,11 +208,7 @@ describe("session creation display titles", () => {
         ok: false,
         error: { code: "INVALID_REQUEST", message: "label already in use: Claimed" },
       });
-      expect(
-        database.db
-          .prepare("SELECT session_key FROM session_nodes WHERE session_key = ?")
-          .get("agent:main:contender"),
-      ).toBeUndefined();
+      expect(loadSessionEntry({ sessionKey: "agent:main:contender" })).toBeUndefined();
     });
   });
 
