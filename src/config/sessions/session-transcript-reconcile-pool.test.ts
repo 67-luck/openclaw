@@ -12,6 +12,7 @@ import {
   closeOpenClawAgentDatabaseByPathAsync,
   closeOpenClawAgentDatabasesAsync,
   openOpenClawAgentDatabase,
+  resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -85,6 +86,8 @@ it("reconciles a dirty projection while the parent retains serving Gateway owner
       },
     );
     await waitForSessionTranscriptIndexReconcile(options);
+    // Seeding may retain a worker writer; this fixture starts with only its native handle.
+    await closeOpenClawAgentDatabaseByPathAsync(resolveOpenClawAgentSqlitePath(options));
     const database = openOpenClawAgentDatabase(options);
     const nativeLeases = readAgentDatabaseLeaseIds(database.path, env);
     expect(nativeLeases).toHaveLength(1);
@@ -161,6 +164,7 @@ it.each(["complete", "native-exit"] as const)(
           },
         );
         await waitForSessionTranscriptIndexReconcile(options);
+        await closeOpenClawAgentDatabaseByPathAsync(resolveOpenClawAgentSqlitePath(options));
         const database = openOpenClawAgentDatabase(options);
         const baseline = readAgentDatabaseLeaseIds(database.path, env);
         expect(baseline).toHaveLength(1);
@@ -341,6 +345,7 @@ it.each(["complete", "native-exit"] as const)(
         await waitForSessionTranscriptIndexReconcile(options);
       }
       await closeSessionTranscriptReconcileWorkerPool();
+      await closeOpenClawAgentDatabaseByPathAsync(resolveOpenClawAgentSqlitePath(options));
       const database = openOpenClawAgentDatabase(options);
       const nativeLeases = readAgentDatabaseLeaseIds(database.path, env);
       expect(nativeLeases).toHaveLength(1);

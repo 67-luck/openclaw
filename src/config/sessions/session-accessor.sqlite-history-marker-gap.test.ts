@@ -1,16 +1,10 @@
-import { afterEach, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { afterAll, expect, it } from "vitest";
+import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
 import { appendTranscriptMessage, replaceTranscriptEvents } from "./session-accessor.js";
 import { readSessionTranscriptHistoryEventPage } from "./session-accessor.sqlite-history-events.js";
 import { readSessionTranscriptHistoryEventCount } from "./session-accessor.sqlite-history.test-support.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => {
-  closeOpenClawAgentDatabasesForTest();
-  closeOpenClawStateDatabaseForTest();
-});
+const tempDirs = useSessionStoreTempDirs(afterAll, "history-marker-gap-");
 
 it.each([
   {
@@ -37,7 +31,7 @@ it.each([
 ])("keeps $name marker-gap ordinals across an append", async ({ layout, expected }) => {
   const scope = {
     agentId: "main",
-    env: { ...process.env, OPENCLAW_STATE_DIR: tempDirs.make("history-marker-gap-") },
+    env: { ...process.env, OPENCLAW_STATE_DIR: tempDirs.make() },
     sessionId: "marker-gap",
     sessionKey: "agent:main:marker-gap",
   };
