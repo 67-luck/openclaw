@@ -7,17 +7,16 @@ import { applyControlUiFaviconImage } from "./control-ui-environment-presentatio
 import { connectControlUiFaviconArtwork } from "./control-ui-favicon-artwork.runtime.ts";
 import { client, createGatewayHarness } from "./overlays-access.test-support.ts";
 
-// mock-isolation: Exercise source ownership without the process-wide DOM compositor.
+// mock-isolation: Test source lifetime independently of the DOM compositor.
 vi.mock("./control-ui-environment-presentation.runtime.ts", () => ({
   applyControlUiFaviconImage: vi.fn(),
 }));
-// mock-isolation: Control protected-image settlement without shared cache or HTTP state.
+// mock-isolation: Control protected-image settlement without shared HTTP/cache state.
 vi.mock("../lib/identity-avatar-loader.ts", () => ({
   resolveAvatarImageUrl: vi.fn(),
   retainAvatarImageUrl: vi.fn(() => vi.fn()),
 }));
 const cleanups: Array<() => void> = [];
-
 function setup(preference?: TabIconPreference) {
   const gateway = createGatewayHarness(client(async () => ({})));
   const listeners = new Set<() => void>();
@@ -56,7 +55,6 @@ function setup(preference?: TabIconPreference) {
   };
   return { theme, selection, gateway, disconnect, publish, identity };
 }
-
 afterEach(() => {
   cleanups.splice(0).forEach((stop) => stop());
   vi.restoreAllMocks();
@@ -65,20 +63,13 @@ afterEach(() => {
 });
 
 describe("tab icon artwork lifecycle", () => {
-  it("keeps custom artwork across agent changes and uses default for empty custom or default mode", () => {
-    const image = { dataUrl: "data:image/png;base64,custom", fileName: "icon.png" };
-    const fixture = setup({ mode: "custom", image });
-    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(image.dataUrl);
+  it("does not load agent artwork for the default choice", () => {
+    const fixture = setup();
     fixture.selection.state.selectedId = "other";
     fixture.publish();
-    expect(applyControlUiFaviconImage).toHaveBeenCalledTimes(1);
+    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
+    expect(resolveAvatarImageUrl).not.toHaveBeenCalled();
     expect(fixture.identity.ensure).not.toHaveBeenCalled();
-    fixture.theme.settings.tabIcon = { mode: "default", image };
-    fixture.publish();
-    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
-    fixture.theme.settings.tabIcon = { mode: "custom" };
-    fixture.publish();
-    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
   });
 
   it("discards superseded protected-avatar results and stops reacting after disconnect", async () => {
@@ -86,7 +77,7 @@ describe("tab icon artwork lifecycle", () => {
     const released = vi.fn();
     vi.mocked(resolveAvatarImageUrl).mockReturnValue(pending.promise);
     vi.mocked(retainAvatarImageUrl).mockReturnValue(released);
-    const fixture = setup({ mode: "agent" });
+    const fixture = setup("agent");
     expect(resolveAvatarImageUrl).toHaveBeenCalledWith("/avatar/main");
     fixture.selection.state.selectedId = "other";
     fixture.publish();
@@ -97,16 +88,13 @@ describe("tab icon artwork lifecycle", () => {
     expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
     fixture.disconnect();
     const calls = vi.mocked(applyControlUiFaviconImage).mock.calls.length;
-    fixture.theme.settings.tabIcon = {
-      mode: "custom",
-      image: { dataUrl: "late", fileName: "late.png" },
-    };
+    fixture.selection.state.selectedId = "main";
     fixture.publish();
     expect(applyControlUiFaviconImage).toHaveBeenCalledTimes(calls);
   });
 
-  it("rasterizes the selected agent through the protected image owner without distorting it", async () => {
-    const decode = createDeferred();
+  it("hands the decoded agent image to the compositor and retires it when the source changes", async () => {
+    const decoded = createDeferred();
     vi.mocked(resolveAvatarImageUrl).mockReturnValue("blob:protected-avatar");
     vi.stubGlobal(
       "Image",
@@ -114,25 +102,44 @@ describe("tab icon artwork lifecycle", () => {
         src = "";
         naturalWidth = 64;
         naturalHeight = 32;
-        decode = () => decode.promise;
+        decode = () => decoded.promise;
       },
     );
-    const drawing = { drawImage: vi.fn() };
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
-      drawing as unknown as CanvasRenderingContext2D,
-    );
-    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue(
-      "data:image/png;base64,rendered",
-    );
-    const fixture = setup({ mode: "agent" });
+    const fixture = setup("agent");
     await Promise.resolve();
-    decode.resolve();
-    await decode.promise;
+    decoded.resolve();
+    await decoded.promise;
     await Promise.resolve();
-    expect(drawing.drawImage).toHaveBeenCalledWith(expect.anything(), 0, 8, 32, 16);
-    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith("data:image/png;base64,rendered");
-    fixture.theme.settings.tabIcon = { mode: "default" };
+    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        src: "blob:protected-avatar",
+        naturalWidth: 64,
+        naturalHeight: 32,
+      }),
+    );
+    fixture.theme.settings.tabIcon = "default";
     fixture.publish();
+    expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
+  });
+
+  it("retries the same source after a failed protected-avatar load", async () => {
+    const missing = createDeferred<string | null>();
+    const retry = createDeferred<string | null>();
+    const released = createDeferred();
+    const release = vi.fn(() => released.resolve());
+    vi.mocked(resolveAvatarImageUrl)
+      .mockReturnValueOnce(missing.promise)
+      .mockReturnValue(retry.promise);
+    vi.mocked(retainAvatarImageUrl).mockReturnValue(release);
+    const fixture = setup("agent");
+    missing.resolve(null);
+    await released.promise;
+    expect(release).toHaveBeenCalledOnce();
+    fixture.publish();
+    expect(resolveAvatarImageUrl).toHaveBeenCalledTimes(2);
+    fixture.disconnect();
+    retry.resolve("blob:retired-retry");
+    await retry.promise;
     expect(applyControlUiFaviconImage).toHaveBeenLastCalledWith(null);
   });
 });

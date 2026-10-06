@@ -314,13 +314,8 @@ export const SETTINGS_SEARCH_TARGETS = {
     labelKey: "configView.appearance.tabIcon.title",
     search: "?section=__appearance__",
     hash: `#${APPEARANCE_SETTINGS_TARGET_IDS.tabIcon}`,
-    searchKeys: [
-      "configView.appearance.tabIcon.source",
-      "configView.appearance.tabIcon.agent",
-      "configView.appearance.tabIcon.custom",
-      "configView.appearance.tabIcon.chooseImage",
-    ],
-    aliases: "favicon browser tab icon upload image",
+    searchKeys: ["configView.appearance.tabIcon.source", "configView.appearance.tabIcon.agent"],
+    aliases: "favicon browser tab icon agent avatar image",
   },
   appearanceTextSize: {
     routeId: "appearance",

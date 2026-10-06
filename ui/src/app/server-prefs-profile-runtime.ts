@@ -72,12 +72,8 @@ export async function writeProfileAppearancePrefs(
       });
       return { ok: true, value, refresh: { ok: true }, batch };
     }
-    if (batch.tabIcon != null) {
-      const tabIcon = normalizeTabIconPreference(batch.tabIcon);
-      if (!tabIcon) {
-        return { ok: false, reason: "rejected", error: "Invalid tab icon preference.", batch };
-      }
-      batch = { ...batch, tabIcon };
+    if (batch.tabIcon != null && !normalizeTabIconPreference(batch.tabIcon)) {
+      return { ok: false, reason: "rejected", error: "Invalid tab icon preference.", batch };
     }
     const entries = Object.fromEntries(
       Object.entries(batch).flatMap(([key, value]) =>

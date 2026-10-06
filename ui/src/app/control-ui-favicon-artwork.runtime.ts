@@ -37,19 +37,16 @@ export function connectControlUiFaviconArtwork(context: {
       return;
     }
     const scope = gatewayPresentationScope(context.gateway);
-    const preference = context.theme.settings.tabIcon;
-    const mode = preference?.mode ?? "default";
+    const mode = context.theme.settings.tabIcon ?? "default";
     const agentId = context.agentSelection.state.selectedId;
     const agent = context.agents.state.agentsList?.agents.find((entry) => entry.id === agentId);
     if (mode === "agent" && agentId && context.gateway.snapshot.phase === "connected") {
       void context.agentIdentity.ensure([agentId]);
     }
     const source =
-      mode === "custom"
-        ? (preference?.image?.dataUrl ?? null)
-        : mode === "agent" && agent
-          ? resolveAgentAvatarUrl(agent, context.agentIdentity.get(agentId))
-          : null;
+      mode === "agent" && agent
+        ? resolveAgentAvatarUrl(agent, context.agentIdentity.get(agentId))
+        : null;
     const nextKey = JSON.stringify([
       scope.key,
       mode,
@@ -63,7 +60,7 @@ export function connectControlUiFaviconArtwork(context: {
     sourceKey = nextKey;
     retireImage();
     if (mode !== "agent" || !source) {
-      applyControlUiFaviconImage(source);
+      applyControlUiFaviconImage(null);
       return;
     }
     // Never leave the previous agent's image visible while the new identity resolves.
@@ -75,8 +72,11 @@ export function connectControlUiFaviconArtwork(context: {
     releaseImage = retainAvatarImageUrl(resolved);
     void Promise.resolve(resolved)
       .then(async (url) => {
-        if (!url || !current()) {
+        if (!current()) {
           return;
+        }
+        if (!url) {
+          throw new Error("Agent avatar unavailable");
         }
         const image = new Image();
         image.src = url;
@@ -84,21 +84,16 @@ export function connectControlUiFaviconArtwork(context: {
         if (!current()) {
           return;
         }
-        const canvas = document.createElement("canvas");
-        canvas.width = canvas.height = 32;
-        const drawing = canvas.getContext("2d");
-        if (!drawing || !image.naturalWidth || !image.naturalHeight) {
-          return;
+        if (!image.naturalWidth || !image.naturalHeight) {
+          throw new Error("Agent avatar has no dimensions");
         }
-        const scale = Math.min(32 / image.naturalWidth, 32 / image.naturalHeight);
-        const width = image.naturalWidth * scale;
-        const height = image.naturalHeight * scale;
-        drawing.drawImage(image, (32 - width) / 2, (32 - height) / 2, width, height);
-        // A self-contained raster favicon does not expose protected avatar routes or blob lifetimes.
-        applyControlUiFaviconImage(canvas.toDataURL("image/png"));
+        applyControlUiFaviconImage(image);
       })
       .catch(() => {
         if (current()) {
+          // Retry a failed source on the next publication, without a timer or a stale lease.
+          sourceKey = "";
+          retireImage();
           applyControlUiFaviconImage(null);
         }
       });

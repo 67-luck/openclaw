@@ -1,6 +1,4 @@
-/* ── Settings design language ──────────────────────────────────────────────
- *
- * One structural pattern for every settings surface:
+/* One structural pattern for every settings surface:
  *   .settings-page > .settings-section > .settings-group > .settings-row
  *
  * Rules (see ui/docs/design-system/settings-design.md):
@@ -34,8 +32,6 @@
   font-size: var(--control-ui-text-lg);
   font-weight: 600;
 }
-
-/* ── Workspace shell (shared by every settings takeover page) ── */
 
 .settings-workspace,
 .settings-workspace__body {
@@ -291,8 +287,6 @@
   font-weight: 600;
 }
 
-/* ── Group (the only surface) ── */
-
 .settings-group {
   background: var(--card);
   border: 1px solid color-mix(in srgb, var(--border) 85%, transparent);
@@ -305,8 +299,7 @@
   border-color: color-mix(in srgb, var(--danger) 35%, var(--border) 65%);
 }
 
-/* ── Advanced tier ──
- * Lives here rather than config.css because every schema-driven surface
+/* Lives here rather than config.css because every schema-driven surface
  * (config pages and the channel detail forms) renders the same split. */
 
 .config-tier-groups {
@@ -388,7 +381,6 @@
   margin-left: auto;
 }
 
-/* Plain right-aligned value text ("Default", "v2026.7.1", …). */
 .settings-row__value {
   font-size: var(--control-ui-text-sm);
   color: var(--muted);
@@ -448,109 +440,6 @@
   object-fit: contain;
 }
 
-@media (min-width: 769px) {
-  .settings-tab-icon .settings-group {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) max-content;
-  }
-
-  .settings-tab-icon .settings-row {
-    display: grid;
-    grid-column: 1 / -1;
-    grid-template-columns: subgrid;
-  }
-
-  .settings-tab-icon .settings-row__control {
-    max-width: none;
-  }
-}
-
-/* A file value and its remove action form one control, without an inner divider. */
-.settings-file {
-  display: flex;
-  align-items: stretch;
-  width: 100%;
-  contain: inline-size;
-  max-width: 100%;
-  min-width: 0;
-  min-height: var(--settings-control-height, 36px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  overflow: hidden;
-}
-
-.settings-file > .btn {
-  height: auto;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  transition:
-    color 120ms ease,
-    background 120ms ease;
-}
-
-.settings-file > .settings-file__value {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-3);
-  text-align: start;
-}
-
-.settings-file__thumbnail {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 24px;
-  width: 24px;
-  height: 24px;
-  color: var(--muted);
-}
-
-.settings-file__thumbnail img {
-  width: 24px;
-  height: 24px;
-  object-fit: contain;
-}
-
-.settings-file__thumbnail svg {
-  width: 18px;
-  height: 18px;
-}
-
-.settings-file__name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--control-ui-text-sm);
-}
-
-.settings-file > .settings-file__remove {
-  flex: 0 0 auto;
-  width: 28px;
-  padding: 0;
-  color: var(--muted);
-}
-
-.settings-file__remove svg {
-  width: 14px;
-  height: 14px;
-}
-
-.settings-file > .btn:hover:not(:disabled) {
-  color: var(--text);
-  background: var(--bg-hover);
-}
-
-.settings-file > .btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -3px;
-}
-
 /* Trailing action rows hold only a button cluster: give it the full row
    (definite width, see the wrap note on .settings-row__control) so nowrap
    button labels wrap as whole buttons instead of squeezing into 60%. */
@@ -569,7 +458,6 @@
   cursor: not-allowed;
 }
 
-/* Clickable drill-in row. */
 .settings-row--nav {
   width: 100%;
   border: none;
@@ -615,7 +503,6 @@
   transform: rotate(90deg);
 }
 
-/* Indented child rows (e.g. per-item options under a parent toggle). */
 .settings-subrows .settings-row {
   padding-left: var(--space-7);
 }
@@ -703,8 +590,6 @@ wa-switch.settings-toggle {
   width: auto;
 }
 
-/* ── Secret input (inset reveal toggle; no trailing button) ── */
-
 /* Stacked rows (config form arrays/maps) give the control full width; the
    wrapper must grow or the inner 100% resolves against fit-content. */
 .settings-row--stacked .settings-row__control > .settings-secret {
@@ -733,8 +618,6 @@ textarea.settings-input {
     font-size: 16px;
   }
 }
-
-/* ── Status (dot + text — replaces status pills) ── */
 
 .settings-status {
   display: inline-flex;
@@ -981,8 +864,6 @@ textarea.settings-input {
   letter-spacing: 0.08em;
   user-select: all;
 }
-
-/* ── Mobile ── */
 
 .shell--embed-settings {
   --settings-control-height: 44px;

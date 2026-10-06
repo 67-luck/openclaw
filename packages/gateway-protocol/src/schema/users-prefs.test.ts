@@ -1,5 +1,5 @@
 import { Value } from "typebox/value";
-import { describe, expect, expectTypeOf, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   GatewayErrorDetailCodes,
   GatewayErrorDetailsSchema,
@@ -14,85 +14,8 @@ import {
   validateUsersPrefsSetParams,
   validateUsersSetRoleParams,
 } from "../index.js";
-import { normalizeTabIconPreference, type TabIconPreference } from "./tab-icon.js";
-import { USER_PREFS_VALUE_BYTES } from "./user-profile-constants.js";
-
-const tabIconPng =
-  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII=";
 
 describe("user preference protocol schemas", () => {
-  it("accepts empty custom icons and retains uploads in every mode without widening string prefs", () => {
-    expectTypeOf(normalizeUiAppearancePreference("ui.accent", "theme")).toEqualTypeOf<
-      string | undefined
-    >();
-    expectTypeOf(normalizeUiAppearancePreference("ui.tabIcon", {})).toEqualTypeOf<
-      TabIconPreference | undefined
-    >();
-    for (const mode of ["default", "agent", "custom"] as const) {
-      expect(normalizeTabIconPreference({ mode })).toEqual({ mode });
-      const value = { mode, image: { dataUrl: tabIconPng, fileName: "icon.png" } };
-      expect(normalizeUiAppearancePreference("ui.tabIcon", value)).toEqual(value);
-    }
-    const webp = {
-      mode: "custom",
-      image: {
-        dataUrl: "data:image/webp;base64,UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA",
-        fileName: "icon.webp",
-      },
-    };
-    expect(normalizeTabIconPreference(webp)).toEqual(webp);
-  });
-
-  it("rejects malformed icon records, non-raster URLs, and unbounded filenames", () => {
-    for (const value of [
-      null,
-      [],
-      "custom",
-      {},
-      { mode: "unknown" },
-      { mode: "custom", extra: true },
-      { mode: "custom", image: undefined },
-      { mode: "custom", image: null },
-      ...[
-        {},
-        { dataUrl: tabIconPng },
-        { fileName: "icon.png" },
-        { dataUrl: tabIconPng, fileName: "icon.png", extra: true },
-        ...["", " ", "x".repeat(129), "bad\nname.png"].map((fileName) => ({
-          dataUrl: tabIconPng,
-          fileName,
-        })),
-        ...[
-          "https://example.com/icon.png",
-          "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
-          "data:image/png;base64,PHN2Zz48L3N2Zz4=",
-          "data:image/png;base64,%%%",
-          tabIconPng.replace("image/png", "image/jpeg"),
-          tabIconPng.replace("image/png", "image/webp"),
-        ].map((dataUrl) => ({ dataUrl, fileName: "icon.png" })),
-      ].map((image) => ({ mode: "custom", image })),
-    ]) {
-      expect(normalizeTabIconPreference(value), JSON.stringify(value)).toBeUndefined();
-    }
-  });
-
-  it("bounds the entire serialized icon record to the existing UTF-8 preference quota", () => {
-    const dataUrl =
-      "data:image/png;base64," +
-      btoa(atob(tabIconPng.slice(tabIconPng.indexOf(",") + 1)) + "\0".repeat(2900));
-    const value = { mode: "custom", image: { dataUrl, fileName: "" } };
-    const remaining =
-      USER_PREFS_VALUE_BYTES - new TextEncoder().encode(JSON.stringify(value)).byteLength;
-    expect(remaining).toBeGreaterThan(0);
-    expect(remaining).toBeLessThan(128);
-    value.image.fileName = "a".repeat(remaining);
-    expect(normalizeTabIconPreference(value)).toEqual(value);
-    value.image.fileName += "a";
-    expect(normalizeTabIconPreference(value)).toBeUndefined();
-    value.image.fileName = "é".repeat(remaining);
-    expect(normalizeTabIconPreference(value)).toBeUndefined();
-  });
-
   it("normalizes only supported profile appearance values and canonicalizes accent colors", () => {
     expect(normalizeUiAppearancePreference(UI_APPEARANCE_PREFERENCE_KEYS.theme, "absolutely")).toBe(
       "absolutely",
@@ -116,6 +39,12 @@ describe("user preference protocol schemas", () => {
       "system",
     );
 
+    for (const tabIcon of ["default", "agent"]) {
+      expect(normalizeUiAppearancePreference(UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, tabIcon)).toBe(
+        tabIcon,
+      );
+    }
+
     for (const [key, value] of [
       [UI_APPEARANCE_PREFERENCE_KEYS.theme, "unsupported"],
       [UI_APPEARANCE_PREFERENCE_KEYS.themeMode, "automatic"],
@@ -127,6 +56,15 @@ describe("user preference protocol schemas", () => {
       [UI_APPEARANCE_PREFERENCE_KEYS.fontChat, "unknown-font"],
       [UI_APPEARANCE_PREFERENCE_KEYS.fontUi, "Geist, sans-serif"],
       [UI_APPEARANCE_PREFERENCE_KEYS.fontChat, { family: "lora" }],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, "custom"],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, "Agent"],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, " agent "],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, null],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, 42],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, ["agent"]],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, { mode: "default" }],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, { mode: "agent" }],
+      [UI_APPEARANCE_PREFERENCE_KEYS.tabIcon, { mode: "custom", image: {} }],
     ] as const) {
       expect(normalizeUiAppearancePreference(key, value)).toBeUndefined();
     }

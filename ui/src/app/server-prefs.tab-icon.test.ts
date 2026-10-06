@@ -1,19 +1,14 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TabIconPreference } from "../../../packages/gateway-protocol/src/schema/tab-icon.ts";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { GatewayRequestError } from "../api/gateway.ts";
 import { createStorageMock } from "../test-helpers/storage.ts";
 import { changedServerUiPrefs, selectThemeSettings } from "./server-prefs-intent.ts";
-import { writeProfileAppearancePrefs } from "./server-prefs-profile-runtime.ts";
-import {
-  extractServerUiPrefs,
-  prefValuesEqual,
-  serverPrefsLocalPatch,
-} from "./server-prefs-state.ts";
+import { extractServerUiPrefs } from "./server-prefs-state.ts";
 import { configWithPrefs, createServerPrefsWriter } from "./server-prefs.test-support.ts";
 import {
+  flushServerUiPrefs,
   pushServerUiPrefs,
   refreshProfileAppearancePrefs,
   resetServerUiPref,
@@ -24,12 +19,7 @@ import { loadSettings, patchSettings, settingsKeyForGateway } from "./settings.t
 
 const scope = "ws://tab-icon-prefs";
 const profileId = "profile-icon";
-const image = {
-  dataUrl:
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jR1sAAAAASUVORK5CYII=",
-  fileName: "icon.png",
-};
-const tabIcon: TabIconPreference = { mode: "custom", image };
+const tabIcon = "agent";
 const pendingKey = `openclaw.control.serverPrefs.pending.v1:${scope}:profile:${profileId}`;
 
 beforeEach(() => {
@@ -43,35 +33,21 @@ afterEach(() => {
 });
 
 describe("tab icon preference ownership", () => {
-  it("preserves the upload on theme selection and removes the whole preference on reset", () => {
-    patchSettings({ tabIcon });
-    selectThemeSettings("dash");
-    expect(loadSettings().tabIcon).toEqual(tabIcon);
-    const previous = loadSettings();
-    const next = resetServerUiPref("tabIcon");
-    expect(next.tabIcon).toBeUndefined();
-    expect(changedServerUiPrefs(previous, next)).toMatchObject({ tabIcon: null });
-    expect(JSON.parse(localStorage.getItem(settingsKeyForGateway(scope))!)).not.toHaveProperty(
-      "tabIcon",
-    );
-  });
-
-  it("compares normalized structured values rather than object identity or key order", () => {
-    patchSettings({ tabIcon });
-    const previous = loadSettings();
-    const copied: TabIconPreference = {
-      image: { fileName: image.fileName, dataUrl: image.dataUrl },
-      mode: "custom",
-    };
-    expect(prefValuesEqual(tabIcon, copied)).toBe(true);
-    expect(changedServerUiPrefs(previous, { ...previous, tabIcon: copied })).toBeNull();
-    expect(serverPrefsLocalPatch({ tabIcon: copied }, previous)).toBeNull();
-    expect(prefValuesEqual(tabIcon, { ...copied, mode: "agent" })).toBe(false);
-    expect(
-      prefValuesEqual(tabIcon, { ...copied, image: { ...image, fileName: "other.png" } }),
-    ).toBe(false);
-    expect(prefValuesEqual({ mode: "custom" }, { mode: "custom", image })).toBe(false);
-  });
+  it.each(["default", "agent"] as const)(
+    "preserves %s on theme selection and removes the preference on reset",
+    (choice) => {
+      patchSettings({ tabIcon: choice });
+      selectThemeSettings("dash");
+      expect(loadSettings().tabIcon).toEqual(choice);
+      const previous = loadSettings();
+      const next = resetServerUiPref("tabIcon");
+      expect(next.tabIcon).toBeUndefined();
+      expect(changedServerUiPrefs(previous, next)).toMatchObject({ tabIcon: null });
+      expect(JSON.parse(localStorage.getItem(settingsKeyForGateway(scope))!)).not.toHaveProperty(
+        "tabIcon",
+      );
+    },
+  );
 
   it("rejects malformed browser mirrors and never reads the icon from gateway config", () => {
     const key = settingsKeyForGateway(scope);
@@ -79,10 +55,7 @@ describe("tab icon preference ownership", () => {
       key,
       JSON.stringify({
         gatewayUrl: scope,
-        tabIcon: {
-          mode: "custom",
-          image: { fileName: "unsafe.svg", dataUrl: "data:image/svg+xml,<svg/>" },
-        },
+        tabIcon: { mode: "agent" },
       }),
     );
     expect(loadSettings().tabIcon).toBeUndefined();
@@ -215,19 +188,21 @@ describe("tab icon preference ownership", () => {
     expect(localStorage.getItem(pendingKey)).toBeNull();
   });
 
-  it("rejects malformed queued icons before any profile write", async () => {
+  it("rejects unsupported queued icons before any profile write", async () => {
     const request = vi.fn(async () => ({ status: "ok" }));
     const writer = createServerPrefsWriter(request, scope);
-    const invalid = {
-      mode: "custom",
-      image: { dataUrl: "https://example.com/icon.png", fileName: "icon.png" },
-    } as const;
-    const result = await writeProfileAppearancePrefs(
-      writer.state.client,
-      { tabIcon: invalid },
-      true,
-    );
-    expect(result).toMatchObject({ ok: false, reason: "rejected" });
+    const completed = createDeferred();
+    const afterCommit = vi.fn(() => completed.resolve());
+    localStorage.setItem(pendingKey, JSON.stringify({ tabIcon: "custom" }));
+
+    flushServerUiPrefs(writer, { profileId, canWrite: true, afterCommit });
+    await completed.promise;
+
+    expect(afterCommit).toHaveBeenCalledExactlyOnceWith({
+      needsRefresh: false,
+      retainedLocal: true,
+    });
     expect(request).not.toHaveBeenCalled();
+    expect(localStorage.getItem(pendingKey)).toBeNull();
   });
 });

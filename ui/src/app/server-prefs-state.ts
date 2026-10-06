@@ -25,8 +25,6 @@ type SyncedPrefSpec<T> = {
   local: (settings: UiSettings) => T | undefined;
   write?: (value: T | undefined) => Partial<UiSettings>;
   canApply?: (value: T, settings: UiSettings) => boolean;
-  clearable?: boolean;
-  reset?: (settings: UiSettings) => Partial<UiSettings>;
 };
 
 const prefSpec = <T>(specification: SyncedPrefSpec<T>) => specification;
@@ -43,8 +41,6 @@ const optionalPrefSpec = <
     extract: normalize,
     local: (settings) => normalize(settings[key]),
     write: (value) => ({ [key]: value }),
-    clearable: true,
-    reset: () => ({ [key]: undefined }),
   });
 
 /**
@@ -56,8 +52,6 @@ export const SYNCED_PREFS = {
     extract: (value) => (value === "custom" || isThemeId(value) ? value : undefined),
     local: (settings) => settings.theme,
     write: (value) => ({ theme: value ?? UI_APPEARANCE_DEFAULTS.theme }),
-    clearable: true,
-    reset: () => ({ theme: UI_APPEARANCE_DEFAULTS.theme }),
     // A server "custom" theme is only honorable once this browser imported one;
     // the imported palette itself is too large to live in config.
     canApply: (value, settings) => value !== "custom" || Boolean(settings.customTheme),
@@ -66,8 +60,6 @@ export const SYNCED_PREFS = {
     extract: normalizeThemeMode,
     local: (settings) => settings.themeMode,
     write: (value) => ({ themeMode: value ?? UI_APPEARANCE_DEFAULTS.themeMode }),
-    clearable: true,
-    reset: () => ({ themeMode: UI_APPEARANCE_DEFAULTS.themeMode }),
   }),
   accent: optionalPrefSpec("accent", normalizeAccentColor),
   fontUi: optionalPrefSpec("fontUi", normalizeTypefaceOverride, false),
@@ -77,8 +69,6 @@ export const SYNCED_PREFS = {
     extract: (value) => (typeof value === "string" && isSupportedLocale(value) ? value : undefined),
     local: (settings) => settings.locale,
     write: (value) => ({ locale: value }),
-    clearable: true,
-    reset: () => ({ locale: undefined }),
   }),
   chatShowThinking: prefSpec<boolean>({
     extract: (value) => (typeof value === "boolean" ? value : undefined),
@@ -96,8 +86,6 @@ export const SYNCED_PREFS = {
     extract: (value) => (value === "enter" || value === "modifier-enter" ? value : undefined),
     local: (settings) => normalizeChatSendShortcut(settings.chatSendShortcut),
     write: (value) => ({ chatSendShortcut: value }),
-    clearable: true,
-    reset: () => ({ chatSendShortcut: undefined }),
   }),
   // Unset uses the server-configured queue mode; clearing sends an explicit null removal.
   chatFollowUpMode: optionalPrefSpec("chatFollowUpMode", normalizeChatFollowUpModeOverride),
@@ -132,24 +120,10 @@ export type ServerUiPrefState<T> = {
 export const SYNCED_PREF_KEYS = Object.keys(SYNCED_PREFS) as SyncedPrefKey[];
 
 export function prefValuesEqual(left: unknown, right: unknown): boolean {
-  if (left === right) {
-    return true;
-  }
   if (Array.isArray(left) && Array.isArray(right)) {
     return left.length === right.length && left.every((value, index) => value === right[index]);
   }
-  const leftRecord = asRecord(left);
-  const rightRecord = asRecord(right);
-  // JSON-backed structured preferences are atomic values, not object identities.
-  return Boolean(
-    leftRecord &&
-    rightRecord &&
-    Object.keys(leftRecord).length === Object.keys(rightRecord).length &&
-    Object.keys(leftRecord).every(
-      (key) =>
-        Object.hasOwn(rightRecord, key) && prefValuesEqual(leftRecord[key], rightRecord[key]),
-    ),
-  );
+  return left === right;
 }
 
 function applyChangedSettingsPatch(
@@ -195,7 +169,7 @@ export function resolveServerUiPrefStateFromSnapshot<K extends SyncedPrefKey>(
 ): ServerUiPrefState<SyncedPrefValue<K>> {
   const specification = SYNCED_PREFS[key];
   const localValue = specification.local(settings) as SyncedPrefValue<K> | undefined;
-  const resetPatch = specification.reset?.(settings);
+  const resetPatch = specification.write?.(undefined);
   const productDefault = (
     resetPatch ? specification.local({ ...settings, ...resetPatch }) : undefined
   ) as SyncedPrefValue<K> | undefined;
@@ -322,7 +296,7 @@ export function serverUiPrefsSnapshotDelta(
       }
     } else if (
       !(prefKey in prefs) &&
-      SYNCED_PREFS[prefKey].clearable &&
+      SYNCED_PREFS[prefKey].write &&
       ((ready && Object.hasOwn(lastSeen, prefKey)) || (scopeChanged && appearance))
     ) {
       // A new identity also clears appearance values absent from its last-seen
@@ -333,7 +307,6 @@ export function serverUiPrefsSnapshotDelta(
   return changed;
 }
 
-/** Local-settings patch that brings the browser mirror in line with the server. */
 export function serverPrefsLocalPatch(
   prefs: ServerUiPrefs,
   settings: UiSettings,
@@ -346,7 +319,7 @@ export function serverPrefsLocalPatch(
       continue;
     }
     if (serverValue === null) {
-      const resetPatch = specification.clearable ? specification.reset?.(settings) : undefined;
+      const resetPatch = specification.write?.(undefined);
       if (resetPatch) {
         applyChangedSettingsPatch(patch, settings, resetPatch);
       }
