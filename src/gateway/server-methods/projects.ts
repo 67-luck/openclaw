@@ -38,7 +38,7 @@ import {
   resolveProjectRegistry,
 } from "../../projects/project-registry.js";
 import { isTrustedSecretSurfaceUnavailableError } from "../../secrets/runtime-degraded-state.js";
-import { readCurrentUserProfileAliases } from "../../state/user-profile-list.js";
+import { prepareCurrentUserProfileAliases } from "../../state/user-profile-reads.js";
 import { configuredDefaultRepository } from "../configured-default-repository.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import {
@@ -435,11 +435,15 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
         }
         diagnostics?.mark("recents");
         const profileId = client?.authenticatedUserProfile?.profileId;
-        const recentProfileIds = profileId ? readCurrentUserProfileAliases(profileId) : undefined;
-        const recents = recentProfileIds
-          ? await listProjectRecents(store, recentProfileIds, registryProjects)
+        const recentProfile = profileId
+          ? await prepareCurrentUserProfileAliases(profileId)
           : undefined;
         assertCurrent();
+        const recents = recentProfile
+          ? await listProjectRecents(store, recentProfile.aliases, registryProjects)
+          : undefined;
+        assertCurrent();
+        recentProfile?.assertCurrent();
         diagnostics?.mark("response");
         assertCurrent();
         const writable = canWrite();

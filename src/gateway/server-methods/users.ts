@@ -33,11 +33,7 @@ import {
   setCanonicalUserProfileRole,
 } from "../../state/user-profile-writes.js";
 import { UserProfileMergeError, UserProfileOwnerError } from "../../state/user-profiles-schema.js";
-import {
-  getUserProfileListItem,
-  listProfiles,
-  UserProfileNotFoundError,
-} from "../../state/user-profiles.js";
+import { listProfiles, UserProfileNotFoundError } from "../../state/user-profiles.js";
 import {
   invalidateOperatorRolePolicy,
   resolveOperatorRoleSelection,
@@ -159,14 +155,14 @@ export const usersHandlers: GatewayRequestHandlers = {
           // A previously attached immutable profile stays usable; unresolved aliases stay hidden.
         }
       }
-      const profile = await prepareAuthenticatedProfile(options);
+      const profile = await prepareAuthenticatedProfile(options, true);
       profile.assertCurrent();
       const profileId = profile.profileId;
-      if (!profileId) {
+      if (!profileId || !profile.listItem) {
         respond(false, undefined, authenticatedProfileUnavailableError());
         return;
       }
-      respond(true, { profile: getUserProfileListItem(profileId) });
+      respond(true, { profile: profile.listItem });
     } catch (error) {
       respond(false, undefined, profileError(error));
     }

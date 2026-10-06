@@ -12,7 +12,7 @@ import {
 } from "./openclaw-state-db.js";
 import { readUserProfileVersion } from "./user-profile-events.js";
 import { readUserProfileSnapshotSync } from "./user-profile-identity.read.js";
-import { retainUserProfileCatalog } from "./user-profile-list.js";
+import { prepareUserProfileCatalog } from "./user-profile-list.js";
 import { setAvatar, setDisplayName } from "./user-profile-writes.worker.js";
 import { createProfileAvatarReader } from "./user-profiles-avatar.js";
 import { getProfileAvatar } from "./user-profiles-avatar.test-support.js";
@@ -90,7 +90,7 @@ it.each([false, true])(
     const profile = ensureProfileForEmail("avatar-reader@example.test", { env });
     expect(setAvatar(profile.id, new Uint8Array([1]), "image/png", { env }).ok).toBe(true);
     const { path } = openOpenClawStateDatabase({ env });
-    const release = resident ? retainUserProfileCatalog({ path }) : () => {};
+    const release = resident ? (await prepareUserProfileCatalog({ path })).release : () => {};
     const reader = createProfileAvatarReader(profile.id, resident ? { path } : { env });
     const prepared = await reader.inspect();
     const revision = readUserProfileVersion();

@@ -3,12 +3,14 @@ import {
   createPluginRegistryFixture,
   registerVirtualTestPlugin,
 } from "openclaw/plugin-sdk/plugin-test-contracts";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
+import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -84,7 +86,53 @@ async function withRoleConfig(run: () => Promise<void>) {
 }
 
 describe("Control UI plugin auth cookie profile binding", () => {
-  afterEach(() => resetPluginRuntimeStateForTest());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetPluginRuntimeStateForTest();
+  });
+
+  it("prepares cold cookie profile facts and revalidates demotion without caller-thread SQL", async () => {
+    await withRoleConfig(async () => {
+      const profile = ensureProfileForEmail("cold-reader@example.test");
+      setUserProfileRole(profile.id, "writer");
+      const auth = {
+        mode: "token",
+        token: "synthetic-cookie-reader",
+        allowTailscale: false,
+      } as const;
+      const cookie = issueCookie(profile.id, {
+        generation: resolveControlUiPluginAuthCookieGeneration(
+          resolveSharedGatewaySessionGeneration(auth),
+          getRuntimeConfig(),
+        ),
+      });
+      const { res } = makeMockHttpResponse();
+      const sql = observeHostDataSql();
+      try {
+        const admitted = await authorizePluginGatewayHttpRequestOrReply({
+          req: { method: "GET", headers: { cookie } } as IncomingMessage,
+          res,
+          auth,
+          requestPath: "/plugins/example/session",
+          resolveOperatorScopes: () => [],
+        });
+        expect(admitted?.requestAuth).toMatchObject({
+          authenticatedUserProfile: { profileId: profile.id },
+          controlUiPluginGrants: [{ scopes: ["operator.read"] }],
+        });
+        await expect(admitted?.requestAuth.revalidate?.()).resolves.toBeUndefined();
+        expect(sql.queries).toEqual([]);
+        await setCanonicalUserProfileRole(profile.id, "denied");
+        sql.queries.length = 0;
+        await expect(admitted?.requestAuth.revalidate?.()).rejects.toThrow("Unauthorized");
+        expect(sql.queries).toEqual([]);
+      } finally {
+        sql.restore();
+        res.destroy();
+        invalidateOperatorRolePolicy(profile.id);
+      }
+    });
+  });
 
   it("uses an explicit owner credential independently of a revoked ambient visitor cookie", async () => {
     await withRoleConfig(async () => {
@@ -235,6 +283,8 @@ describe("Control UI plugin auth cookie profile binding", () => {
           cfg: { gateway: { trustedProxies } },
           run: async () => {
             const profile = ensureProfileForEmail("plugin-reader@example.test");
+            const catalog = await prepareUserProfileCatalog();
+            onTestFinished(catalog.release);
             expect(authorizeCookie(issueCookie(profile.id))?.requestAuth).toMatchObject({
               authenticatedUserProfile: { profileId: profile.id },
               controlUiPluginGrants: [{ scopes: ["operator.read"] }],
@@ -309,6 +359,7 @@ describe("Control UI plugin auth cookie profile binding", () => {
         const profile = ensureProfileForEmail("plugin-reader@example.test");
         setUserProfileRole(profile.id, role);
         const cookie = issueCookie(profile.id);
+        const catalog = await prepareUserProfileCatalog();
         try {
           expect(authorizeCookie(cookie)?.requestAuth).toMatchObject({
             authenticatedUserProfile: { profileId: profile.id },
@@ -320,6 +371,7 @@ describe("Control UI plugin auth cookie profile binding", () => {
             { pluginId: "example", scopes: [] },
           ]);
         } finally {
+          catalog.release();
           invalidateOperatorRolePolicy(profile.id);
         }
       });

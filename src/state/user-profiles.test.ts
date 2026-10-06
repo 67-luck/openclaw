@@ -19,6 +19,7 @@ import {
 import { getUserPreferences, setUserPreferences } from "./user-preferences.test-support.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "./user-profile-events.js";
 import { readUserProfileSnapshotSync } from "./user-profile-identity.read.js";
+import { getUserProfileListItem } from "./user-profile-list-item.test-support.js";
 import {
   linkEmail,
   setAvatar,
@@ -38,7 +39,6 @@ import {
   ensureProfileForEmail,
   ensureProfileForTailscaleIdentity,
   getUserProfileDisplay,
-  getUserProfileListItem,
   getUserProfileRole,
 } from "./user-profiles.js";
 

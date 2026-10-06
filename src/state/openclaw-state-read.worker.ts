@@ -125,6 +125,7 @@ import { selectUserPreferenceValues } from "./user-preferences.store.js";
 import { readUserProfileGitHubCommand } from "./user-profile-github-identity.js";
 import {
   readUserProfileAuthorityInDatabase,
+  readCurrentUserProfileAliasesInDatabase,
   readUserProfileSnapshotCommand,
   readUserProfileIdForEmail,
 } from "./user-profile-identity.read.js";
@@ -510,7 +511,17 @@ serveOwnedWorkerTasks(
             if (command.type === "userProfiles.authority.resolve") {
               return {
                 type: command.type,
-                profile: readUserProfileAuthorityInDatabase(db, command.profileId),
+                profile: readUserProfileAuthorityInDatabase(
+                  db,
+                  command.profileId,
+                  command.includeProfile,
+                ),
+              };
+            }
+            if (command.type === "userProfiles.aliases.resolve") {
+              return {
+                type: command.type,
+                ...readCurrentUserProfileAliasesInDatabase(db, command.profileId),
               };
             }
             if (

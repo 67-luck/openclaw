@@ -17,7 +17,7 @@ import {
 } from "../sessions/session-row-changes.js";
 import { prepareAgentDatabaseDeletionSnapshotRead } from "../state/agent-deletion-journal.read.js";
 import { isOpenClawAgentDatabaseRegistryChange } from "../state/openclaw-agent-db-registry-listing.js";
-import { prepareUserProfileCatalog, retainUserProfileCatalog } from "../state/user-profile-list.js";
+import * as profiles from "../state/user-profile-list.js";
 import { ensureSessionGroupCatalog } from "./session-group-catalog.js";
 import { createSessionMembershipProjection } from "./session-membership-projection.js";
 import { createSessionProjectionDrain, yieldSessionListWork } from "./session-projection-work.js";
@@ -237,10 +237,16 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     remove,
   });
   function topology(): Promise<void> {
-    if (disposed || !topologyDirty) {
+    if (disposed || (!topologyDirty && profiles.isUserProfileCatalogReady({ env }))) {
       return Promise.resolve();
     }
     return (preparingTopology ??= inOwnerContext(async () => {
+      if (!profiles.isUserProfileCatalogReady({ env })) {
+        (await profiles.prepareUserProfileCatalog({ env })).release();
+      }
+      if (disposed || !topologyDirty) {
+        return;
+      }
       const targetEpoch = topologyEpoch;
       const nextConfig = params.getConfig?.() ?? cfg;
       const prepared = await discoveryRead.readWithCurrentAdmission();
@@ -437,7 +443,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     state: () => ({
       cfg,
       disposed,
-      topologyDirty,
+      topologyDirty: topologyDirty || !profiles.isUserProfileCatalogReady({ env }),
       registryPrepared: Boolean(inOwnerContext(subagents.snapshotIdentity)),
     }),
     runAsOwner: inOwnerContext,
@@ -466,6 +472,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     return (
       !disposed &&
       (topologyDirty ||
+        !profiles.isUserProfileCatalogReady({ env }) ||
         catalog.needsInitialRead ||
         dirty.size > 0 ||
         membership.needsPreparation ||
@@ -506,7 +513,6 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     ensureMaterialized,
   });
   const stop = [
-    retainUserProfileCatalog(),
     sessionChanges.subscribeFacts(membership.invalidate),
     sessionChanges.subscribeProjection(mark),
     // Participant writers publish facts before their display-only lifecycle notice.
@@ -521,7 +527,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       : records.isCurrentGeneration(row, rows.get(records.identity(row)));
   }
   function prepareRead() {
-    if (topologyDirty) {
+    if (topologyDirty || !profiles.isUserProfileCatalogReady({ env })) {
       return false;
     }
     metadata.prepare(epoch, cfg, matching, put, referenced);
@@ -581,7 +587,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     }),
   });
   await inOwnerContext(async () => {
-    (await prepareUserProfileCatalog()).release();
+    stop.push((await profiles.prepareUserProfileCatalog({ env })).release);
     await ensureSessionGroupCatalog();
     for (;;) {
       await refreshBatch();

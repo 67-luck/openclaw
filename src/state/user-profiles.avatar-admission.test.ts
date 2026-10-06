@@ -14,7 +14,7 @@ import { readUserProfileVersion } from "./user-profile-events.js";
 import {
   getUserProfileDisplay,
   readUserProfileIdentity,
-  retainUserProfileCatalog,
+  prepareUserProfileCatalog,
 } from "./user-profile-list.js";
 import { setUserProfileRole } from "./user-profile-writes.worker.js";
 import { getProfileAvatar } from "./user-profiles-avatar.test-support.js";
@@ -177,7 +177,7 @@ it("checks original source identity before publishing an acknowledged avatar rec
   try {
     const profile = ensureProfileForEmail("receipt-identity@example.test");
     const pathname = openOpenClawStateDatabase().path;
-    release = retainUserProfileCatalog();
+    release = (await prepareUserProfileCatalog()).release;
     boundary.afterResult = () => {
       boundary.identityFailure = new Error("synthetic source identity changed after commit");
       closing = closeOpenClawStateDatabaseByPathAsync(pathname);
@@ -216,7 +216,7 @@ it("preserves a native first-use role in avatar publication after warming a lega
     await adoptTailscaleProfileAvatar(profile.id, undefined);
     expect(tableHasColumn(db, "user_profiles", "role")).toBe(false);
     setUserProfileRole(profile.id, "reader");
-    release = retainUserProfileCatalog();
+    release = (await prepareUserProfileCatalog()).release;
     const adopted = await adoptAvatar(profile.id);
     expect(adopted.role).toBe("reader");
     expect(readUserProfileIdentity(profile.id)?.role).toBe("reader");
@@ -251,7 +251,7 @@ it.each(["missing profile", "closed before dispatch", "binding refusal"] as cons
             closing = closeOpenClawStateDatabaseByPathAsync(pathname);
           };
         } else {
-          release = retainUserProfileCatalog();
+          release = (await prepareUserProfileCatalog()).release;
           boundary.bindFailure = new Error("synthetic binding refusal");
         }
         await expect(adoptAvatar(profile.id)).rejects.toThrow(
@@ -277,30 +277,34 @@ it.each(["missing profile", "closed before dispatch", "binding refusal"] as cons
 );
 
 it.each([false, true])(
-  "publishes to a catalog retained before commit (previous catalog=%s)",
+  "publishes to a catalog prepared alongside commit (previous catalog=%s)",
   async (resident) => {
     const state = await createOpenClawTestState({
       layout: "state-only",
       prefix: "avatar-precommit-catalog-",
     });
     let release = () => {};
+    let preparing: Promise<void> | undefined;
     try {
       const profile = ensureProfileForEmail("precommit@example.test");
       if (resident) {
-        release = retainUserProfileCatalog();
+        release = (await prepareUserProfileCatalog()).release;
       }
       let prepared = false;
       boundary.duringGrant = () => {
         release();
-        release = retainUserProfileCatalog();
-        expect(getUserProfileDisplay(profile.id).hasAvatar).toBe(false);
+        preparing = prepareUserProfileCatalog().then((catalog) => {
+          release = catalog.release;
+        });
         prepared = true;
       };
       await adoptAvatar(profile.id);
+      await preparing;
       expect(prepared).toBe(true);
       expect(getUserProfileDisplay(profile.id).hasAvatar).toBe(true);
       expect(readUserProfileIdentity(profile.id)?.profileId).toBe(profile.id);
     } finally {
+      await preparing;
       release();
       await state.cleanup();
     }
@@ -320,7 +324,7 @@ it("refuses a replacement source during settlement and retries only the original
     const profile = ensureProfileForEmail("replacement@example.test");
     pathname = openOpenClawStateDatabase().path;
     saved = `${pathname}.original`;
-    release = retainUserProfileCatalog();
+    release = (await prepareUserProfileCatalog()).release;
     await closeOpenClawStateDatabaseByPathAsync(pathname);
     boundary.readFailure = new Error("synthetic initial reconciliation failure");
     boundary.afterResult = () => {
