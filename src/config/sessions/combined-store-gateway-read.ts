@@ -20,7 +20,7 @@ import type { SessionEntrySummary } from "./session-accessor.types.js";
 import {
   assertSessionStoreReadCandidate,
   captureSessionStoreCandidateIdentities,
-  captureSessionStoreReadCandidate,
+  isSessionStoreReadCandidateCurrent,
 } from "./session-store-read-candidates.js";
 import { prepareSessionStoreTargetInventory } from "./session-store-target-inventory.js";
 import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
@@ -113,10 +113,7 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
       const assertCaptured = () => {
         owner.assertCurrent();
         for (const candidate of inventory.candidates) {
-          if (
-            captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-            candidate.physicalPath
-          ) {
+          if (!isSessionStoreReadCandidateCurrent(candidate)) {
             throw new Error(
               `Session database target changed outside captured discovery custody: ${candidate.path}`,
             );

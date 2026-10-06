@@ -23,7 +23,7 @@ import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite
 import { readCommittedIncognitoSessionSharing } from "./session-accessor.sqlite-incognito-sharing.js";
 import type { SessionDeliveryGeneration } from "./session-delivery-generation.types.js";
 import { withSessionEntriesFromStoresInWorker } from "./session-entry-read-runtime.js";
-import { captureSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import { isSessionStoreReadCandidateCurrent } from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 
 class SessionDeliveryGenerationRevokedError extends Error {
@@ -305,10 +305,7 @@ async function prepareSessionGenerationLease(
       const assertSourceCurrent = () => {
         assertActive();
         for (const candidate of candidates) {
-          if (
-            captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-            candidate.physicalPath
-          ) {
+          if (!isSessionStoreReadCandidateCurrent(candidate)) {
             throw new SessionDeliveryGenerationUnavailableError();
           }
         }

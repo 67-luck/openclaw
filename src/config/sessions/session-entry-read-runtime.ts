@@ -58,6 +58,7 @@ import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sql
 import {
   assertSessionStoreReadCandidate,
   captureSessionStoreReadCandidate,
+  isSessionStoreReadCandidateCurrent,
   type SessionStoreReadCandidate,
 } from "./session-store-read-candidates.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
@@ -596,10 +597,7 @@ export async function withSessionStoreReaderInWorker<T>(
     logical?.assertCurrent?.();
     if (logical) {
       for (const candidate of candidates) {
-        if (
-          captureSessionStoreReadCandidate(candidate.path, candidate.scope).physicalPath !==
-          candidate.physicalPath
-        ) {
+        if (!isSessionStoreReadCandidateCurrent(candidate)) {
           throw new Error("Session store alias changed during discovery; retry the read.");
         }
       }
