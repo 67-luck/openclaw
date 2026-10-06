@@ -3,10 +3,7 @@ import { serialize } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
 import { persistCompactionBoundaryWithSessionEntryInWorker } from "../../config/sessions/session-accessor.sqlite-compaction.js";
-import type {
-  SessionTranscriptWriteScope,
-  TranscriptAppendRefusal,
-} from "../../config/sessions/session-accessor.sqlite-contract.js";
+import type { SessionTranscriptWriteScope } from "../../config/sessions/session-accessor.sqlite-contract.js";
 import { ensureSessionEntryInTransaction } from "../../config/sessions/session-accessor.sqlite-initial-entry.js";
 import { readTranscriptMutationAtSync } from "../../config/sessions/session-accessor.sqlite-metadata-read.js";
 import {
@@ -43,8 +40,11 @@ import type {
 import { SqliteTranscriptMutationConflictError } from "../../config/sessions/session-mutation-conflict-error.js";
 import { readSessionPendingInputAuthorityFacts } from "../../config/sessions/session-pending-input-authority.kernel.js";
 import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
+import {
+  parseTranscriptAppendRefusal,
+  SessionTranscriptWriterClaimReboundError,
+} from "../../config/sessions/session-transcript-writer-claim-error.js";
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
-import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import { assertTransactionUsable } from "../../infra/sqlite-transaction.js";
 import type {
   SqliteWorkerBackend,
@@ -163,32 +163,6 @@ function decodeMetadataAppendEvent(
     return { ...leaf, type: "leaf", timestamp: event.timestamp };
   }
   throw new Error("Invalid serialized session transcript entry");
-}
-
-function copyTranscriptRefusal(value: unknown): TranscriptAppendRefusal | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (
-    !isRecord(value) ||
-    typeof value.agentIdHash !== "string" ||
-    typeof value.expectedSessionIdHash !== "string" ||
-    typeof value.sessionKeyHash !== "string"
-  ) {
-    throw new Error("Session metadata refusal has an invalid identity");
-  }
-  const identity = {
-    agentIdHash: value.agentIdHash,
-    expectedSessionIdHash: value.expectedSessionIdHash,
-    sessionKeyHash: value.sessionKeyHash,
-  };
-  if (value.code === "session-entry-missing") {
-    return { ...identity, code: value.code };
-  }
-  if (value.code === "session-rebound" && typeof value.actualSessionIdHash === "string") {
-    return { ...identity, code: value.code, actualSessionIdHash: value.actualSessionIdHash };
-  }
-  throw new Error("Session metadata refusal has an invalid kind");
 }
 
 function readCommittedMetadataView(
@@ -504,7 +478,11 @@ export function bindSqliteWorkerBackend(
         return execute(command);
       } catch (error) {
         if (error instanceof SessionTranscriptWriterClaimReboundError) {
-          return { ok: false, refusal: copyTranscriptRefusal(error.cause) };
+          const refusal = parseTranscriptAppendRefusal(error.cause);
+          if (error.cause !== undefined && !refusal) {
+            throw new Error("Session metadata refusal has an invalid identity", { cause: error });
+          }
+          return { ok: false, refusal };
         }
         throw error;
       }
