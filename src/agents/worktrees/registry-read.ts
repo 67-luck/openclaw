@@ -1,4 +1,5 @@
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
+import { captureOpenClawStateReadWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
 import type { WorktreeRegistryListOptions } from "./registry-read.kernel.js";
 import { captureWorktreeRunEndContext } from "./run-end-lifecycle.js";
@@ -133,4 +134,22 @@ export async function readWorktreeCleanupState(env: NodeJS.ProcessEnv) {
     throw new Error("Worktree cleanup state read failed");
   }
   return reply;
+}
+
+/** Foreign CLI inspection never admits a writer or repairs lifecycle state. */
+export async function readExistingRegistryWorktrees(env: NodeJS.ProcessEnv, signal?: AbortSignal) {
+  const context = captureOpenClawStateReadWorkerContext({ env });
+  const reply = await executeExistingOpenClawStateRead(
+    { env, path: context.admission.databasePath },
+    { type: "worktrees.list" },
+    { context, current: true, signal },
+  );
+  context.admission.assertCurrent();
+  if (!reply) {
+    return [];
+  }
+  if (!reply.ok || reply.type !== "worktrees.list") {
+    throw new Error("Worktree registry inspection failed");
+  }
+  return reply.records;
 }
