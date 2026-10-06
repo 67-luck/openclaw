@@ -99,6 +99,7 @@ export type TelegramMessageContext = {
 export const buildTelegramMessageContext = async ({
   nativeCommandNames,
   primaryCtx,
+  resolveDirectAvatar,
   allMedia,
   replyMedia = [],
   replyChain = [],
@@ -440,6 +441,7 @@ export const buildTelegramMessageContext = async ({
   }
 
   const { ctxPayload, skillFilter, turn } = await buildTelegramInboundContextPayload({
+    conversationAvatar: await resolveDirectAvatar?.(primaryCtx, cfg),
     cfg,
     primaryCtx,
     msg,

@@ -1,6 +1,12 @@
 import type { Bot } from "grammy";
 import type { Message } from "grammy/types";
 import type {
+  BuildChannelInboundEventContextParams,
+  GroupThreadMentionFacts,
+  InboundEventKind,
+  NormalizedLocation,
+} from "openclaw/plugin-sdk/channel-inbound";
+import type {
   ChannelIngressContextBinding,
   ResolvedChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
@@ -12,6 +18,8 @@ import type {
   TelegramTopicConfig,
 } from "openclaw/plugin-sdk/config-contracts";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
+import type { NormalizedAllowFrom } from "./bot-access.js";
 import type { TelegramMediaKind } from "./bot/body-helpers.js";
 import type { TelegramThreadSpec } from "./bot/helpers.js";
 import type { StickerMetadata, TelegramContext } from "./bot/types.js";
@@ -80,6 +88,7 @@ export type BuildTelegramMessageContextParams = {
   storeAllowFrom: string[];
   options?: TelegramMessageContextOptions;
   bot: Bot;
+  resolveDirectAvatar?: (ctx: TelegramContext, cfg: OpenClawConfig) => Promise<string | undefined>;
   cfg: OpenClawConfig;
   account: { accountId: string };
   ownerAgentId?: string;
@@ -109,4 +118,51 @@ export type BuildTelegramMessageContextParams = {
   upsertPairingRequest?: typeof import("openclaw/plugin-sdk/conversation-runtime").upsertChannelPairingRequest;
   /** Global (per-account) handler for sendChatAction 401 backoff (#27092). */
   sendChatActionHandler: TelegramSendChatActionHandler;
+};
+
+type TelegramMentionFacts = NonNullable<
+  NonNullable<BuildChannelInboundEventContextParams["access"]>["mentions"]
+>;
+
+export type BuildTelegramInboundContextPayloadParams = {
+  conversationAvatar?: string;
+  cfg: OpenClawConfig;
+  primaryCtx: TelegramContext;
+  msg: TelegramContext["message"];
+  allMedia: TelegramMediaRef[];
+  replyMedia: TelegramMediaRef[];
+  replyChain: TelegramReplyChainEntry[];
+  promptContext: TelegramPromptContextEntry[];
+  isGroup: boolean;
+  isForum: boolean;
+  chatId: number | string;
+  senderId: string;
+  senderUsername: string;
+  resolvedThreadId?: number;
+  dmThreadId?: number;
+  threadSpec: TelegramThreadSpec;
+  route: ResolvedAgentRoute;
+  rawBody: string;
+  bodyText: string;
+  historyKey?: string;
+  historyLimit: number;
+  dmHistoryLimit: number;
+  groupConfig?: TelegramGroupConfig | TelegramDirectConfig;
+  topicConfig?: TelegramTopicConfig;
+  effectiveWasMentioned: boolean;
+  inboundEventKind: InboundEventKind;
+  groupRequireMention: boolean;
+  mentionFacts: TelegramMentionFacts;
+  groupThread?: GroupThreadMentionFacts;
+  commandSource?: "native" | "text";
+  nativeCommandBody?: string;
+  stickerCacheHit?: boolean;
+  audioTranscribedMediaIndex?: number;
+  commandAuthorized: boolean;
+  locationData?: NormalizedLocation;
+  options?: TelegramMessageContextOptions;
+  dmAllowFrom?: Array<string | number>;
+  effectiveGroupAllow?: NormalizedAllowFrom;
+  topicName?: string;
+  sessionRuntime?: TelegramMessageContextSessionRuntimeOverrides;
 };

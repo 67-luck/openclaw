@@ -323,6 +323,7 @@ export async function createTelegramBotCore(
   });
 
   const processMessage = createTelegramMessageProcessor({
+    telegramTransport,
     nativeCommandNames,
     bot,
     account,

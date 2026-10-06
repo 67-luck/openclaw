@@ -40,6 +40,73 @@ function renderAvatar(params: Parameters<typeof renderChatAvatar>) {
   return container.querySelector<HTMLElement>(".chat-avatar");
 }
 
+it("renders a source-bound native portrait without borrowing the viewer's profile", () => {
+  const sender = {
+    name: "Riley Adams",
+    identity: {
+      type: "observation" as const,
+      pluginId: "telegram",
+      accountId: "sample-bot",
+      id: "1000000001",
+      senderKind: "human" as const,
+    },
+  };
+  const identity = { ...sender.identity };
+  const avatar = renderAvatar([
+    "user",
+    undefined,
+    { name: "Viewer", avatar: "/api/users/gateway-owner/avatar" },
+    sender,
+    {
+      key: "agent:main:main",
+      origin: {
+        provider: "telegram",
+        accountId: "sample-bot",
+        from: "telegram:1000000001",
+        chatType: "direct",
+      },
+      channelAvatarUrl: "/__openclaw__/channel-avatar/agent%3Amain%3Amain?v=portrait-1",
+    },
+  ]);
+  const image = avatar?.querySelector<HTMLElement & { routeUrl: string }>(
+    "openclaw-channel-avatar",
+  );
+  expect(image?.routeUrl).toContain("provider=telegram&account=sample-bot&sender=1000000001");
+  expect(avatar?.getAttribute("aria-label")).toBe("Riley Adams");
+  expect(sender.identity).toEqual(identity);
+});
+
+it("keeps sender initials when a channel portrait belongs to another account", () => {
+  const avatar = renderAvatar([
+    "user",
+    undefined,
+    { name: "Viewer", avatar: "/api/users/gateway-owner/avatar" },
+    {
+      name: "Riley Adams",
+      identity: {
+        type: "observation",
+        pluginId: "telegram",
+        accountId: "another-bot",
+        id: "1000000001",
+        senderKind: "human",
+      },
+    },
+    {
+      key: "agent:main:main",
+      origin: {
+        provider: "telegram",
+        accountId: "sample-bot",
+        from: "telegram:1000000001",
+        chatType: "direct",
+      },
+      channelAvatarUrl: "/__openclaw__/channel-avatar/agent%3Amain%3Amain?v=portrait-1",
+    },
+  ]);
+  expect(avatar?.querySelector("openclaw-channel-avatar")).toBeNull();
+  expect(avatar?.querySelector("img")).toBeNull();
+  expect(avatar?.textContent?.trim()).toBe("RA");
+});
+
 function pendingUntilAbort<T>(signal: AbortSignal | null | undefined): Promise<T> {
   if (!signal) {
     throw new Error("expected avatar fetch signal");

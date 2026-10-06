@@ -557,6 +557,7 @@ export function renderMessageGroup(group: MessageGroup, options: RenderMessageGr
               ? { name: opts.userName ?? null, avatar: opts.userAvatar ?? null }
               : undefined,
             group.sender,
+            opts.channelAvatar,
           )
       : nothing;
 
