@@ -573,16 +573,17 @@ suite.define(() => {
             await editor.fill("# Draft typed before the refresh\n");
             const thirdAppend = `${secondAppend}- third memory\n`;
             await writeFile(agentsFile, thirdAppend, "utf8");
-            await page
+            const refresh = page
               .locator(".settings-section__header")
               .filter({ hasText: "Core Files" })
-              .getByRole("button", { name: "Refresh" })
-              .click();
+              .getByRole("button", { name: "Refresh" });
+            await refresh.click();
             await expect.poll(() => editor.inputValue()).toBe("# Draft typed before the refresh\n");
             await save.click();
             await expect.poll(() => conflict.isVisible()).toBe(true);
             expect(await readFile(agentsFile, "utf8")).toBe(thirdAppend);
             await captureAgentFileScreenshot(page, "10-real-gateway-refresh-then-save.png");
+            await expect.poll(() => refresh.isDisabled()).toBe(false);
 
             await page
               .locator(".agent-file-header")
