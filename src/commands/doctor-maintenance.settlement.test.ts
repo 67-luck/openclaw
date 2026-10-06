@@ -174,6 +174,21 @@ it.each([false, true])(
   },
 );
 
+it("retains state custody when the resource scope cannot close", async () => {
+  const cleanupFailure = new Error("persistent resource cleanup failure");
+  boundary.close.mockRejectedValue(cleanupFailure);
+  const maintenance = await begin();
+
+  await expect(maintenance!.finish({})).rejects.toThrow(
+    "Doctor maintenance resource cleanup failed",
+  );
+  expect(boundary.close).toHaveBeenCalledTimes(2);
+  expect(boundary.release).not.toHaveBeenCalled();
+  expect(boundary.restart).not.toHaveBeenCalled();
+  expect(boundary.health).not.toHaveBeenCalled();
+  expect(maintenance!.databaseWrites).toBeUndefined();
+});
+
 it.each([false, true])(
   "checks same-installation policy before restoring Doctor's Gateway (repair activated=%s)",
   async (activated) => {

@@ -130,9 +130,22 @@ export async function beginDoctorMaintenance(
     await state.release();
     repairStoresMayBeOpen = false;
   };
+  let deferredStateReleaseFailure: unknown;
+  const throwDeferredStateReleaseFailure = () => {
+    if (deferredStateReleaseFailure !== undefined) {
+      throw deferredStateReleaseFailure;
+    }
+  };
   const release = async (assertCustody?: () => void) => {
     await settle(async () => {
-      await releaseState();
+      try {
+        await releaseState();
+      } catch (error) {
+        if (hasCommandProcessCleanupError(error) || state.hasOpenResources) {
+          throw error;
+        }
+        deferredStateReleaseFailure ??= error;
+      }
       const recovery = stopped?.windowsTaskAutoStartRecovery;
       try {
         assertCustody?.();
@@ -348,8 +361,10 @@ export async function beginDoctorMaintenance(
           undefined,
           assertStopCustody ?? assertUpdateAdmissionCurrent,
         );
+        throwDeferredStateReleaseFailure();
       } else {
         await release();
+        throwDeferredStateReleaseFailure();
       }
     } catch (restoreError) {
       throw new AggregateError([error, restoreError], `${String(error)} ${String(restoreError)}`, {
@@ -600,6 +615,7 @@ export async function beginDoctorMaintenance(
       custody = "released";
       try {
         await release();
+        throwDeferredStateReleaseFailure();
       } catch (error) {
         exit.release(true);
         throw error;
@@ -643,6 +659,7 @@ export async function beginDoctorMaintenance(
           }
         }
         await finish(cfg, assertCustody, writeConfig);
+        throwDeferredStateReleaseFailure();
       } catch (restoreError) {
         failed = true;
         if (failure !== undefined) {

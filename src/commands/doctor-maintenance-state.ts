@@ -3,6 +3,7 @@ import { resolveStateDir } from "../config/paths.js";
 import { resolveGatewayStateOwnerPath } from "../infra/gateway-state-owner.js";
 import { createSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker.js";
 import { createUpdateDoctorDatabaseWriteCapture } from "../infra/update-doctor-result.js";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import {
   createOpenClawDatabaseMaintenanceScope,
   type OpenClawDatabaseMaintenanceScope,
@@ -38,10 +39,46 @@ export function createDoctorMaintenanceState(options: {
     warn: options.warn,
   });
   const closeResources = async () => {
-    await resources?.close();
-    await inspections?.close();
-    resources = undefined;
-    inspections = undefined;
+    const failures: unknown[] = [];
+    const closeScope = async (
+      current: { close: () => Promise<void> } | undefined,
+      clear: () => void,
+    ) => {
+      if (!current) {
+        return;
+      }
+      try {
+        await current.close();
+        clear();
+      } catch (error) {
+        // A disposer can fail after retiring only part of its owned batch. Retry
+        // that same sealed scope once so a transient close error cannot leave a
+        // cached database handle behind when the managed Gateway is restored.
+        try {
+          await current.close();
+          clear();
+          failures.push(error);
+        } catch (retryError) {
+          failures.push(
+            new AggregateError([error, retryError], "Doctor maintenance resource cleanup failed.", {
+              cause: retryError,
+            }),
+          );
+        }
+      }
+    };
+    await closeScope(resources, () => {
+      resources = undefined;
+    });
+    await closeScope(inspections, () => {
+      inspections = undefined;
+    });
+    if (failures.length === 1) {
+      throw failures[0];
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Doctor maintenance resource cleanup failed.");
+    }
   };
   const settleCapture = async () => {
     if (owner && capture && captureAdmitted) {
@@ -85,6 +122,9 @@ export function createDoctorMaintenanceState(options: {
     },
     get resources() {
       return resources;
+    },
+    get hasOpenResources() {
+      return Boolean(resources || inspections);
     },
     get receipt() {
       return owner ? undefined : capture?.receipt;
@@ -158,10 +198,37 @@ export function createDoctorMaintenanceState(options: {
       }
     },
     async release() {
-      await closeResources();
-      await settleCapture();
-      await owner?.release();
-      owner = undefined;
+      const failures: unknown[] = [];
+      try {
+        await closeResources();
+      } catch (error) {
+        // An uncertain command process or a scope that still owns resources can
+        // continue writing. Retain process ownership and do not publish a receipt.
+        if (hasCommandProcessCleanupError(error) || state.hasOpenResources) {
+          throw error;
+        }
+        failures.push(error);
+      }
+      try {
+        await settleCapture();
+      } catch (error) {
+        if (hasCommandProcessCleanupError(error)) {
+          throw error;
+        }
+        failures.push(error);
+      }
+      try {
+        await owner?.release();
+        owner = undefined;
+      } catch (error) {
+        failures.push(error);
+      }
+      if (failures.length === 1) {
+        throw failures[0];
+      }
+      if (failures.length > 1) {
+        throw new AggregateError(failures, "Doctor maintenance state cleanup failed.");
+      }
     },
   };
   return state;
