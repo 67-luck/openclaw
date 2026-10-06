@@ -47,6 +47,7 @@ import { withLegacyAgentStorageSchema } from "../state/openclaw-agent-storage-sc
 import { readOpenClawDatabaseQuarantineFailure } from "../state/openclaw-quarantine-store.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
+import type { OpenClawStateLeaseContext } from "../state/openclaw-state-lease.js";
 import { VERSION } from "../version.js";
 import { formatErrorMessage } from "./errors.js";
 import {
@@ -120,6 +121,7 @@ async function migrateAgentDatabase(params: {
   changes: string[];
   env: NodeJS.ProcessEnv;
   pathname: string;
+  maintenance: OpenClawStateLeaseContext;
 }) {
   invalidateOpenClawAgentDatabaseIntegrityBeforeMutation(params.pathname);
   const database = openNodeSqliteDatabase(params.pathname);
@@ -521,6 +523,7 @@ export async function migrateLegacyMediaPersistence(
               ? () => params.hooks?.beforeDatabaseTransaction?.(pathname)
               : undefined,
             pathname,
+            maintenance,
           });
           maintenance.assertOwned();
           warnings.push(...result.warnings);
