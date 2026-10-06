@@ -153,9 +153,8 @@ struct SettingsProTab: View {
                     self.refreshNotificationSettings()
                 }
             }
-            .onReceive(NotificationCenter.default.publisher(for: GatewaySettingsStore.gatewayRegistryDidChange)) { _ in
-                self.refreshGatewayRegistry()
-            }
+            .onReceive(NotificationCenter.default.publisher(for: GatewaySettingsStore.gatewayRegistryDidChange)
+                .receive(on: DispatchQueue.main)) { _ in self.refreshGatewayRegistry() }
             .onChange(of: self.appModel.isLocalGatewayFixtureEnabled) { _, _ in
                 // Leaving a fixture must reload the saved registry and credentials before they are editable.
                 self.syncSettingsState()
