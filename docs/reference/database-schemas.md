@@ -62,6 +62,9 @@ watermark reads select the hot generation and the retained cold or hot sequence
 in one statement; hot-only readers keep their existing meaning. These query
 changes preserve schemas, stored bytes, live authority, and update behavior.
 
+Session entry writes batch their saved snapshot fields in one upsert, preserving
+per-field revision triggers and rollback.
+
 Canonical main-key policy reads reuse a connection-owned value at the current read revision, including within transactions and pinned snapshots. The connection owner tracks local SQL mutations, including raw and trigger-driven writes; its mutation revision, admitted schema facts, observed foreign-commit version, and pinned snapshot identity invalidate that value. Native mutation and transaction-control callbacks and authorizer-controlled reads continue querying the policy. Policy facts do not grant canonical admission or continuation authority.
 
 Session entry writes batch their saved snapshot fields in one upsert, preserving
