@@ -149,6 +149,9 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
           return placement;
         },
       });
+      // The requested transition can acknowledge a detached caller while setup continues.
+      // Revalidate that retained caller before any node or provider-side preparation.
+      assertCurrent();
       if (
         !request.deviceId &&
         request.devicePlacement?.requiredNodeCommands.length &&
