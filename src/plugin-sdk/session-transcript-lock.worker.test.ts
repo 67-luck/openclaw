@@ -85,7 +85,7 @@ it("rechecks the Codex prepared guard at the worker commit grant", async () => {
     let inCommit = false;
     let checkedCommit = false;
     const create = admission.createSqliteWorkerOperationAdmission;
-    using _grants = vi
+    using _ = vi
       .spyOn(admission, "createSqliteWorkerOperationAdmission")
       .mockImplementation((authorize, attachment) =>
         create((request, grant) => {

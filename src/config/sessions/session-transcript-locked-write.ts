@@ -39,7 +39,7 @@ import { startSessionTranscriptIndexReconcile } from "./session-transcript-recon
 import { captureOwnedTranscriptWriteAssertion } from "./transcript-write-context.js";
 
 /** One callback retains the physical reader and canonical writer through accepted settlement. */
-export function withWorkerTranscriptWriteLock<T>(
+export async function withWorkerTranscriptWriteLock<T>(
   scope: SessionTranscriptWriteScope &
     ResolvedTranscriptScope & { env: NodeJS.ProcessEnv; path: string; storePath: string },
   run: (context: SessionTranscriptWriteLockAccessorContext) => Promise<T> | T,
@@ -362,16 +362,19 @@ export function withWorkerTranscriptWriteLock<T>(
   if (!execution) {
     return read();
   }
-  return withSessionEntryWorker(
-    initialDatabase,
-    undefined,
-    () => execution.assertCurrent(),
-    async (owner, source) => {
-      await owner.prepare(source);
-    },
-    undefined,
-    execution,
-  )
-    .then(read)
-    .finally(() => execution.release());
+  try {
+    await withSessionEntryWorker(
+      initialDatabase,
+      undefined,
+      () => execution.assertCurrent(),
+      async (owner, source) => {
+        await owner.prepare(source);
+      },
+      undefined,
+      execution,
+    );
+    return await read();
+  } finally {
+    await execution.release();
+  }
 }
