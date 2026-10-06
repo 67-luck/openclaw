@@ -55,7 +55,7 @@ export async function prepareModelChoice(params: {
     resolveModelRefFromString,
   } = await loadModelSelection();
   const { splitTrailingAuthProfile } = await loadModelRefProfile();
-  const { createModelCatalogDecisions, resolveCatalogDecisionRuntime } =
+  const { prepareModelCatalogDecisions, resolveCatalogDecisionRuntime } =
     await loadModelCatalogDecisions();
   const { getPreparedModelRuntimeAuthStore } = await loadPreparedRuntimeAuth();
   const { projectProviderModelRouteConfig } = await loadProviderModelRoute();
@@ -123,7 +123,7 @@ export async function prepareModelChoice(params: {
               : undefined;
           const key = modelKey(ref.provider, ref.model);
           const decide = async (snapshot: typeof owner.modelCatalog) => {
-            const decisions = createModelCatalogDecisions({
+            const decisions = await prepareModelCatalogDecisions({
               cfg: owner.config,
               agentId: params.agentId,
               agentDir: owner.agentDir,
@@ -313,7 +313,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
   const { getPublishedPreparedModelCatalogOwnerSnapshot, materializePreparedModelCatalogOwner } =
     await loadPreparedModelCatalog();
   const { getPreparedModelRuntimeAuthStore } = await loadPreparedRuntimeAuth();
-  const { createModelCatalogDecisions } = await loadModelCatalogDecisions();
+  const { prepareModelCatalogDecisions } = await loadModelCatalogDecisions();
   const published = getPublishedPreparedModelCatalogOwnerSnapshot({
     config: params.cfg,
     agentId: params.agentId,
@@ -328,7 +328,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
   if (!authStore) {
     return { kind: "unavailable", message: unavailable };
   }
-  const decisions = createModelCatalogDecisions({
+  const decisions = await prepareModelCatalogDecisions({
     cfg: owner.config,
     agentId: owner.agentId ?? params.agentId,
     agentDir: owner.agentDir,

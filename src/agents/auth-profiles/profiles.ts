@@ -11,7 +11,7 @@ import { removePersistedPluginModelCatalogCredentials } from "../plugin-model-ca
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
 import {
   listCandidateAuthProfileStores,
-  loadCandidateAuthProfileStore,
+  loadCandidateAuthProfileStoreAsync,
 } from "./candidate-stores.js";
 import { normalizeAuthProfileCredential } from "./credential-normalize.js";
 import { withOAuthProfileLocks, type OAuthProfileLockKey } from "./oauth-profile-lock.js";
@@ -347,11 +347,14 @@ async function prepareAuthProfileRemovalPeers(
   return [...peers.values()];
 }
 
-function readRemovalProfileState(
+async function readRemovalProfileState(
   targets: readonly AuthProfileRemovalTarget[],
   peers: readonly OAuthRefreshGenerationPeer[],
   current = false,
-): { profiles: ReadonlyMap<string, AuthProfileCredential>; scopes: AuthProfileRemovalScope[] } {
+): Promise<{
+  profiles: ReadonlyMap<string, AuthProfileCredential>;
+  scopes: AuthProfileRemovalScope[];
+}> {
   const profiles = new Map<string, AuthProfileCredential>();
   const scopes = new Map<
     string,
@@ -392,7 +395,7 @@ function readRemovalProfileState(
   }
   for (const peer of peers) {
     const credential = current
-      ? loadCandidateAuthProfileStore(peer.candidate)?.profiles[peer.profileId]
+      ? (await loadCandidateAuthProfileStoreAsync(peer.candidate))?.profiles[peer.profileId]
       : peer.credential;
     add(peer.candidate, peer.profileId, credential);
   }
@@ -443,7 +446,7 @@ async function removeAuthProfileTargetsWithLocks(
     let result: AuthProfileRemovalResult = { kind: "updated", stores };
     let removalFailure: { error: unknown } | undefined;
     try {
-      removeOAuthRefreshGenerationPeers(await prepareAuthProfileRemovalPeers(targets, cfg));
+      await removeOAuthRefreshGenerationPeers(await prepareAuthProfileRemovalPeers(targets, cfg));
 
       for (const target of targets) {
         let stale = false;
@@ -594,7 +597,7 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
       if (!params.onIncomplete) {
         return;
       }
-      const surviving = readRemovalProfileState(targets, peers, true);
+      const surviving = await readRemovalProfileState(targets, peers, true);
       await params.onIncomplete(surviving.profiles, surviving.scopes);
     };
     // Config cleanup must not make a later credential generation eligible for this removal.
@@ -602,7 +605,7 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
     try {
       await params.beforeRemove?.(
         [...new Set(targets.flatMap((target) => [...target.profileIds]))],
-        readRemovalProfileState(targets, peers).scopes,
+        (await readRemovalProfileState(targets, peers)).scopes,
       );
       result = await removeAuthProfileTargetsWithLocks(targets, params.cfg ?? {});
     } catch (error) {
@@ -611,7 +614,7 @@ export async function removeAuthProfilesAcrossOwnerStores(params: {
     }
     if (result.kind === "updated") {
       if (params.onIncomplete) {
-        const surviving = readRemovalProfileState(targets, peers, true);
+        const surviving = await readRemovalProfileState(targets, peers, true);
         // A captured peer may have reconnected while config cleanup was awaiting I/O.
         if (surviving.profiles.size > 0) {
           await params.onIncomplete(surviving.profiles, surviving.scopes);

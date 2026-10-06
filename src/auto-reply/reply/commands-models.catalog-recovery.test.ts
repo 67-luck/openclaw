@@ -210,11 +210,13 @@ describe("/models browse catalog recovery", () => {
         await resume.promise;
         return { availability: true, routeResolution: null };
       });
-      const createDecisions = modelDecisions.createModelCatalogDecisions;
-      vi.spyOn(modelDecisions, "createModelCatalogDecisions").mockImplementation((params) => ({
-        ...createDecisions(params),
-        evaluateEntry: evaluateModelAuth,
-      }));
+      const prepareDecisions = modelDecisions.prepareModelCatalogDecisions;
+      vi.spyOn(modelDecisions, "prepareModelCatalogDecisions").mockImplementation(
+        async (params) => ({
+          ...(await prepareDecisions(params)),
+          evaluateEntry: evaluateModelAuth,
+        }),
+      );
       catalogMocks.readSnapshot.mockReturnValueOnce({
         entries: [{ provider: "anthropic", id: "claude-opus-4-5", name: "Retired model" }],
         routeVariants: [],

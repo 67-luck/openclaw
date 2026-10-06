@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { resetFileLockStateForTest } from "../../plugin-sdk/file-lock.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { captureEnv } from "../../test-utils/env.js";
@@ -13,6 +14,7 @@ import {
   isPendingOAuthRefreshFence,
 } from "./oauth-refresh-marker.js";
 import {
+  OAuthRefreshPeerFenceError,
   fenceOAuthRefreshPeers,
   rollbackOAuthRefreshPeerClaims,
   settleOAuthRefreshPeerClaims,
@@ -68,6 +70,7 @@ function candidate(agentId: string, agentDir: string) {
     agentId,
     agentDir,
     databasePath: resolveAuthProfileDatabasePath(agentDir),
+    databaseIdentity: readDatabasePathIdentitySync(resolveAuthProfileDatabasePath(agentDir)),
     env: process.env,
   };
 }
@@ -128,6 +131,52 @@ describe("OAuth refresh peer settlement", () => {
       expect(read(peerAgentDir)).toEqual(competingFence);
     },
   );
+
+  it("retains a peer claim when its committed fence reply is lost", async () => {
+    // OAuth fixtures reset the module registry before loading the auth runtime.
+    const [workerPublications, { SqliteWorkerError }] = await Promise.all([
+      import("../../state/openclaw-agent-worker-store.js"),
+      import("../../infra/sqlite-worker-contract.js"),
+    ]);
+    const peerAgentDir = path.join(tempRoot, "agents", "peer-lost-reply", "agent");
+    await fs.mkdir(peerAgentDir, { recursive: true });
+    const store = createExpiredOauthStore({ profileId, provider });
+    saveAuthProfileStore(store, peerAgentDir);
+    const original = read(peerAgentDir);
+    if (original?.type !== "oauth") {
+      throw new Error("expected OAuth fixture");
+    }
+    const fence = createOAuthRefreshFence({ profileId, credential: original });
+    const publish = workerPublications.executeOpenClawAgentWorkerPublication;
+    const lostReply = vi
+      .spyOn(workerPublications, "executeOpenClawAgentWorkerPublication")
+      .mockImplementationOnce(async (...args) => {
+        await publish(...args);
+        throw new SqliteWorkerError("Synthetic lost peer acknowledgment", "outcome-unknown");
+      });
+    try {
+      const failure = await fenceOAuthRefreshPeers({
+        cfg: {},
+        ownerDatabasePath: resolveAuthProfileDatabasePath(mainAgentDir),
+        profileId,
+        generation: original,
+        fence,
+        rollbackOnFailure: false,
+      }).catch((error: unknown) => error);
+      expect(lostReply).toHaveBeenCalledTimes(1);
+      expect(failure).toBeInstanceOf(OAuthRefreshPeerFenceError);
+      if (!(failure instanceof OAuthRefreshPeerFenceError)) {
+        throw new Error("expected lost peer claim");
+      }
+      expect(failure.claims).toHaveLength(1);
+      expect(read(peerAgentDir)).toStrictEqual(fence);
+      await rollbackOAuthRefreshPeerClaims({ profileId, fence, claims: failure.claims });
+      expect(read(peerAgentDir)).toStrictEqual(original);
+      expect(lostReply).toHaveBeenCalledTimes(2);
+    } finally {
+      lostReply.mockRestore();
+    }
+  });
 
   it("terminally fences peers instead of exposing a different shared account", async () => {
     const ownerAgentDir = path.join(tempRoot, "agents", "owner-a", "agent");
@@ -226,7 +275,7 @@ describe("OAuth refresh peer settlement", () => {
       if (persistedFence?.type !== "oauth") {
         throw new Error("expected persisted OAuth fence");
       }
-      settleOAuthRefreshPeerClaims({
+      await settleOAuthRefreshPeerClaims({
         profileId: peerProfileId,
         fence: persistedFence,
         claims: [
@@ -263,7 +312,7 @@ describe("OAuth refresh peer settlement", () => {
       throw new Error("expected persisted OAuth fence");
     }
 
-    expect(() =>
+    await expect(
       rollbackOAuthRefreshPeerClaims({
         profileId,
         fence: persistedFence,
@@ -278,7 +327,7 @@ describe("OAuth refresh peer settlement", () => {
           },
         ],
       }),
-    ).toThrow(AggregateError);
+    ).rejects.toThrow(AggregateError);
     expect(read(healthyAgentDir)).toMatchObject({
       type: "oauth",
       provider,

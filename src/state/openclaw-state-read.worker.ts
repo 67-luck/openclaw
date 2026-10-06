@@ -120,7 +120,10 @@ import {
   resolveUserChannelIdentityInDatabase,
 } from "./user-channel-identities.js";
 import { readUserChannelIdentityResult } from "./user-channel-identities.worker.js";
-import { listUserProfileAuthLinksInDatabase } from "./user-model-accounts.js";
+import {
+  listUserProfileAuthLinksInDatabase,
+  readPersonalCatalogProfilesInDatabase,
+} from "./user-model-accounts.js";
 import { selectUserPreferenceValues } from "./user-preferences.store.js";
 import { readUserProfileGitHubCommand } from "./user-profile-github-identity.js";
 import {
@@ -557,6 +560,12 @@ serveOwnedWorkerTasks(
                 links: runSqliteDeferredTransactionSync(db, () =>
                   listUserProfileAuthLinksInDatabase(db, command.profileId),
                 ),
+              };
+            }
+            if (command.type === "userModelAccounts.catalog") {
+              return {
+                type: command.type,
+                catalog: readPersonalCatalogProfilesInDatabase(db, command.selection),
               };
             }
             if (command.type === "userProfiles.email.resolve") {

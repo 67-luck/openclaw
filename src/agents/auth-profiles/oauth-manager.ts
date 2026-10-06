@@ -10,7 +10,6 @@ import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { formatErrorMessage, toErrorObject } from "../../infra/errors.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { KeyedAsyncQueue } from "../../plugin-sdk/keyed-async-queue.js";
-import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { OAUTH_REFRESH_CALL_TIMEOUT_MS, authProfilesLog } from "./constants.js";
 import { observeCanonicalAuthProfileCredentials } from "./credential-observation.js";
@@ -80,6 +79,7 @@ import {
 } from "./store-runtime.js";
 import { resolvePersistedAuthProfileOwnerAgentDir } from "./store.js";
 import type { AuthProfileStore, OAuthCredential, OAuthCredentials } from "./types.js";
+import { runAuthProfileUsage } from "./usage-lifecycle.js";
 
 type OAuthManagerAdapter = {
   buildApiKey: (
@@ -275,7 +275,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             candidate: params.replacement,
             validateCredential: params.validateCredential,
           });
-    settleOAuthRefreshPeerClaims({
+    await settleOAuthRefreshPeerClaims({
       profileId: params.claim.profileId,
       fence: params.claim.fence,
       claims: params.claims,
@@ -486,7 +486,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               return { kind: "observe", ownerAgentDir, generation: cred };
             }
             const peerClaims = personalProfile ? [] : await fenceTerminalPeers(cred);
-            failOAuthRefreshPeerClaims({
+            await failOAuthRefreshPeerClaims({
               profileId: params.profileId,
               fence: cred,
               claims: peerClaims,
@@ -568,7 +568,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             }
             if (isOAuthRefreshFence(current)) {
               const peerClaims = personalProfile ? [] : await fenceTerminalPeers(current);
-              failOAuthRefreshPeerClaims({
+              await failOAuthRefreshPeerClaims({
                 profileId: params.profileId,
                 fence: current,
                 claims: peerClaims,
@@ -601,7 +601,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
             }
             const cleanupErrors: unknown[] = [];
             try {
-              rollbackOAuthRefreshPeerClaims({
+              await rollbackOAuthRefreshPeerClaims({
                 profileId: params.profileId,
                 fence,
                 claims: peerClaims,
@@ -806,7 +806,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               }
             }
             try {
-              failOAuthRefreshPeerClaims({
+              await failOAuthRefreshPeerClaims({
                 profileId: params.profileId,
                 fence: claim.fence,
                 claims: activePeerClaims,
@@ -881,7 +881,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
       throw appendOAuthRefreshCleanupErrors(cleanupErrors[0], cleanupErrors.slice(1));
     };
 
-    const settlement = trackAsyncWork(async (): Promise<ResolvedOAuthAccess | null> => {
+    const settlement = runAuthProfileUsage(async (): Promise<ResolvedOAuthAccess | null> => {
       let refreshed: OAuthCredentials | null;
       try {
         refreshed = await adapter.refreshCredential(
@@ -940,7 +940,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
               if (peerSettlementError instanceof OAuthSettlementCredentialValidationError) {
                 const cleanupErrors: unknown[] = [];
                 try {
-                  failOAuthRefreshPeerClaims({
+                  await failOAuthRefreshPeerClaims({
                     profileId: params.profileId,
                     fence: claim.fence,
                     claims: activePeerClaims,
@@ -967,7 +967,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
                 );
               }
               try {
-                failOAuthRefreshPeerClaims({
+                await failOAuthRefreshPeerClaims({
                   profileId: params.profileId,
                   fence: claim.fence,
                   claims: activePeerClaims,
@@ -1097,7 +1097,7 @@ export function createOAuthManager(adapter: OAuthManagerAdapter) {
     }
 
     try {
-      const queued = trackAsyncWork(() =>
+      const queued = runAuthProfileUsage(() =>
         refreshQueue.enqueue(`${credential.provider}\u0000${params.profileId}`, () =>
           refreshOAuthTokenWithLock({
             personalStore: params.personalStore,

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { resetFileLockStateForTest } from "../../plugin-sdk/file-lock.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
@@ -61,6 +62,7 @@ function candidate(agentId: string, agentDir: string) {
     agentId,
     agentDir,
     databasePath: resolveAuthProfileDatabasePath(agentDir),
+    databaseIdentity: readDatabasePathIdentitySync(resolveAuthProfileDatabasePath(agentDir)),
     env: process.env,
   };
 }
@@ -382,7 +384,7 @@ describe("resolveApiKeyForProfile cross-agent refresh coordination (#26322)", ()
       throw new Error("expected persisted OAuth fence");
     }
 
-    expect(() =>
+    await expect(
       failOAuthRefreshPeerClaims({
         profileId,
         fence: persistedFence,
@@ -395,7 +397,7 @@ describe("resolveApiKeyForProfile cross-agent refresh coordination (#26322)", ()
           },
         ],
       }),
-    ).toThrow();
+    ).rejects.toThrow();
     const terminal = read(readableAgentDir);
     expect(terminal?.type === "oauth" && isOAuthRefreshFence(terminal)).toBe(true);
     expect(terminal?.type === "oauth" && isPendingOAuthRefreshFence(terminal)).toBe(false);
