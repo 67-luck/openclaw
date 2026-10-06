@@ -559,7 +559,7 @@ async function onAdmittedTimer(state: CronServiceState, scheduler: GatewaySchedu
           ? normalizeAgentId(configuredDefaultAgentId)
           : undefined;
         const reaperAgentIds = new Set(
-          (state.deps.resolveSessionStoreAgentIds?.() ?? []).map(normalizeAgentId),
+          ((await state.deps.resolveSessionStoreAgentIds?.()) ?? []).map(normalizeAgentId),
         );
         const resolveJobAgentId = (job: CronJob): string | undefined => {
           if (typeof job.agentId === "string" && job.agentId.trim()) {
@@ -586,6 +586,9 @@ async function onAdmittedTimer(state: CronServiceState, scheduler: GatewaySchedu
         if (reaperAgentIds.size > 0) {
           const nowMs = state.deps.nowMs();
           for (const agentId of reaperAgentIds) {
+            if (state.lifecycleGeneration !== generation) {
+              break;
+            }
             const storePath = state.deps.resolveSessionStorePath
               ? state.deps.resolveSessionStorePath(agentId)
               : state.deps.sessionStorePath;

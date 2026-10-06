@@ -1,11 +1,24 @@
 import path from "node:path";
 import { withTempHome } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { unregisterOpenClawAgentDatabase } from "../../state/openclaw-agent-db-registry.js";
 import type { OpenClawConfig } from "../config.js";
+import { readKnownSessionStoreAgentIdsInWorker } from "./combined-store-gateway-read.js";
 import { replaceSessionEntry } from "./session-accessor.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { listKnownSessionStoreAgentIds } from "./targets.js";
+
+async function readOwners(cfg: OpenClawConfig, env: NodeJS.ProcessEnv) {
+  const observed = observeHostDataSql();
+  try {
+    const result = await readKnownSessionStoreAgentIdsInWorker(cfg, env);
+    expect(observed.queries).toEqual([]);
+    return result.toSorted();
+  } finally {
+    observed.restore();
+  }
+}
 
 describe("known session store owners", () => {
   it("includes a retired owner registered under the active shared store", async () => {
@@ -29,6 +42,7 @@ describe("known session store owners", () => {
       );
 
       expect(listKnownSessionStoreAgentIds(cfg, { env }).toSorted()).toEqual(["ops", "retired"]);
+      expect(await readOwners(cfg, env)).toEqual(["ops", "retired"]);
     });
   });
 
@@ -59,7 +73,7 @@ describe("known session store owners", () => {
       }).path;
       unregisterOpenClawAgentDatabase({ agentId: "retired", env, path: retiredDatabasePath });
 
-      expect(listKnownSessionStoreAgentIds(cfg, { env }).toSorted()).toEqual(["ops", "retired"]);
+      expect(await readOwners(cfg, env)).toEqual(["ops", "retired"]);
     });
   });
 
@@ -91,7 +105,7 @@ describe("known session store owners", () => {
       expect(path.basename(retiredDatabasePath)).toBe("openclaw-agent.retired.sqlite");
       unregisterOpenClawAgentDatabase({ agentId: "retired", env, path: retiredDatabasePath });
 
-      expect(listKnownSessionStoreAgentIds(cfg, { env }).toSorted()).toEqual(["ops", "retired"]);
+      expect(await readOwners(cfg, env)).toEqual(["ops", "retired"]);
     });
   });
 });

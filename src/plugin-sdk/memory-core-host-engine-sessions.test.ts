@@ -22,6 +22,7 @@ import {
   loadArchivedSessions,
   loadArchivedSessionsAsync,
   loadMemorySessionMetadata,
+  loadMemorySessionMetadataAsync,
   resolveMemorySessionTargets,
   resolveMemorySessionTargetsAsync,
 } from "./memory-core-host-engine-sessions.js";
@@ -60,17 +61,19 @@ describe("memory source sessions", () => {
         await closeOpenClawAgentDatabasesAsync();
         closeOpenClawAgentDatabasesForTest();
 
-        expect(loadMemorySessionMetadata({ ...scope, sessionId, sessionKey })).toMatchObject({
-          sessionId,
-          sessionKey,
-          hookExternalContentSource: "gmail",
-          chatType: "group",
-        });
         expect(resolveMemorySessionTargets({ ...scope, sessionIds: [sessionId] })).toEqual([
           expect.objectContaining({ sessionId, sessionKey, resolution: "live" }),
         ]);
         const targetSql = observeHostDataSql();
         try {
+          expect(
+            await loadMemorySessionMetadataAsync({ ...scope, sessionId, sessionKey }),
+          ).toMatchObject({
+            sessionId,
+            sessionKey,
+            hookExternalContentSource: "gmail",
+            chatType: "group",
+          });
           expect(
             await resolveMemorySessionTargetsAsync({ ...scope, participants: ["profile-source"] }),
           ).toEqual([expect.objectContaining({ sessionId, sessionKey, resolution: "live" })]);
@@ -174,7 +177,7 @@ describe("memory source sessions", () => {
         ]);
       }
       expect(
-        loadMemorySessionMetadata({
+        await loadMemorySessionMetadataAsync({
           ...mainScope,
           sessionId: "other-source",
           sessionKey: "agent:other:source",
@@ -203,7 +206,9 @@ describe("memory source sessions", () => {
       await closeOpenClawAgentDatabasesAsync();
       closeOpenClawAgentDatabasesForTest();
       for (const source of ["email", "webhook"] as const) {
-        expect(loadMemorySessionMetadata({ agentId: "main", sessionId: source })).toMatchObject({
+        expect(
+          await loadMemorySessionMetadataAsync({ agentId: "main", sessionId: source }),
+        ).toMatchObject({
           hookExternalContentSource: source,
         });
         expect(
@@ -218,7 +223,9 @@ describe("memory source sessions", () => {
         { message: { role: "user", content: "Retained email content." } },
       );
       await replaceSessionEntry(emailScope, { sessionId: "replacement", updatedAt: 2_000 });
-      expect(loadMemorySessionMetadata({ agentId: "main", sessionId: "email" })).toMatchObject({
+      expect(
+        await loadMemorySessionMetadataAsync({ agentId: "main", sessionId: "email" }),
+      ).toMatchObject({
         hookExternalContentSource: null,
       });
       expect(
@@ -237,6 +244,7 @@ describe("memory source sessions", () => {
       const storePath = path.join(state.root, "absent", "sessions.json");
       const scope = { agentId: "main", storePath, sessionId: "missing" };
       expect(loadMemorySessionMetadata(scope)).toBeUndefined();
+      expect(await loadMemorySessionMetadataAsync(scope)).toBeUndefined();
       expect(await loadArchivedSessionsAsync({ ...scope, sessionIds: ["missing"] })).toEqual([]);
       expect(await resolveMemorySessionTargetsAsync({ ...scope, sessionIds: ["missing"] })).toEqual(
         [expect.objectContaining({ sessionId: "missing", resolution: "unresolved" })],
@@ -244,52 +252,65 @@ describe("memory source sessions", () => {
       await expect(fs.stat(path.dirname(storePath))).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
-  it("refuses archive inventory after its retained database closes", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const scope = { agentId: "main", storePath: resolveDefaultSessionStorePath("main") };
-      await upsertSessionEntryCore(
-        { ...scope, sessionKey: "agent:main:inventory" },
-        { sessionId: "inventory", updatedAt: 1 },
-      );
-      const entered = createDeferred();
-      const release = createDeferred();
-      const createReaders = historyReaders.createSessionHistoryWorkerReaders;
-      const factory = vi
-        .spyOn(historyReaders, "createSessionHistoryWorkerReaders")
-        .mockImplementation((run) => {
-          const readers = createReaders(run);
-          return {
-            ...readers,
-            readArchiveInventory: async (input) => {
-              const entries = await readers.readArchiveInventory(input);
-              entered.resolve();
-              await release.promise;
-              return entries;
-            },
-          };
-        });
-      const outcome = loadArchivedSessionsAsync({ ...scope, sessionIds: ["inventory"] }).then(
-        (value) => ({ value }),
-        (error: unknown) => ({ error }),
-      );
-      let closing: Promise<void> | undefined;
-      try {
-        await awaitGateBeforeSettlement(
-          entered.promise,
-          outcome,
-          "Inventory settled before the retained read",
+  it.each(["archives", "metadata"] as const)(
+    "refuses %s after its retained database closes",
+    async (inventory) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const scope = { agentId: "main", storePath: resolveDefaultSessionStorePath("main") };
+        await upsertSessionEntryCore(
+          { ...scope, sessionKey: "agent:main:inventory" },
+          { sessionId: "inventory", updatedAt: 1 },
         );
-        closing = closeOpenClawAgentDatabasesAsync(state.stateDir);
-        release.resolve();
-        expect(await outcome).toMatchObject({
-          error: { message: expect.stringMatching(/revoked/) },
-        });
-        await closing;
-      } finally {
-        release.resolve();
-        await Promise.allSettled([outcome, closing]);
-        factory.mockRestore();
-      }
-    });
-  });
+        const entered = createDeferred();
+        const release = createDeferred();
+        const createReaders = historyReaders.createSessionHistoryWorkerReaders;
+        const factory = vi
+          .spyOn(historyReaders, "createSessionHistoryWorkerReaders")
+          .mockImplementation((run) => {
+            const readers = createReaders(run);
+            return {
+              ...readers,
+              readArchiveInventory: async (input) => {
+                const entries = await readers.readArchiveInventory(input);
+                entered.resolve();
+                await release.promise;
+                return entries;
+              },
+              readMemorySessionMetadata: async (input) => {
+                const metadata = await readers.readMemorySessionMetadata(input);
+                entered.resolve();
+                await release.promise;
+                return metadata;
+              },
+            };
+          });
+        const read =
+          inventory === "archives"
+            ? loadArchivedSessionsAsync({ ...scope, sessionIds: ["inventory"] })
+            : loadMemorySessionMetadataAsync({ ...scope, sessionId: "inventory" });
+        const outcome = read.then(
+          (value) => ({ value }),
+          (error: unknown) => ({ error }),
+        );
+        let closing: Promise<void> | undefined;
+        try {
+          await awaitGateBeforeSettlement(
+            entered.promise,
+            outcome,
+            "Inventory settled before the retained read",
+          );
+          closing = closeOpenClawAgentDatabasesAsync(state.stateDir);
+          release.resolve();
+          expect(await outcome).toMatchObject({
+            error: { message: expect.stringMatching(/revoked/) },
+          });
+          await closing;
+        } finally {
+          release.resolve();
+          await Promise.allSettled([outcome, closing]);
+          factory.mockRestore();
+        }
+      });
+    },
+  );
 });

@@ -544,7 +544,7 @@ async function collectSessionIngestionBatches(params: {
       ) {
         continue;
       }
-      const excludedReason = sessionExclusionReason(
+      const excludedReason = await sessionExclusionReason(
         source,
         params.admissionPolicy,
         forgottenSessionIds,

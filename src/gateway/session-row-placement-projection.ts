@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { WorkerTaskError } from "@openclaw/worker-runtime";
 import { withCanonicalSessionValidationDeferral } from "../config/sessions/session-canonical-validation-deferral.js";
+import { captureSessionTranscriptStorageEnvironment } from "../config/sessions/transcript-target-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   DEFAULT_WORKER_PENDING_BYTES,
@@ -42,6 +43,7 @@ type PlacementReadBatch = {
 export function createSessionRowPlacementProjection(
   reader: Pick<WorkerSessionPlacementStore, "readProjection"> | undefined,
   prepareReadFacts: () => Promise<void> | undefined,
+  env: NodeJS.ProcessEnv = captureSessionTranscriptStorageEnvironment(process.env),
 ) {
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const resident = new Map<string, SessionRowPlacementFacts>();
@@ -290,7 +292,9 @@ export function createSessionRowPlacementProjection(
         }
       };
       const prepareFacts = () => prepareReadFacts() ?? prepareSelection?.();
-      let deferred: { kind: "pending"; database: { agentId: string; path: string } } | undefined;
+      let deferred:
+        | Extract<ReturnType<typeof withCanonicalSessionValidationDeferral>, { kind: "pending" }>
+        | undefined;
       let preparedQueries: readonly Lookup[] = [];
       let selectedIds: readonly string[] = [];
       const privateRepositories = new Map<string, PreparedPrivateSessionRepository>();
@@ -317,7 +321,7 @@ export function createSessionRowPlacementProjection(
             }
           }
           return ids;
-        });
+        }, env);
         deferred = selected.kind === "pending" ? selected : undefined;
         selectedIds = selected.kind === "complete" ? selected.value : [];
         if (privateRepositories.size) {
@@ -354,7 +358,7 @@ export function createSessionRowPlacementProjection(
             });
             break;
           }
-        });
+        }, env);
         deferred = prepared.kind === "pending" ? prepared : undefined;
         return pending;
       };
@@ -366,6 +370,7 @@ export function createSessionRowPlacementProjection(
           () => preparedQueries,
           (read) => consume(read, preparedQueries),
           privateRepositories,
+          env,
         );
       const prepare = () => {
         const pending = prepareFacts();

@@ -1,8 +1,7 @@
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { listAgentIds, withAgentRosterFactsBatch } from "../agents/agent-scope-config.js";
-import { resolveGatewaySessionStoreTargets } from "../config/sessions/combined-store-gateway.js";
-import type { GatewaySessionStoreDiscovery } from "../config/sessions/combined-store-paths.js";
+import type { GatewaySessionScopeFacts } from "../config/sessions/combined-store-discovery.types.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import { MAX_SESSION_ROW_FACTS_KEYS } from "../config/sessions/session-transcript-worker.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -205,18 +204,22 @@ export function prepareSessionRowScopes(
   cfg: OpenClawConfig,
   agentIds: Iterable<string>,
   residentPaths: ReadonlyMap<string, string>,
-  discovery?: GatewaySessionStoreDiscovery,
+  prepared: GatewaySessionScopeFacts,
 ) {
   const residentPath = (pathname: string) => residentPaths.get(pathname) ?? pathname;
   const filenames = new Map([...residentPaths].map(([filename, locator]) => [locator, filename]));
   const aliases = new Map<string, Map<string, string>>();
   const capture = (options: { agentId?: string; configuredAgentsOnly?: boolean }) => {
     try {
-      const resolved = resolveGatewaySessionStoreTargets(cfg, {
-        ...options,
-        discovery,
-        includeIncognito: false,
-      });
+      const key = options.agentId
+        ? `agent:${options.agentId}`
+        : options.configuredAgentsOnly
+          ? "configured"
+          : "all";
+      const resolved = expectDefined(prepared.get(key), "prepared session scope");
+      if (resolved instanceof Error) {
+        throw resolved;
+      }
       for (const [identity, physical] of resolved.physicalTargets) {
         const separator = identity.indexOf("\0");
         const agentId = identity.slice(0, separator);

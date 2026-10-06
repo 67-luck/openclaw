@@ -21,11 +21,9 @@ import {
   resolveAgentMainSessionKey,
   resolveSystemMainSessionTarget,
 } from "../config/sessions.js";
+import { readKnownSessionStoreAgentIdsInWorker } from "../config/sessions/combined-store-gateway-read.js";
 import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
-import {
-  listConfiguredSessionStoreAgentIds,
-  listKnownSessionStoreAgentIds,
-} from "../config/sessions/targets.js";
+import { listConfiguredSessionStoreAgentIds } from "../config/sessions/targets.js";
 import type { AgentDefaultsConfig } from "../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveCronJobEffectiveAgentId } from "../cron/agent-id.js";
@@ -511,16 +509,16 @@ export function buildGatewayCronService(params: {
     ...(scriptRuntime ? { evaluateCronTrigger: scriptRuntime.evaluateTrigger } : {}),
     ...(defaultAgentId ? { defaultAgentId } : {}),
     resolveDefaultAgentId: () => tryResolveAmbientOwnerAgentId(getRuntimeConfig()),
-    resolveSessionStoreAgentIds: () => {
+    resolveSessionStoreAgentIds: async () => {
       const cfg = getRuntimeConfig();
       try {
-        return listKnownSessionStoreAgentIds(cfg, { env });
+        return await readKnownSessionStoreAgentIdsInWorker(cfg, env);
       } catch (error) {
         cronLogger.warn(
           { err: formatErrorMessage(error) },
           "cron: persisted session-store owner discovery failed",
         );
-        return listConfiguredSessionStoreAgentIds(cfg);
+        return listConfiguredSessionStoreAgentIds(getRuntimeConfig());
       }
     },
     isAgentAvailable: (agentId, database, facts) =>

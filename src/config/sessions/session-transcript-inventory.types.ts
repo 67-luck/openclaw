@@ -9,6 +9,7 @@ import type { SessionAccessScope } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type { SessionColdArchive } from "./session-cold-storage-state.js";
 import type {
+  MemorySessionMetadataScope,
   MemorySessionSelectors,
   MemorySessionTarget,
 } from "./session-memory-targets.types.js";
@@ -51,6 +52,13 @@ type MemorySessionTargetsWorkerInput = {
   continuation?: CanonicalSessionReaderContinuation;
 };
 
+type MemorySessionMetadataWorkerInput = {
+  kind: "memory-session-metadata";
+  database: { agentId: string; path: string };
+  params: MemorySessionMetadataScope & { env: NodeJS.ProcessEnv };
+  continuation?: CanonicalSessionReaderContinuation;
+};
+
 type SessionArchivePresenceWorkerInput = TranscriptArchivePresenceRead & {
   kind: "session-archive-presence";
 };
@@ -75,10 +83,15 @@ export type SessionColdStorageInventoryWorkerInput = {
 
 export type SessionTranscriptInventoryWorkerInput =
   | MemorySessionTargetsWorkerInput
+  | MemorySessionMetadataWorkerInput
   | SessionArchiveInventoryWorkerInput
   | SessionCorpusInventoryWorkerInput
   | SessionArchivePresenceWorkerInput;
 export type SessionTranscriptInventoryWorkerValues = {
+  "memory-session-metadata": {
+    kind: "memory-session-metadata";
+    metadata: MemorySessionTarget | undefined;
+  };
   "memory-session-targets": { kind: "memory-session-targets"; targets: MemorySessionTarget[] };
   "session-archive-inventory": {
     kind: "session-archive-inventory";
@@ -91,6 +104,9 @@ export type SessionTranscriptInventoryWorkerValues = {
   "session-archive-presence": { kind: "session-archive-presence"; registered: boolean };
 };
 export type SessionTranscriptInventoryReaders = {
+  readMemorySessionMetadata: (
+    input: Omit<MemorySessionMetadataWorkerInput, "kind" | "database">,
+  ) => Promise<MemorySessionTarget | undefined>;
   readMemorySessionTargets: (
     input: Omit<MemorySessionTargetsWorkerInput, "kind" | "database">,
   ) => Promise<MemorySessionTarget[]>;

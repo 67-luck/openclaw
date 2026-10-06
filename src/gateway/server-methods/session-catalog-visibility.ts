@@ -9,14 +9,15 @@ import type {
   SessionCatalogListProviderParams,
   SessionCatalogProvider,
 } from "../../plugins/session-catalog.js";
-import { isIncognitoSessionKey } from "../../routing/session-key.js";
+import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { readUserProfileAliases } from "../../state/user-profile-list.js";
 import { hasMultipleSessionSharingIdentities } from "../../state/user-profiles.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { operatorSessionCap } from "../operator-role-policy.js";
 import { prepareSessionCreatorProfile } from "../session-creator.js";
+import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
 import { requireSessionRowProjection } from "../session-row-projection-access.js";
-import { resolveSessionSharingRole, resolveSessionSharingTarget } from "../session-sharing.js";
+import { resolveSessionSharingRole } from "../session-sharing.js";
 import { createSessionCatalogRequestEntrySnapshot } from "./session-catalog-entry-snapshot.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
@@ -226,9 +227,28 @@ export async function resolveSessionCatalogThreadVisibility(params: {
       ) {
         return { visibility, source: { sessionKey: session.sessionKey, entry: visibleEntry } };
       }
-      const target = resolveSessionSharingTarget({ cfg: config, sessionKey: session.sessionKey });
+      const target = projection.sharingTarget({
+        key: session.sessionKey,
+        agentId: resolveAgentIdFromSessionKey(
+          session.sessionKey,
+          tryResolveSessionCompatibilityOwnerAgentId(config, session.sessionKey) ??
+            params.fallbackAgentId,
+        ),
+      });
+      const profileId = params.client?.authenticatedUserProfile?.profileId;
       return target !== null &&
-        resolveSessionSharingRole({ cfg: config, client: params.client, target }) === "member"
+        resolveSessionSharingRole(
+          {
+            cfg: config,
+            client: params.client,
+            target,
+            isMember: Boolean(
+              profileId && projection.hasMembership(target.storePath, target.storeKey, profileId),
+            ),
+          },
+          { value: visibility.others },
+          visibility.isCreator,
+        ) === "member"
         ? { visibility, source: { sessionKey: target.canonicalKey, entry: visibleEntry } }
         : null;
     }

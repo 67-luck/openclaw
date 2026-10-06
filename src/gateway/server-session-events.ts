@@ -37,6 +37,7 @@ import {
   resolveSessionEventAgentScope,
   type SessionEventAgentScope,
 } from "./session-request-agent.js";
+import { withReadySessionRows } from "./session-row-prepared-read.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import {
   resolveSessionSubscriptionKey,
@@ -430,14 +431,20 @@ async function handleTranscriptUpdateBroadcast(
     // Updates from raw transcript events may not carry seq; fall back to the
     // current transcript line count for cursor-compatible live history.
     const updateStorePath = publicationStorePath;
-    do {
-      await projection?.prepareMembership();
-    } while (projection?.needsMembershipPreparation());
-    const fallbackTarget = projection?.selectEntries({
-      agentId: routingAgentId,
-      key: sessionKey,
-      storePath: updateStorePath,
-    })[0];
+    const query = routingAgentId
+      ? { agentId: routingAgentId, key: sessionKey, storePath: updateStorePath }
+      : undefined;
+    const fallbackTarget =
+      projection && query
+        ? await withReadySessionRows(
+            projection,
+            () => [query],
+            () => projection.selectEntries(query)[0],
+          )
+        : undefined;
+    if (params.getSessionRowProjection?.() !== projection || !markerIsCurrent()) {
+      return;
+    }
     const entry = fallbackTarget?.entry;
     const messageSessionId =
       compatibleLegacyMarker?.sessionId ??

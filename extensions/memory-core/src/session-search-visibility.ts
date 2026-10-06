@@ -13,7 +13,7 @@ import { resolveStorePath } from "openclaw/plugin-sdk/session-store-paths";
 import { sessionDeliveryOrigin } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   extractTranscriptIdentityFromSessionsMemoryHit,
-  loadCombinedSessionStoreForGateway,
+  loadCombinedSessionStoreForGatewayAsync,
   resolveTranscriptStemToSessionKeys,
 } from "openclaw/plugin-sdk/session-transcript-hit";
 import {
@@ -37,7 +37,7 @@ function isGlobalSessionKeyForSharedScope(cfg: OpenClawConfig, key: string): boo
 
 type ConversationRecallContext = NonNullable<OpenClawPluginToolContext["conversationRecall"]>;
 
-type SessionStore = ReturnType<typeof loadCombinedSessionStoreForGateway>["store"];
+type SessionStore = Awaited<ReturnType<typeof loadCombinedSessionStoreForGatewayAsync>>["store"];
 
 function isSameStoredTranscript(
   // Keep the existing file-alias privacy check even though the public store type omits locators.
@@ -211,6 +211,10 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
       })
     : [];
   const archivedSessionsByName = new Map(archives.map((archive) => [archive.archiveName, archive]));
+  const { store: combinedSessionStore, storePath } = await loadCombinedSessionStoreForGatewayAsync(
+    params.cfg,
+    scopedAgentId ? { agentId: scopedAgentId } : {},
+  );
   const guard = params.requesterSessionKey
     ? await createSessionVisibilityGuard({
         action: "history",
@@ -229,11 +233,6 @@ export async function filterMemorySearchHitsBySessionVisibility(params: {
         a2aPolicy,
       })
     : null;
-
-  const { store: combinedSessionStore, storePath } = loadCombinedSessionStoreForGateway(
-    params.cfg,
-    scopedAgentId ? { agentId: scopedAgentId } : {},
-  );
 
   const conversationRecall = params.conversationRecall;
   const trustedAgentScope = Boolean(

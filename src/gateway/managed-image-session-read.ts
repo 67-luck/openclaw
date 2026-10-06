@@ -1,5 +1,6 @@
 import path from "node:path";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveStateDir } from "../config/paths.js";
 import type { SessionExactEntriesWorkerResult } from "../config/sessions/session-entry-read.types.js";
 import { captureSessionStoreReadCandidate } from "../config/sessions/session-store-read-candidates.js";
@@ -8,8 +9,14 @@ import { prepareSessionStoreTargetInventoryRead } from "../config/sessions/sessi
 import { withSessionHistoryWorkerDatabases } from "../config/sessions/session-transcript-worker-runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
 import { SessionMetadataUnavailableError } from "../state/session-metadata-unavailable-error.js";
-import type { SessionTranscriptReadScope } from "./session-transcript-readers.js";
+import {
+  readSessionMessagesMatchingIdAsync,
+  readSessionMessagesWithSourceAsync,
+  type SessionTranscriptReadScope,
+} from "./session-transcript-readers.js";
+import { iterateSessionTranscriptSourcePages } from "./session-transcript-source-pages.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "./session-utils-store-worker.js";
 
 /** Serving keeps discovery and physical readers alive through response publication. */
@@ -20,6 +27,7 @@ export async function withManagedImageSessionRead<T>(
     agentId: string;
     stateDir: string;
     assertCurrent: () => void;
+    onMissing?: () => T;
   },
   consume: (scope: SessionTranscriptReadScope, assertCurrent: () => void) => Promise<T>,
 ): Promise<T | null> {
@@ -114,7 +122,7 @@ export async function withManagedImageSessionRead<T>(
           return consume(matched, assertCurrent);
         }
         if (path.resolve(stateDir) !== path.resolve(resolveStateDir())) {
-          return null;
+          return params.onMissing?.() ?? null;
         }
         const fallback = await resolveGatewaySessionStoreTargetInWorker({
           cfg: prepared.config,
@@ -144,8 +152,11 @@ export async function withManagedImageSessionRead<T>(
               reader!.assertCurrent();
             };
             assertFallbackCurrent();
-            if (!read.ok || !read.value) {
+            if (!read.ok) {
               return null;
+            }
+            if (!read.value) {
+              return params.onMissing?.() ?? null;
             }
             return consume(
               {
@@ -161,4 +172,35 @@ export async function withManagedImageSessionRead<T>(
       },
     );
   }, assertSelectionCurrent);
+}
+
+/** Cleanup includes off-path branches because rewind can expose their attachments again. */
+export async function readManagedImageSessionIndex(
+  scope: SessionTranscriptReadScope,
+  messageId: string | undefined,
+  collectKeys: (messageId: string, content: readonly Record<string, unknown>[]) => Iterable<string>,
+  assertCurrent: () => void,
+): Promise<Set<string>> {
+  const pages =
+    messageId === undefined
+      ? iterateSessionTranscriptSourcePages(readSessionMessagesWithSourceAsync, scope, {
+          allowResetArchiveFallback: true,
+          includeOffPathMessages: true,
+        })
+      : [{ messages: await readSessionMessagesMatchingIdAsync(scope, messageId) }];
+  const index = new Set<string>();
+  for await (const { messages } of pages) {
+    assertCurrent();
+    for (const message of messages) {
+      const messageId = asOptionalRecord(asOptionalRecord(message)?.["__openclaw"])?.id;
+      if (typeof messageId !== "string" || !messageId) {
+        continue;
+      }
+      for (const key of collectKeys(messageId, readAssistantDisplayContent(message))) {
+        index.add(key);
+      }
+    }
+  }
+  assertCurrent();
+  return index;
 }

@@ -197,6 +197,23 @@ reread joins the existing writer FIFO. Read refreshes retain the original discov
 owner and never replay a consumer that has begun effects. Process-held incognito
 reads keep their existing owner. Configuration, schemas, and stored formats are unchanged.
 
+Session discovery, fixed-store owner enumeration, search visibility, and managed
+attachment cleanup now prepare their durable facts in the existing session readers.
+Topology preparation retains captured physical sources and deletion facts; the host
+applies current admission and sharing policy before consumption. Dirty resident rows
+request exact worker facts instead of falling back to a native entry read. Scoped
+listings prepare foreign ancestry through retained readers, preserving literal stored
+addresses before main-alias fallback. Native mutation witnesses and existing foreign
+commit freshness remain separate invalidation boundaries.
+
+Canonical readiness carries the pending read's physical identity, environment, and
+shared-state admission into the existing reclamation worker. Its synchronous
+transaction rechecks authoritative rows and publishes readiness after commit;
+accepted work keeps the existing FIFO and close settlement. Boot and Doctor retain
+their native admission adapter. Released synchronous SDK readers and process-held
+incognito keep their compatibility owners. Schemas, stored bytes, retention, and
+update behavior are unchanged.
+
 Session creation rereads full target metadata through that same reader using its
 already-selected store and canonical keys. Lifecycle custody and current caller
 authority remain with creation; worker preparation does not grant permission.
@@ -2455,8 +2472,8 @@ joins participant recording and reads the full row from the selected physical
 source; skill-selection commit guards retain their current native read. Incognito
 stores remain process-owned. Schemas, retention, and update behavior are unchanged.
 
-Startup/topology hydration, internal synchronous keyed and archived reads, and
-process-held incognito stores remain migration debt. Preserve the
+Released synchronous SDK readers, native lifecycle consumers, and process-held
+incognito stores retain their current owners. Resident reads preserve the
 projection and its identity/revision invalidation instead of replacing it with
 another per-request store scan. See the
 [inventory baseline](/reference/database-schemas/worker-access-inventory#profile-priority-and-current-cutover-status)

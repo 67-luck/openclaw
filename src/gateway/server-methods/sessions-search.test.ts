@@ -4,6 +4,10 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  observeHostDataSql,
+  isSessionEntryDataSql,
+} from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -18,20 +22,61 @@ const templateStorePath = path.resolve("/stores/{agentId}.json");
 const searchSessionTranscriptsMock = vi.fn();
 const listSessionEntriesMock = vi.fn();
 const resolveExistingAgentSessionStoreTargetsSyncMock = vi.fn();
+let realMetadataReads = false;
 
 vi.mock("../../config/sessions/session-transcript-search.js", () => ({
   searchSessionTranscripts: (...args: unknown[]) => searchSessionTranscriptsMock(...args),
 }));
-vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
-  listSessionEntriesCore: (...args: unknown[]) => listSessionEntriesMock(...args),
-  listSessionEntriesReadOnly: (...args: unknown[]) => listSessionEntriesMock(...args),
-}));
-vi.mock("../../config/sessions.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/sessions.js")>()),
-  resolveExistingAgentSessionStoreTargetsSync: (...args: unknown[]) =>
-    resolveExistingAgentSessionStoreTargetsSyncMock(...args),
-}));
+vi.mock("../../config/sessions/session-entry-read-runtime.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../config/sessions/session-entry-read-runtime.js")>();
+  return {
+    ...actual,
+    withSessionStoreReaderInWorker: (
+      target: { agentId: string; storePath: string },
+      read: (source: unknown) => unknown,
+    ) =>
+      realMetadataReads
+        ? actual.withSessionStoreReaderInWorker(target, (source) => Promise.resolve(read(source)))
+        : read({
+            database: { agentId: target.agentId, path: target.storePath, env: process.env },
+            logicalAgentId: target.agentId,
+            assertCurrent: () => {},
+            reader: {
+              readEntries: () => listSessionEntriesMock(),
+              readExactEntries: () => ({ entries: listSessionEntriesMock() }),
+            },
+          }),
+  };
+});
+vi.mock("../../config/sessions/session-store-target-runtime.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../config/sessions/session-store-target-runtime.js")>();
+  return {
+    ...actual,
+    prepareSessionStoreTargetInventoryRead: (
+      ...args: Parameters<typeof actual.prepareSessionStoreTargetInventoryRead>
+    ) =>
+      realMetadataReads
+        ? actual.prepareSessionStoreTargetInventoryRead(...args)
+        : {
+            withRead: (consume: (inventory: unknown, assertCurrent: () => void) => unknown) =>
+              consume(
+                {
+                  agents: [
+                    {
+                      result: {
+                        available: true,
+                        targets: resolveExistingAgentSessionStoreTargetsSyncMock(),
+                      },
+                    },
+                  ],
+                },
+                () => {},
+              ),
+          },
+  };
+});
 
 import { sessionReadHandlers } from "./sessions-read.js";
 
@@ -78,16 +123,7 @@ async function callSearch(
 }
 
 async function useRestrictedSearchMetadata() {
-  const accessor = await vi.importActual<
-    typeof import("../../config/sessions/session-accessor.js")
-  >("../../config/sessions/session-accessor.js");
-  const sessions = await vi.importActual<typeof import("../../config/sessions.js")>(
-    "../../config/sessions.js",
-  );
-  listSessionEntriesMock.mockImplementation(accessor.listSessionEntriesReadOnly);
-  resolveExistingAgentSessionStoreTargetsSyncMock.mockImplementation(
-    sessions.resolveExistingAgentSessionStoreTargetsSync,
-  );
+  realMetadataReads = true;
   searchSessionTranscriptsMock.mockImplementation((params: { sessionKeys?: string[] }) => ({
     hits: (params.sessionKeys ?? []).map((sessionKey) => ({
       sessionKey,
@@ -120,6 +156,7 @@ async function useRestrictedSearchMetadata() {
 
 describe("sessions.search gateway method", () => {
   beforeEach(() => {
+    realMetadataReads = false;
     cfg = {
       agents: {
         ownership: "explicit",
@@ -157,14 +194,20 @@ describe("sessions.search gateway method", () => {
       setRuntimeConfigSnapshot(cfg);
       closeOpenClawAgentDatabasesForTest();
 
-      const respond = await callSearch(
-        { agentId: "main", query: "needle" },
-        ["operator.read"],
-        viewer.id,
-      );
-      expect(respond).toHaveBeenCalledWith(true, {
-        results: [expect.objectContaining({ sessionKey: visibleKey })],
-      });
+      const sql = observeHostDataSql();
+      try {
+        const respond = await callSearch(
+          { agentId: "main", query: "needle" },
+          ["operator.read"],
+          viewer.id,
+        );
+        expect(respond).toHaveBeenCalledWith(true, {
+          results: [expect.objectContaining({ sessionKey: visibleKey })],
+        });
+        expect(sql.queries.filter(isSessionEntryDataSql)).toEqual([]);
+      } finally {
+        sql.restore();
+      }
     });
   });
 
@@ -252,13 +295,16 @@ describe("sessions.search gateway method", () => {
         limit: 5,
       });
 
-      expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-        agentId: "work",
-        query: "needle",
-        limit: 5,
-        sessionKeys: ["agent:work:main", "agent:work:other"],
-        storePath: storePath?.replace("{agentId}", "work") ?? expect.any(String),
-      });
+      expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+        {
+          agentId: "work",
+          query: "needle",
+          limit: 5,
+          sessionKeys: ["agent:work:main", "agent:work:other"],
+          storePath: storePath?.replace("{agentId}", "work") ?? expect.any(String),
+        },
+        expect.objectContaining({ agentId: "work" }),
+      );
       expect(respond).toHaveBeenCalledWith(
         true,
         expect.objectContaining({
@@ -309,13 +355,16 @@ describe("sessions.search gateway method", () => {
 
     await callSearch({ query: "needle", sessionKeys: ["global"] });
 
-    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-      agentId: "ops",
-      query: "needle",
-      limit: undefined,
-      sessionKeys: ["global"],
-      storePath: fixedStorePath,
-    });
+    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+      {
+        agentId: "ops",
+        query: "needle",
+        limit: undefined,
+        sessionKeys: ["global"],
+        storePath: fixedStorePath,
+      },
+      expect.objectContaining({ path: expect.any(String) }),
+    );
   });
 
   it("filters incognito candidates before applying a non-admin result limit", async () => {
@@ -362,13 +411,16 @@ describe("sessions.search gateway method", () => {
       "viewer@example.com",
     );
 
-    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-      agentId: "main",
-      query: "needle",
-      limit: 1,
-      sessionKeys: [durableKey],
-      storePath: expect.any(String),
-    });
+    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+      {
+        agentId: "main",
+        query: "needle",
+        limit: 1,
+        sessionKeys: [durableKey],
+        storePath: expect.any(String),
+      },
+      expect.objectContaining({ path: expect.any(String) }),
+    );
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
@@ -397,23 +449,29 @@ describe("sessions.search gateway method", () => {
   it("uses agentId to disambiguate an unscoped store key", async () => {
     await callSearch({ agentId: "work", query: "needle", sessionKeys: ["main", "global"] });
 
-    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-      agentId: "work",
-      query: "needle",
-      limit: undefined,
-      sessionKeys: ["agent:work:main", "global"],
-      storePath: expect.any(String),
-    });
+    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+      {
+        agentId: "work",
+        query: "needle",
+        limit: undefined,
+        sessionKeys: ["agent:work:main", "global"],
+        storePath: expect.any(String),
+      },
+      expect.objectContaining({ path: expect.any(String) }),
+    );
   });
 
   it("uses the configured system agent without a session filter", async () => {
     await callSearch({ query: "needle" });
-    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-      agentId: "main",
-      query: "needle",
-      limit: undefined,
-      storePath: expect.any(String),
-    });
+    expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+      {
+        agentId: "main",
+        query: "needle",
+        limit: undefined,
+        storePath: expect.any(String),
+      },
+      expect.objectContaining({ path: expect.any(String) }),
+    );
   });
 
   it("does not allow agentId to widen an unfiltered search", async () => {
@@ -461,13 +519,17 @@ describe("sessions.search gateway method", () => {
     });
 
     expect(searchSessionTranscriptsMock).toHaveBeenCalledTimes(2);
-    expect(searchSessionTranscriptsMock).toHaveBeenNthCalledWith(1, {
-      agentId: "retired",
-      query: "needle",
-      limit: 25,
-      sessionKeys: ["agent:retired:main"],
-      storePath: "/stores/retired-a/sessions.json",
-    });
+    expect(searchSessionTranscriptsMock).toHaveBeenNthCalledWith(
+      1,
+      {
+        agentId: "retired",
+        query: "needle",
+        limit: 25,
+        sessionKeys: ["agent:retired:main"],
+        storePath: "/stores/retired-a/sessions.json",
+      },
+      expect.objectContaining({ path: expect.any(String) }),
+    );
     expect(respond).toHaveBeenCalledWith(
       true,
       expect.objectContaining({
@@ -494,12 +556,15 @@ describe("sessions.search gateway method", () => {
       await callSearch({ ...(agentId === "retired" ? { agentId } : {}), query: "needle" });
 
       expect(listSessionEntriesMock).not.toHaveBeenCalled();
-      expect(searchSessionTranscriptsMock).toHaveBeenCalledWith({
-        agentId,
-        query: "needle",
-        limit: agentId === "retired" ? 25 : undefined,
-        storePath: fixedStorePath,
-      });
+      expect(searchSessionTranscriptsMock).toHaveBeenCalledWith(
+        {
+          agentId,
+          query: "needle",
+          limit: agentId === "retired" ? 25 : undefined,
+          storePath: fixedStorePath,
+        },
+        expect.objectContaining({ path: expect.any(String) }),
+      );
     },
   );
 });

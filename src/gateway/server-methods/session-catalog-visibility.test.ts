@@ -23,8 +23,6 @@ const hoisted = vi.hoisted(() => ({
   activeRegistry: {} as TestPluginRegistry,
   getUserProfileRole: vi.fn((): string | null => null),
   hasMultipleSessionSharingIdentities: vi.fn(() => false),
-  resolveSessionSharingRole: vi.fn(() => "viewer" as "viewer" | "member"),
-  resolveSessionSharingTarget: vi.fn(() => null as Record<string, unknown> | null),
 }));
 
 vi.mock("../../plugins/runtime.js", async (importOriginal) => ({
@@ -37,11 +35,6 @@ vi.mock("../../state/user-profiles.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../state/user-profiles.js")>()),
   getUserProfileRole: hoisted.getUserProfileRole,
   hasMultipleSessionSharingIdentities: hoisted.hasMultipleSessionSharingIdentities,
-}));
-vi.mock("../session-sharing.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../session-sharing.js")>()),
-  resolveSessionSharingRole: hoisted.resolveSessionSharingRole,
-  resolveSessionSharingTarget: hoisted.resolveSessionSharingTarget,
 }));
 
 const { sessionCatalogHandlers } = await import("./session-catalog.js");
@@ -101,6 +94,7 @@ async function call(
   requestClient: TestClient,
   config: Record<string, unknown> = {},
   contextOverrides: Record<string, unknown> = {},
+  members: Record<string, readonly string[]> = {},
 ) {
   const respond = vi.fn();
   const projection = createSessionRowProjectionFixture({
@@ -113,6 +107,9 @@ async function call(
     ),
   });
   projections.add(projection);
+  for (const row of projection.selectEntries()) {
+    row.membership = new Set(members[row.key] ?? []);
+  }
   await sessionCatalogHandlers[method]?.({
     params,
     respond,
@@ -159,8 +156,6 @@ describe("session catalog caller visibility", () => {
     hoisted.hasMultipleSessionSharingIdentities.mockReset().mockReturnValue(false);
     hoisted.getUserProfileRole.mockReset().mockReturnValue(null);
     sessionEntries = [];
-    hoisted.resolveSessionSharingRole.mockReset().mockReturnValue("viewer");
-    hoisted.resolveSessionSharingTarget.mockReset().mockReturnValue(null);
   });
 
   it("filters streamed and final rows to the caller's adopted sessions", async () => {
@@ -764,8 +759,6 @@ describe("session catalog caller visibility", () => {
 
   it("permits a view-capped person to archive a foreign session after explicit membership", async () => {
     setActors([["agent:main:other", "profile-other"]]);
-    hoisted.resolveSessionSharingTarget.mockReturnValue({ canonicalKey: "agent:main:other" });
-    hoisted.resolveSessionSharingRole.mockReturnValue("member");
     const archive = vi.fn(async () => ({ ok: true as const }));
     hoisted.activeRegistry.sessionCatalogs = [
       {
@@ -786,6 +779,8 @@ describe("session catalog caller visibility", () => {
       },
       client("profile-owner"),
       roleConfig("view"),
+      {},
+      { "agent:main:other": ["profile-owner"] },
     );
 
     expect(archive).toHaveBeenCalledOnce();

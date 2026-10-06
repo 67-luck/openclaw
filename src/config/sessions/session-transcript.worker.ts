@@ -184,6 +184,16 @@ serveOwnedWorkerTasks(
           pending: result.found && result.value,
         };
       }
+      if (request.kind === "memory-session-metadata") {
+        const { readMemorySessionMetadata } = await import("./session-memory-targets.js");
+        return {
+          kind: request.kind,
+          metadata: readMemorySessionMetadata(
+            { ...request.params, env: cloneEnvWithPlatformSemantics(request.params.env) },
+            request.continuation,
+          ),
+        };
+      }
       if (request.kind === "memory-session-targets") {
         const { readMemorySessionTargets } = await import("./session-memory-targets.js");
         return {
@@ -288,6 +298,14 @@ serveOwnedWorkerTasks(
         const { readSessionStoreTargetInventory } =
           await import("./session-store-target-inventory.js");
         return readSessionStoreTargetInventory(request.request);
+      }
+      if (request.kind === "gateway-session-discovery") {
+        const { readGatewaySessionDiscovery } =
+          await import("./combined-store-discovery.worker.js");
+        return readGatewaySessionDiscovery({
+          ...request.request,
+          env: cloneEnvWithPlatformSemantics(request.request.env),
+        });
       }
       if (request.kind === "session-identity-evidence") {
         const { withOpenClawAgentDatabaseReadOnly } =

@@ -386,13 +386,16 @@ it("delivers nested event rows identical to the full list for each viewer and cl
       for (const { client } of peers) {
         connection.sessionEventSubscribers.subscribe(client.connId);
       }
+      const deliveriesBefore = peers.map((peer) => peer.send.mock.calls.length);
       await createLifecycleEventBroadcastHandler(connection)({
         sessionKey: key,
         agentId: "main",
         reason: "update",
       });
       for (const [index, peer] of peers.entries()) {
+        expect(peer.send).toHaveBeenCalledTimes(deliveriesBefore[index]! + 1);
         const frame = JSON.parse(peer.send.mock.lastCall![0]);
+        expect(frame.payload).toMatchObject({ sessionKey: key, reason: "update" });
         expect(frame.payload.childSessions).toEqual(expected[index]?.childSessions);
       }
     } finally {

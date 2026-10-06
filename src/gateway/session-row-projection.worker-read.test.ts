@@ -281,6 +281,44 @@ it.each([
   },
 );
 
+it("prepares invalidated resident metadata before selecting a session ID without host SQL", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const query = { agentId: "main", key: "agent:main:dirty-selection" };
+    const entry = { sessionId: "dirty-selection", updatedAt: 1, label: "Committed label" };
+    replaceSessionEntrySync({ agentId: query.agentId, sessionKey: query.key }, entry);
+    const releaseForeground = retainSessionListForegroundWork();
+    const projection = await createSessionRowProjection({ cfg: {}, modelCatalog: [] });
+    try {
+      await projection.ensureMaterialized();
+      sessionChanges.emit({
+        agentId: query.agentId,
+        sessionKey: query.key,
+        factsInvalidated: true,
+      });
+      const sql = observeHostDataSql();
+      try {
+        const selected = await withReadySessionRows(
+          projection,
+          () =>
+            projection.selectEntries({ sessionIdOrKey: entry.sessionId }).map((row) => ({
+              agentId: row.agentId,
+              key: row.key,
+              storePath: row.storeTarget.storePath,
+            })),
+          (read) => read.describe(query)?.entry,
+        );
+        expect(selected).toMatchObject(entry);
+        expect(sql.queries).toEqual([]);
+      } finally {
+        sql.restore();
+      }
+    } finally {
+      projection.dispose();
+      releaseForeground();
+    }
+  });
+});
+
 it("preserves a keyed replacement while an older worker reply is pending", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const query = { agentId: "main", key: "agent:main:worker-replacement" };

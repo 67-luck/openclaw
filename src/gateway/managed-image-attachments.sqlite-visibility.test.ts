@@ -165,7 +165,7 @@ afterEach(async () => {
 
 describe("managed attachment SQLite visibility", () => {
   it.each(["shared", "retired", "supplied-state"] as const)(
-    "serves the original %s source without host SQLite",
+    "serves and retains the original %s source without host SQLite",
     async (source) => {
       const storePath = source === "shared" ? path.join(stateDir, "shared.sqlite") : undefined;
       if (storePath) {
@@ -193,6 +193,10 @@ describe("managed attachment SQLite visibility", () => {
       const sql = observeHostDataSql();
       try {
         expect(await f.download()).not.toBeNull();
+        expect(await cleanupManagedOutgoingMediaRecords({ stateDir })).toMatchObject({
+          deletedRecordCount: 0,
+          retainedCount: 1,
+        });
         expect(sql.queries).toEqual([]);
       } finally {
         sql.restore();

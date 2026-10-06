@@ -4,7 +4,10 @@ import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
+import {
+  createLifecycleEventBroadcastHandler,
+  createTranscriptUpdateBroadcastHandler,
+} from "./server-session-events.js";
 import {
   drainSessionEventPublications,
   sessionEventPublicationRows,
@@ -14,6 +17,7 @@ import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
+import * as transcriptReaders from "./session-transcript-readers.js";
 
 it.each([0, 7])(
   "lets I/O progress through a ready burst (publication cost %i ms)",
@@ -198,4 +202,74 @@ it("keeps prepared exact rows and ancestors inside the synchronous publication",
       release();
     }
   });
+});
+
+it("waits for current row metadata before reading a raw update's message count", async () => {
+  const sessionKey = "agent:main:raw-update";
+  const storePath = "/tmp/raw-update.sqlite";
+  const entry = { sessionId: "raw-update", updatedAt: 1, label: "Previous" };
+  const cfg = { agents: { entries: { main: {} } } };
+  setRuntimeConfigSnapshot(cfg);
+  const projection = createSessionRowProjectionFixture({
+    cfg,
+    store: { [sessionKey]: entry },
+    storePath,
+  });
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const prepare = projection.withPreparedExactRows.bind(projection);
+  const preparation = vi
+    .spyOn(projection, "withPreparedExactRows")
+    .mockImplementationOnce(async (queries, consume, options) => {
+      entered.resolve();
+      await release.promise;
+      return prepare(queries, consume, options);
+    });
+  const broadcastToConnIds = vi.fn();
+  const handler = createTranscriptUpdateBroadcastHandler({
+    broadcastToConnIds,
+    sessionEventSubscribers: { getAll: () => new Set(["viewer"]) },
+    sessionMessageSubscribers: { get: () => new Set() },
+    chatAbortControllers: new Map(),
+    getSessionRowProjection: () => projection,
+  });
+  const count = vi
+    .spyOn(transcriptReaders, "readSessionMessageCountAsync")
+    .mockResolvedValueOnce(4);
+  const reading = handler({
+    agentId: "main",
+    sessionKey,
+    message: { role: "assistant", content: "Raw committed message" },
+  });
+  try {
+    await Promise.race([
+      entered.promise,
+      reading.then(() => {
+        throw new Error("Raw update bypassed row preparation");
+      }),
+    ]);
+    expect(count).not.toHaveBeenCalled();
+    projection.setEntry(sessionKey, { ...entry, updatedAt: 2, label: "Current" });
+    release.resolve();
+    await reading;
+    expect(count).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        sessionKey,
+        storePath,
+        sessionEntry: expect.objectContaining({ label: "Current" }),
+      }),
+    );
+    expect(broadcastToConnIds).toHaveBeenCalledWith(
+      "session.message",
+      expect.objectContaining({ sessionKey, messageSeq: 4 }),
+      expect.any(Set),
+      expect.any(Object),
+    );
+  } finally {
+    release.resolve();
+    await reading;
+    preparation.mockRestore();
+    count.mockRestore();
+    projection.dispose();
+  }
 });

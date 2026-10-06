@@ -20,6 +20,10 @@ import type {
   SessionActivitySummaryBatchInput,
   SessionActivitySummaryBatchResult,
 } from "./activity-summary-source.types.js";
+import type {
+  GatewaySessionDiscoveryRequest,
+  GatewaySessionDiscoveryResult,
+} from "./combined-store-discovery.types.js";
 import type { ConversationDeliveryRecord } from "./conversation-delivery-store.types.js";
 import type {
   ConversationRowsWorkerInput,
@@ -294,6 +298,11 @@ type SessionTargetInventoryWorkerInput = {
   request: SessionStoreTargetInventoryRequest;
 };
 
+type GatewaySessionDiscoveryWorkerInput = {
+  kind: "gateway-session-discovery";
+  request: GatewaySessionDiscoveryRequest;
+};
+
 type SessionIdentityEvidenceWorkerInput = {
   kind: "session-identity-evidence";
   database: { agentId: string; path: string };
@@ -370,6 +379,7 @@ export type SessionHistoryWorkerInput =
   | SessionRowFactsWorkerInput
   | SessionStoreTargetWorkerInput
   | SessionTargetInventoryWorkerInput
+  | GatewaySessionDiscoveryWorkerInput
   | SessionIdentityEvidenceWorkerInput
   | VoiceSessionsWorkerInput
   | SessionUsageCacheWorkerInput
@@ -392,6 +402,7 @@ export type SessionHistoryWorkerPreparedInput =
   PreparedHistoryInput<SessionHistoryDatabaseWorkerInput>;
 
 export type SessionTranscriptWorkerValues = SessionTranscriptInventoryWorkerValues & {
+  "gateway-session-discovery": GatewaySessionDiscoveryResult;
   "cli-process-history": ChatHistoryDisplayResult;
   "conversation-rows": { kind: "conversation-rows"; rows: ConversationRecord[] };
   "conversation-delivery": { kind: "conversation-delivery"; record?: ConversationDeliveryRecord };

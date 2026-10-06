@@ -1,4 +1,3 @@
-import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import {
   ErrorCodes,
   errorShape,
@@ -29,7 +28,6 @@ import { isSessionCreatorProfile, prepareSessionCreatorProfile } from "./session
 import type { GatewaySessionStoreDiscoveryCache } from "./session-utils-store-candidates.js";
 import {
   withGatewaySessionStoreTarget,
-  prepareGatewaySessionStoreTargetsReadOnly,
   resolveGatewaySessionStoreTargetWithStore,
   type GatewaySessionStoreCache,
 } from "./session-utils-store-lookup.js";
@@ -165,27 +163,6 @@ function toSessionSharingTarget(
         readSource: target.capturedReadSource,
       }
     : null;
-}
-
-/** Prepare one synchronous batch while retaining each target's failure for ordered consumption. */
-export function prepareSessionSharingTargets(params: {
-  cfg: OpenClawConfig;
-  targets: readonly { sessionKey: string; agentId?: string }[];
-}): Array<Result<SessionSharingTarget | null, unknown>> {
-  return prepareGatewaySessionStoreTargetsReadOnly({
-    cfg: params.cfg,
-    targets: params.targets.map(({ sessionKey, agentId }) => ({ key: sessionKey, agentId })),
-    projection: "list",
-  }).map((result) => {
-    if (!result.ok) {
-      return result;
-    }
-    try {
-      return ok(toSessionSharingTarget(result.value));
-    } catch (error) {
-      return err(error);
-    }
-  });
 }
 
 export type SessionSharingRoleParams = {

@@ -30,6 +30,10 @@ import {
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { runOutsideOpenClawDatabaseMaintenanceScope } from "../../state/openclaw-state-db-async-lifecycle.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "../../state/openclaw-state-db-cache.js";
+import type {
+  GatewaySessionDiscoveryRequest,
+  GatewaySessionDiscoveryResult,
+} from "./combined-store-discovery.types.js";
 import {
   sessionHistoryCleanupError,
   decodeSessionTranscriptWorkerReadError,
@@ -452,6 +456,9 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     readTargetInventory: (
       request: Omit<SessionStoreTargetInventoryRequest, "candidates">,
     ) => Promise<SessionStoreTargetInventoryResult>;
+    readGatewayDiscovery: (
+      request: GatewaySessionDiscoveryRequest,
+    ) => Promise<GatewaySessionDiscoveryResult>;
   }) => Promise<T>,
   lane: SessionHistoryWorkerLane = historyLane,
 ): Promise<T> {
@@ -592,6 +599,35 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
       };
       const value = await operation({
         assertCurrent,
+        readGatewayDiscovery: async (request) => {
+          const env = captureSessionTranscriptStorageEnvironment(request.env);
+          const captured = {
+            ...request,
+            candidates: capturedCandidates,
+            env,
+            ...(request.operation === "owners" ? {} : { discovery: { ...request.discovery, env } }),
+          };
+          const reply = await lane.pool.run(
+            () => {
+              assertCurrent();
+              dispatched = true;
+              lane.nativeSequence++;
+              return { kind: "gateway-session-discovery", request: captured };
+            },
+            { inputBytes: JSON.stringify(captured).length * 2, timeoutMs: 60_000 },
+          );
+          const result =
+            unwrapSessionTranscriptWorkerReply<SessionHistoryWorkerInput["kind"]>(reply);
+          if (
+            typeof result === "boolean" ||
+            Array.isArray(result) ||
+            result.kind !== "gateway-session-discovery"
+          ) {
+            throw new Error("Session reader returned another result instead of Gateway discovery");
+          }
+          assertCurrent();
+          return result;
+        },
         readStoreTargetResult,
         readStoreTarget: async (request) => {
           const read = await readStoreTargetResult(request);

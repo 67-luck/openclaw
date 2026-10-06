@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   loadUsageSessionContext,
   type UsageSessionSelection,
@@ -357,13 +358,21 @@ it("retains selection and sentinel options while the worker read is queued", asy
   });
 });
 
-it("keeps stored addresses and foreign lineage stable after main-alias changes", async () => {
+it("keeps literal, alias, missing, and recursive lineage off the caller thread", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const parents = ["agent:main:main", "agent:main:home", "agent:main:global"];
+    const ancestorKey = "agent:ancestor:root";
+    const missingKey = "agent:gone:absent";
+    const aliasKey = "agent:alias:main";
+    const agents = { entries: { main: {}, work: {}, alias: {}, ancestor: {} } };
     for (const [index, parent] of [...parents, "global"].entries()) {
       replaceSessionEntrySync(
         { agentId: "main", sessionKey: parent },
-        { sessionId: `parent-${index}`, updatedAt: 1 },
+        {
+          sessionId: `parent-${index}`,
+          updatedAt: 1,
+          ...(index === 0 ? { parentSessionKey: ancestorKey } : {}),
+        },
       );
       if (index < parents.length) {
         replaceSessionEntrySync(
@@ -377,29 +386,91 @@ it("keeps stored addresses and foreign lineage stable after main-alias changes",
         );
       }
     }
+    replaceSessionEntrySync(
+      { agentId: "ancestor", sessionKey: ancestorKey },
+      { sessionId: "ancestor", updatedAt: 1, parentSessionKey: parents[0] },
+    );
+    for (const [key, id] of [
+      ["agent:alias:home", "alias-home"],
+      ["global", "alias-global"],
+    ] as const) {
+      replaceSessionEntrySync(
+        { agentId: "alias", sessionKey: key },
+        { sessionId: id, updatedAt: 1 },
+      );
+    }
+    for (const [key, parent] of [
+      ["alias-child", aliasKey],
+      ["missing-child", missingKey],
+    ] as const) {
+      replaceSessionEntrySync(
+        { agentId: "work", sessionKey: `agent:work:${key}` },
+        { sessionId: key, updatedAt: 1, parentSessionKey: parent, spawnedBy: parent },
+      );
+    }
     for (const scope of ["per-sender", "global"] as const) {
-      const cfg: OpenClawConfig = {
-        agents: { entries: { main: {}, work: {} } },
-        session: { mainKey: "home", scope },
-      };
+      const cfg: OpenClawConfig = { agents, session: { mainKey: "home", scope } };
       for (const options of [{}, { agentId: "work" }]) {
         const expected = loadCombinedSessionStoreForGatewayCore(cfg, options);
-        const result = await loadCombinedSessionStoreForGatewayCoreAsync(cfg, options);
-        expect(result.store).toEqual(expected.store);
-        for (const [index, parent] of parents.entries()) {
-          const key = `agent:work:child-${index}`;
-          expect(result.store[key]).toMatchObject({
-            parentSessionKey: parent,
-            spawnedBy: parent,
-          });
-          expect(result.targetsBySessionKey.get(key)?.readSourceEntry(parent)).toMatchObject({
-            sessionId: `parent-${index}`,
-          });
-          if (!options.agentId) {
-            expect(result.store[parent]?.sessionId).toBe(`parent-${index}`);
+        const observed = observeHostDataSql();
+        try {
+          const result = await loadCombinedSessionStoreForGatewayCoreAsync(cfg, options);
+          expect(result.store).toEqual(expected.store);
+          for (const [index, parent] of parents.entries()) {
+            const key = `agent:work:child-${index}`;
+            expect(result.store[key]).toMatchObject({
+              parentSessionKey: parent,
+              spawnedBy: parent,
+            });
+            const source = result.targetsBySessionKey.get(key)!;
+            expect(source.readSourceEntry(parent)).toMatchObject({ sessionId: `parent-${index}` });
+            if (!options.agentId) {
+              expect(result.store[parent]?.sessionId).toBe(`parent-${index}`);
+            }
           }
+          const recursive = result.targetsBySessionKey.get("agent:work:child-0")!;
+          const parent = recursive.readSourceEntry(parents[0]!);
+          const ancestor = recursive.readSourceEntry(parent!.parentSessionKey!);
+          expect(ancestor).toMatchObject({ sessionId: "ancestor" });
+          expect(recursive.readSourceEntry(ancestor!.parentSessionKey!)).toMatchObject({
+            sessionId: "parent-0",
+          });
+          expect(
+            result.targetsBySessionKey.get("agent:work:alias-child")!.readSourceEntry(aliasKey),
+          ).toMatchObject({
+            sessionId: scope === "global" ? "alias-global" : "alias-home",
+          });
+          expect(
+            result.targetsBySessionKey.get("agent:work:missing-child")!.readSourceEntry(missingKey),
+          ).toBeUndefined();
+          expect(observed.queries).toEqual([]);
+        } finally {
+          observed.restore();
         }
       }
+    }
+    let rewritten = false;
+    boundary.afterReply = async (reply) => {
+      if (
+        !rewritten &&
+        isRecord(reply) &&
+        isRecord(reply.value) &&
+        reply.value.kind === "session-entry-list"
+      ) {
+        rewritten = true;
+        replaceSessionEntrySync(
+          { agentId: "work", sessionKey: "agent:work:child-0" },
+          { sessionId: "child-0", updatedAt: 3, parentSessionKey: parents[2] },
+        );
+      }
+    };
+    try {
+      await expect(
+        loadCombinedSessionStoreForGatewayCoreAsync({ agents }, { agentId: "work" }),
+      ).rejects.toThrow("Session lineage changed");
+      expect(rewritten).toBe(true);
+    } finally {
+      boundary.afterReply = undefined;
     }
   });
 });
@@ -422,14 +493,31 @@ it("transfers a Windows-normalized environment through the real worker transport
       }),
     );
     expect(() => structuredClone(normalized)).toThrow();
+    const cloneEnvironment = configEnv.cloneEnvWithPlatformSemantics;
     const clone = vi
       .spyOn(configEnv, "cloneEnvWithPlatformSemantics")
+      .mockImplementation((env) => withMockedPlatform("win32", () => cloneEnvironment(env)))
       .mockReturnValueOnce(normalized);
+    let nestedDiscoveryTransferred = false;
+    boundary.beforeRequest = (request) => {
+      if (
+        isRecord(request) &&
+        request.kind === "gateway-session-discovery" &&
+        isRecord(request.request) &&
+        isRecord(request.request.discovery)
+      ) {
+        nestedDiscoveryTransferred = true;
+        expect(request.request.env).toMatchObject({ OPENCLAW_STATE_DIR });
+        expect(request.request.discovery.env).toMatchObject({ OPENCLAW_STATE_DIR });
+      }
+    };
     try {
       expect(
         (await loadCombinedSessionStoreForGatewayCoreAsync(cfg)).store["agent:main:main"],
       ).toMatchObject({ sessionId: "windows-transfer" });
+      expect(nestedDiscoveryTransferred).toBe(true);
     } finally {
+      boundary.beforeRequest = undefined;
       clone.mockRestore();
     }
   });
@@ -473,6 +561,40 @@ it("federates worker rows under the same physical owners and keeps incognito pro
       storePath,
     });
     expect(result.store["agent:main:dashboard:incognito-list"]).toMatchObject({ incognito: true });
+    replaceSessionEntrySync(
+      { agentId: "main", storePath, sessionKey: "agent:main:hidden-parent" },
+      { sessionId: "hidden", updatedAt: 3, parentSessionKey: "agent:unselected-parent:root" },
+    );
+    let unrelatedLookup = false;
+    boundary.beforeRequest = (request) => {
+      if (
+        isRecord(request) &&
+        request.kind === "session-target-inventory" &&
+        isRecord(request.request) &&
+        Array.isArray(request.request.agentIds) &&
+        request.request.agentIds.includes("unselected-parent")
+      ) {
+        unrelatedLookup = true;
+        throw new Error("Unselected ancestry must not acquire another store");
+      }
+    };
+    const observed = observeHostDataSql();
+    try {
+      const scoped = await loadCombinedSessionStoreForGatewayCoreAsync(cfg, {
+        agentId: "ops",
+        includeIncognito: false,
+      });
+      expect(Object.keys(scoped.store)).toEqual(["agent:ops:main"]);
+      expect(scoped.targetsBySessionKey.get("agent:ops:main")?.storeTarget).toEqual({
+        agentId: "main",
+        storePath,
+      });
+      expect(unrelatedLookup).toBe(false);
+      expect(observed.queries).toEqual([]);
+    } finally {
+      observed.restore();
+      boundary.beforeRequest = undefined;
+    }
     const missingPath = resolveOpenClawAgentSqlitePath({ agentId: "missing" });
     expect(
       (await loadCombinedSessionStoreForGatewayCoreAsync(cfg, { agentId: "missing" })).store,

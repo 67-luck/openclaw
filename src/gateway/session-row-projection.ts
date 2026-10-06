@@ -81,8 +81,10 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       : !inOwnerContext(subagents.snapshotIdentity)
         ? inOwnerContext(subagents.prepare)
         : registryRead.prepare();
-  const placementFacts = createSessionRowPlacementProjection(params.placementFactsReader, () =>
-    !disposed && topologyDirty ? topology() : prepareRegistryFacts(),
+  const placementFacts = createSessionRowPlacementProjection(
+    params.placementFactsReader,
+    () => (!disposed && topologyDirty ? topology() : prepareRegistryFacts()),
+    env,
   );
   let epoch = 0;
   let topologyEpoch = 0;
@@ -243,6 +245,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     return (preparingTopology ??= inOwnerContext(async () => {
       const targetEpoch = topologyEpoch;
       const nextConfig = params.getConfig?.() ?? cfg;
+      const storeRead = createStoreRead({ cfg: nextConfig, stores, rows, byStore, env });
       const prepared = await discoveryRead.readWithCurrentAdmission();
       const topologyCurrent = () =>
         !disposed && topologyEpoch === targetEpoch && (params.getConfig?.() ?? cfg) === nextConfig;
@@ -252,8 +255,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       }
       const discovery = { env, snapshot: prepared.snapshot };
       const revision = epoch;
-      const storeRead = createStoreRead({ stores, rows, byStore, env });
-      await storeRead.loadCombinedStore(nextConfig, discovery, (load) => {
+      await storeRead.loadCombinedStore(discovery, (load, scopes) => {
         prepared.assertCurrent();
         if (!topologyCurrent() || epoch !== revision) {
           return;
@@ -278,7 +280,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
           cfg,
           byAgent.keys(),
           new Map([...stores].map(([locator, source]) => [source.filename, locator])),
-          discovery,
+          scopes,
         );
         revisions.publishSelection();
         topologyDirty = epoch !== revision;

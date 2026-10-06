@@ -23,6 +23,7 @@ export function createSessionModelSources(
   cfg: OpenClawConfig,
   diagnostics: string[],
   preparedAgentIds?: ReadonlySet<string>,
+  preparedLineage?: ReturnType<typeof createGatewaySessionLineageReader>,
 ) {
   const physicalStores = new Map<
     string,
@@ -54,7 +55,7 @@ export function createSessionModelSources(
         }
         let read = readers.get(logicalAgentId);
         if (!read) {
-          const readQualifiedParent = createGatewaySessionLineageReader(cfg);
+          const readQualifiedParent = preparedLineage ?? createGatewaySessionLineageReader(cfg);
           // Capture the chosen fallback separately: it is not proof that the literal row exists.
           const selectedParents = new Map<
             string,

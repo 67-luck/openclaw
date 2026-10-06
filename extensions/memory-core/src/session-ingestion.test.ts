@@ -90,7 +90,7 @@ describe("session ingestion", () => {
           excludeSessions: { hookExternalContentSources: [hookExternalContentSource] },
         },
       });
-      expect(sessionExclusionReason(source, policy, new Set<string>())).toBe(
+      expect(await sessionExclusionReason(source, policy, new Set<string>())).toBe(
         `hookExternalContentSource:${hookExternalContentSource}`,
       );
     },

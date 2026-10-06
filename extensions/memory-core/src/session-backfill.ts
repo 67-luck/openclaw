@@ -101,15 +101,18 @@ async function listSessionBackfillSources(params: {
       (entry) => entry.sessionId,
     ),
   );
-  const sources = corpus
-    .map(sessionIngestionSourceFromCorpus)
-    .filter(
-      (entry): entry is SessionIngestionSource =>
-        entry !== null &&
-        !entry.buildOptions.generatedByDreamingNarrative &&
-        !entry.buildOptions.generatedByCronRun &&
-        !sessionExclusionReason(entry, params.admissionPolicy, forgottenSessionIds),
-    );
+  const sources: SessionIngestionSource[] = [];
+  for (const entry of corpus) {
+    const source = sessionIngestionSourceFromCorpus(entry);
+    if (
+      source &&
+      !source.buildOptions.generatedByDreamingNarrative &&
+      !source.buildOptions.generatedByCronRun &&
+      !(await sessionExclusionReason(source, params.admissionPolicy, forgottenSessionIds))
+    ) {
+      sources.push(source);
+    }
+  }
   const canonicalPaths = new Set(sources.map((entry) => path.resolve(entry.absolutePath)));
   for (const archiveFile of params.archiveFiles) {
     // Foreign files do not inherit canonical session identity from a matching basename.

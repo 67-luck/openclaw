@@ -111,6 +111,19 @@ export function createSessionHistoryWorkerReaders(
       "lifecycle artifact plan",
       (value) => value,
     ),
+    readMemorySessionMetadata: reader(
+      "memory-session-metadata",
+      "memory session metadata",
+      (value) => value.metadata,
+      (input) => ({
+        kind: "memory-session-metadata",
+        ...input,
+        params: {
+          ...input.params,
+          env: captureSessionTranscriptStorageEnvironment(input.params.env),
+        },
+      }),
+    ),
     readMemorySessionTargets: reader(
       "memory-session-targets",
       "memory session targets",

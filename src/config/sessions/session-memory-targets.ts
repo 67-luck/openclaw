@@ -5,6 +5,7 @@ import { listSessionTranscriptArchivesReadOnly } from "./session-accessor.sqlite
 import { listSessionParticipantsReadOnly } from "./session-accessor.sqlite-participant-read.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type {
+  MemorySessionMetadataScope,
   MemorySessionSelectors,
   MemorySessionTarget,
 } from "./session-memory-targets.types.js";
@@ -22,6 +23,22 @@ export function projectSessionMetadata(
     ...instance.sourceMetadata,
     participants,
   };
+}
+
+export function readMemorySessionMetadata(
+  params: MemorySessionMetadataScope & { env?: NodeJS.ProcessEnv },
+  continuation?: CanonicalSessionReaderContinuation,
+): MemorySessionTarget | undefined {
+  const instance = listSessionTranscriptInstances(
+    params,
+    { includeAllWindows: true, sessionId: params.sessionId },
+    continuation,
+  ).find(
+    (candidate) =>
+      candidate.agentId === normalizeAgentId(params.agentId) &&
+      (!params.sessionKey || candidate.sessionKey === params.sessionKey),
+  );
+  return instance ? projectSessionMetadata(instance) : undefined;
 }
 
 /** Resolve explicit memory-forget selectors against authoritative session owners. */

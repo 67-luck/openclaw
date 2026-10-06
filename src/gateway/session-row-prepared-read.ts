@@ -66,6 +66,7 @@ export async function withPreparedSessionRows<T>(
   queries: (config: OpenClawConfig) => readonly records.Lookup[],
   consume: (read: SessionRowReadView) => T,
   privateRepositories?: ReadonlyMap<string, PreparedPrivateSessionRepository>,
+  env?: NodeJS.ProcessEnv,
 ) {
   if (!isActive()) {
     throw new Error("Session row read view is no longer active");
@@ -178,7 +179,7 @@ export async function withPreparedSessionRows<T>(
       privateRows.clear();
       childSelections.clear();
     }
-  });
+  }, env);
 }
 
 /** Reenter the same synchronous consumer after canonical readiness finishes. */

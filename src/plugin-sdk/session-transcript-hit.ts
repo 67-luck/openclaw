@@ -1,6 +1,7 @@
 import path from "node:path";
 import { normalizeOptionalString } from "../../packages/normalization-core/src/string-coerce.js";
 import { parseUsageCountedSessionIdFromFileName } from "../config/sessions/artifacts.js";
+import { loadCombinedSessionStoreForGatewayCoreAsync } from "../config/sessions/combined-store-gateway-read.js";
 import { loadCombinedSessionStoreForGatewayCore as loadGatewaySessionStore } from "../config/sessions/combined-store-gateway.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -19,7 +20,7 @@ export type {
   SessionTranscriptReadParams,
 } from "./session-transcript-memory-hit.js";
 
-/** Loads the cross-session plugin view without process-only incognito rows. */
+/** @deprecated Use loadCombinedSessionStoreForGatewayAsync; removed at the next Plugin SDK major. */
 export function loadCombinedSessionStoreForGateway(
   cfg: OpenClawConfig,
   opts: { agentId?: string; configuredAgentsOnly?: boolean } = {},
@@ -30,6 +31,23 @@ export function loadCombinedSessionStoreForGateway(
     includeIncognito: false,
     projection: "full",
   });
+  return projectPluginSessionStore(result);
+}
+
+/** Loads complete durable session entries through the retained session readers. */
+export async function loadCombinedSessionStoreForGatewayAsync(
+  cfg: OpenClawConfig,
+  opts: { agentId?: string; configuredAgentsOnly?: boolean } = {},
+) {
+  const result = await loadCombinedSessionStoreForGatewayCoreAsync(cfg, {
+    ...opts,
+    includeIncognito: false,
+    projection: "full",
+  });
+  return projectPluginSessionStore(result);
+}
+
+function projectPluginSessionStore(result: ReturnType<typeof loadGatewaySessionStore>) {
   return {
     storePath: result.storePath,
     // Plugin search hits can be re-persisted into durable transcripts, so the

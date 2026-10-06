@@ -449,7 +449,15 @@ run durable archive and selector reads in the retained session worker and
 preserve selection, ordering, missing-store behavior, and result shapes.
 Process-held incognito stores keep their native owner.
 
-Bundled memory search and memory-forget use the awaited readers. The synchronous
+As of October 6, 2026, await `loadMemorySessionMetadataAsync` from the same subpath
+for exact ingestion metadata and `loadCombinedSessionStoreForGatewayAsync` from
+`openclaw/plugin-sdk/session-transcript-hit` for the complete, non-incognito
+session view. Their synchronous counterparts, `loadMemorySessionMetadata` and
+`loadCombinedSessionStoreForGateway`, retain the signatures and result shapes
+published in `v2026.9.8`. The `memory-session-discovery-sync-readers` compatibility
+record tracks their deprecation.
+
+Bundled memory search, ingestion, and memory-forget use the awaited readers. The synchronous
 exports retain their signatures and behavior for existing consumers until removal
 at the next Plugin SDK major. Deprecation is communicated through JSDoc and the
 compatibility registry; these readers emit no runtime warnings.

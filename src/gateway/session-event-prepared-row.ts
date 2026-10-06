@@ -85,7 +85,31 @@ function createPublicationOwner(projection: SessionRowProjection) {
               queries,
               (read) => {
                 yieldUntil = claimTurn(resumed);
-                return yieldUntil ? deferred : consume(read);
+                if (yieldUntil) {
+                  return deferred;
+                }
+                const children = new Set<string>();
+                for (const query of queries(read.state.cfg)) {
+                  const row = read.describe(query);
+                  if (!row) {
+                    continue;
+                  }
+                  const ancestors = options?.includeAncestors
+                    ? (projection.ancestorRows(row, read) ?? [])
+                    : [];
+                  for (const selected of [row, ...ancestors]) {
+                    for (const group of selected.materialized.row.swarm?.groups ?? []) {
+                      for (const child of group.children ?? []) {
+                        children.add(child.sessionKey);
+                      }
+                    }
+                  }
+                }
+                // Pending child facts must reenter exact preparation before fanout has effects.
+                for (const key of children) {
+                  read.selectEntries({ key });
+                }
+                return consume(read);
               },
               options,
             );

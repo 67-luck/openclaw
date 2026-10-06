@@ -29,7 +29,7 @@ it.each([{ value: false }, { value: [] }, { value: { kind: "prewarm" as const } 
   },
 );
 
-it.each(["archives", "corpus", "targets"] as const)(
+it.each(["archives", "corpus", "targets", "metadata"] as const)(
   "serializes Windows storage environments for %s inventory",
   async (inventory) => {
     const stateDir = path.resolve("synthetic-state");
@@ -59,6 +59,9 @@ it.each(["archives", "corpus", "targets"] as const)(
           case "memory-session-targets":
             expect(request.params.env).toEqual(expectedEnv);
             return receive({ kind: request.kind, targets: [] });
+          case "memory-session-metadata":
+            expect(request.params.env).toEqual(expectedEnv);
+            return receive({ kind: request.kind, metadata: undefined });
           default:
             throw new Error(`Unexpected inventory request: ${request.kind}`);
         }
@@ -70,19 +73,23 @@ it.each(["archives", "corpus", "targets"] as const)(
             ? readers.readMemorySessionTargets({
                 params: { agentId: "main", storePath, env, sessionIds: ["one"] },
               })
-            : readers.readCorpusInventory({
-                scope: {
-                  cfg: {},
-                  normalizedAgentId: "main",
-                  storePath,
-                  env,
-                  artifactDirs: [],
-                  isSharedFixedStore: false,
-                },
-                options: {},
-                artifacts: [],
-              });
-      await expect(result).resolves.toEqual([]);
+            : inventory === "metadata"
+              ? readers.readMemorySessionMetadata({
+                  params: { agentId: "main", storePath, env, sessionId: "one" },
+                })
+              : readers.readCorpusInventory({
+                  scope: {
+                    cfg: {},
+                    normalizedAgentId: "main",
+                    storePath,
+                    env,
+                    artifactDirs: [],
+                    isSharedFixedStore: false,
+                  },
+                  options: {},
+                  artifacts: [],
+                });
+      await expect(result).resolves.toEqual(inventory === "metadata" ? undefined : []);
     } finally {
       Object.defineProperty(process, "platform", { value: platform });
     }

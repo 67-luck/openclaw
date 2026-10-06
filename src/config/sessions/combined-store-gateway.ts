@@ -26,6 +26,10 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
+import type {
+  GatewaySessionTopologyOptions,
+  ResolvedGatewaySessionStoreTargets,
+} from "./combined-store-discovery.types.js";
 import {
   createSessionModelSources,
   type GatewayStoredSessionTarget,
@@ -74,14 +78,10 @@ function capturePhysicalStoreTargets() {
   };
 }
 
-export type GatewaySessionStoreOptions = {
+export type GatewaySessionStoreOptions = GatewaySessionTopologyOptions & {
   discovery?: GatewaySessionStoreDiscovery;
-  agentId?: string;
-  configuredAgentsOnly?: boolean;
   includeIncognito?: boolean;
   projection?: SessionEntryListScope["projection"];
-  /** Keep per-agent sentinel rows distinct internally; public reads restore their raw key. */
-  preserveSentinelOwners?: boolean | "physical";
   /** Durable stores may use resident entries; incognito retains its existing lifetime. */
   loadEntries?: (
     target: SessionStoreTarget,
@@ -94,20 +94,7 @@ export type GatewaySessionStoreOptions = {
   ) => void;
 };
 
-type ResolvedGatewaySessionStoreTargets = {
-  groupDiscovery?: ReadonlyMap<string, { agentId: string; order: number }>;
-  configuredAgentIds?: ReadonlySet<string>;
-  defaultAgentId: string;
-  diagnostics: readonly string[];
-  durableStorePath?: string;
-  durableTargets: ReadonlyArray<{ agentId: string; storePath: string }>;
-  incognitoTargets: ReadonlyArray<{ agentId: string; storePath: string }>;
-  physicalTargets: ReadonlyMap<string, SessionStoreTarget>;
-  requestedAgentId?: string;
-  preparedAgentIds?: Set<string>;
-  sharedStoreRowOwner?: { agentId: string; target: SessionStoreTarget };
-  storeConfig?: string;
-};
+export type { ResolvedGatewaySessionStoreTargets } from "./combined-store-discovery.types.js";
 
 type PreparedConfiguredSessionStoreTargets = {
   cfg: OpenClawConfig;
@@ -443,10 +430,17 @@ export function resolveGatewaySessionStoreTargets(
   cfg: OpenClawConfig,
   opts: GatewaySessionStoreOptions = {},
 ): ResolvedGatewaySessionStoreTargets {
-  const readOptions = discoveryReadOptions(opts.discovery);
   if (opts.agentId?.trim()) {
-    assertAgentDatabaseAdmitted(opts.agentId, { env: readOptions.env });
+    assertAgentDatabaseAdmitted(opts.agentId, { env: opts.discovery?.env });
   }
+  return admitGatewaySessionStoreTargets(cfg, opts, prepareGatewaySessionStoreTopology(cfg, opts));
+}
+
+export function prepareGatewaySessionStoreTopology(
+  cfg: OpenClawConfig,
+  opts: GatewaySessionStoreOptions,
+): ResolvedGatewaySessionStoreTargets {
+  const readOptions = discoveryReadOptions(opts.discovery);
   let resolved = resolveGatewaySessionStoreTopology(cfg, opts);
   if (opts.preserveSentinelOwners === "physical") {
     const { physicalTargets, onResolvedTarget } = capturePhysicalStoreTargets();
@@ -474,6 +468,19 @@ export function resolveGatewaySessionStoreTargets(
       { defaultAgentId: resolved.defaultAgentId, onResolvedTarget, ...readOptions },
     );
     resolved = { ...resolved, durableTargets, physicalTargets, groupDiscovery };
+  }
+  return resolved;
+}
+
+/** Apply live host admission to captured topology without rediscovering its stores. */
+export function admitGatewaySessionStoreTargets(
+  cfg: OpenClawConfig,
+  opts: GatewaySessionStoreOptions,
+  resolved: ResolvedGatewaySessionStoreTargets,
+): ResolvedGatewaySessionStoreTargets {
+  const readOptions = discoveryReadOptions(opts.discovery);
+  if (opts.agentId?.trim()) {
+    assertAgentDatabaseAdmitted(opts.agentId, { env: readOptions.env });
   }
   const diagnostics = [...resolved.diagnostics];
   const env = readOptions.env ?? process.env;
@@ -535,8 +542,11 @@ export type GatewayCombinedSessionStore = {
   targetsBySessionKey: GatewayStoredSessionTargets;
 };
 
-export function prepareCombinedSessionStore(cfg: OpenClawConfig, opts: GatewaySessionStoreOptions) {
-  const targets = resolveGatewaySessionStoreTargets(cfg, opts);
+export function prepareCombinedSessionStore(
+  cfg: OpenClawConfig,
+  opts: GatewaySessionStoreOptions,
+  targets = resolveGatewaySessionStoreTargets(cfg, opts),
+) {
   return {
     projection: opts.projection ?? "list",
     targets,
@@ -555,6 +565,7 @@ export function mergeCombinedSessionStore(
   opts: GatewaySessionStoreOptions,
   prepared: ReturnType<typeof prepareCombinedSessionStore>,
   readEntries: (target: SessionStoreTarget) => SessionEntrySummary[],
+  preparedLineage?: Parameters<typeof createSessionModelSources>[3],
 ): GatewayCombinedSessionStore {
   const env = opts.discovery?.env;
   // Store-wide metadata reads must not materialize saved prompts for every row.
@@ -578,7 +589,12 @@ export function mergeCombinedSessionStore(
   // must not re-admit a sentinel through public aliases or select a different store.
   const targetsBySessionKey = new Map<string, GatewayStoredSessionTarget>();
   const projectionDiagnostics = [...diagnostics];
-  const modelSources = createSessionModelSources(cfg, projectionDiagnostics, preparedAgentIds);
+  const modelSources = createSessionModelSources(
+    cfg,
+    projectionDiagnostics,
+    preparedAgentIds,
+    preparedLineage,
+  );
   for (const { target, storeTarget } of prepared.reads) {
     const agentId = target.agentId;
     const storePath = target.storePath;

@@ -3,6 +3,7 @@ import { AGENT_LIST_RUNTIME_PROJECTION_COMPAT_RECORDS } from "./agent-list-runti
 import { CHANNEL_PAIRING_COMPAT_RECORD } from "./channel-pairing-record.js";
 import { DEPRECATION_MARKING_COMPAT_RECORDS } from "./deprecation-marking.js";
 import { MEDIA_LEGACY_PROJECTION_COMPAT_RECORD } from "./media-legacy-projection.js";
+import { MEMORY_SESSION_READER_COMPAT_RECORDS } from "./memory-session-reader-records.js";
 import { MENTION_INBOX_COMPAT_RECORD } from "./mention-inbox-record.js";
 import { MODEL_ACCOUNT_CONNECT_COMPAT_RECORD } from "./model-account-connect-record.js";
 import {
@@ -65,29 +66,7 @@ export const PLUGIN_COMPAT_RECORDS = [
     releaseNote:
       "Placement result readers and GitHub orphan deferral expose awaited methods while retaining the synchronous Gateway-context contracts shipped to plugins in 2026.9.7. Internal placement readers use the SQLite worker; stored data and update behavior are unchanged.",
   },
-  {
-    code: "memory-session-sync-inventory",
-    status: "deprecated",
-    owner: "sdk",
-    introduced: "2026-08-09",
-    deprecated: "2026-10-01",
-    warningStarts: "2026-10-01",
-    removalGate: "next-plugin-sdk-major",
-    replacement:
-      "Await loadArchivedSessionsAsync and resolveMemorySessionTargetsAsync from memory-core-host-engine-sessions. Synchronous readers retain their existing signatures and results until the next Plugin SDK major.",
-    docsPath: "/plugins/sdk-migration/compatibility-policy#memory-session-inventory-readers",
-    surfaces: ["loadArchivedSessions", "resolveMemorySessionTargets"],
-    diagnostics: [
-      "TypeScript @deprecated annotations and migration documentation; no runtime warnings",
-    ],
-    tests: [
-      "src/plugin-sdk/memory-core-host-engine-sessions.test.ts",
-      "src/plugins/compat/registry.test.ts",
-      "extensions/memory-core/src/memory-forget.participants.test.ts",
-    ],
-    releaseNote:
-      "Memory archive discovery and forget target selection can be awaited through worker-backed SDK readers; synchronous readers remain compatible until the next Plugin SDK major.",
-  },
+  ...MEMORY_SESSION_READER_COMPAT_RECORDS,
   {
     code: "channel-webhook-listener-config-inputs",
     status: "deprecated",

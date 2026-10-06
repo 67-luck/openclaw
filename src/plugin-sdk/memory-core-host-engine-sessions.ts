@@ -4,16 +4,14 @@ import {
   listSessionTranscriptCorpusEntriesForAgent as listSessionTranscriptCorpusEntriesFromHost,
   readSessionResetRecallCutoff as readSessionResetRecallCutoffFromHost,
 } from "../../packages/memory-host-sdk/src/engine-sessions.js";
-import { listSessionTranscriptInstances } from "../config/sessions/session-accessor.js";
 import {
-  projectSessionMetadata,
+  readMemorySessionMetadata,
   readMemorySessionTargets,
 } from "../config/sessions/session-memory-targets.js";
 import type {
   MemorySessionSelectors,
   MemorySessionTarget,
 } from "../config/sessions/session-memory-targets.types.js";
-import { normalizeAgentId } from "../routing/session-key.js";
 
 export type {
   MemorySessionSelectors,
@@ -24,6 +22,7 @@ export type {
 export { listSessionTranscriptArchivesReadOnly as loadArchivedSessions } from "../config/sessions/session-accessor.js";
 export {
   listSessionTranscriptArchivesInWorker as loadArchivedSessionsAsync,
+  readMemorySessionMetadataInWorker as loadMemorySessionMetadataAsync,
   resolveMemorySessionTargetsInWorker as resolveMemorySessionTargetsAsync,
 } from "../config/sessions/session-transcript-inventory-runtime.js";
 
@@ -59,22 +58,14 @@ export type {
   SessionTranscriptCorpusEntry,
 } from "../../packages/memory-host-sdk/src/engine-sessions.js";
 
-/** Read authoritative admission facts without creating a missing agent database. */
+/** @deprecated Use loadMemorySessionMetadataAsync; removed at the next Plugin SDK major. */
 export function loadMemorySessionMetadata(params: {
   agentId: string;
   sessionId: string;
   sessionKey?: string;
   storePath?: string;
 }): MemorySessionTarget | undefined {
-  const instance = listSessionTranscriptInstances(params, {
-    includeAllWindows: true,
-    sessionId: params.sessionId,
-  }).find(
-    (candidate) =>
-      candidate.agentId === normalizeAgentId(params.agentId) &&
-      (!params.sessionKey || candidate.sessionKey === params.sessionKey),
-  );
-  return instance ? projectSessionMetadata(instance) : undefined;
+  return readMemorySessionMetadata(params);
 }
 
 /** @deprecated Use resolveMemorySessionTargetsAsync; removed at the next Plugin SDK major. */

@@ -19,10 +19,7 @@ import { getRuntimeConfig } from "../config/config.js";
 import { resolveStateDir } from "../config/paths.js";
 import { loadExactSessionEntryReadOnlyResult } from "../config/sessions/session-accessor.sqlite-entry-availability.js";
 import { resolveSessionEntry } from "../config/sessions/session-accessor.sqlite-exact-read.js";
-import {
-  resolveExistingAgentSessionStoreTargetsReadOnlyResult,
-  type SessionStoreTargetsReadCache,
-} from "../config/sessions/targets-read-availability.js";
+import { resolveExistingAgentSessionStoreTargetsReadOnlyResult } from "../config/sessions/targets-read-availability.js";
 import { resolveDeliveryQueueStateEnv } from "../infra/delivery-queue-sqlite.js";
 import { openLocalFileSafely, readLocalFileSafely } from "../infra/fs-safe.js";
 import { collectReplyMediaEntries } from "../infra/outbound/reply-media-entries.js";
@@ -86,7 +83,10 @@ import {
   readManagedImageRecord,
   type ManagedImageRecord,
 } from "./managed-image-record-store.js";
-import { withManagedImageSessionRead } from "./managed-image-session-read.js";
+import {
+  readManagedImageSessionIndex,
+  withManagedImageSessionRead,
+} from "./managed-image-session-read.js";
 import {
   encodeImageThumbnail,
   resolveManagedImageThumbnail,
@@ -104,11 +104,8 @@ import {
 } from "./managed-outgoing-artifact-id.js";
 import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
-import {
-  readSessionMessagesMatchingIdAsync,
-  readSessionMessagesWithSourceAsync,
-} from "./session-transcript-readers.js";
-import { iterateSessionTranscriptSourcePages } from "./session-transcript-source-pages.js";
+import type { SessionTranscriptReadScope } from "./session-transcript-readers.js";
+import { readSessionMessagesMatchingIdAsync } from "./session-transcript-readers.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 export {
   MANAGED_OUTGOING_IMAGE_ARTIFACT_ID_PREFIX,
@@ -160,9 +157,6 @@ type CleanupManagedOutgoingMediaRecordsResult = {
 
 type SessionManagedOutgoingAttachmentIndex = Set<string>;
 type ManagedOutgoingTranscriptMatch = "match" | "missing" | "unavailable";
-type SessionStoreAvailabilityRead = ReturnType<
-  typeof resolveExistingAgentSessionStoreTargetsReadOnlyResult
->;
 
 export type ManagedOutgoingMediaArtifactDownload = {
   artifactId: string;
@@ -422,8 +416,6 @@ export async function cleanupManagedOutgoingMediaRecords(params?: {
     string,
     SessionManagedOutgoingAttachmentIndex | null
   >();
-  const sessionStoreAvailabilityCache = new Map<string, SessionStoreAvailabilityRead>();
-  const sessionStoreTargetsReadCache: SessionStoreTargetsReadCache = new Map();
   for (const entry of entries) {
     const { record } = entry;
     if (sessionKeyFilter && record.sessionKey !== sessionKeyFilter) {
@@ -451,8 +443,6 @@ export async function cleanupManagedOutgoingMediaRecords(params?: {
       const transcriptMatch = await recordMatchesTranscriptMessage(
         record,
         transcriptAttachmentIndexCache,
-        sessionStoreAvailabilityCache,
-        sessionStoreTargetsReadCache,
         stateDir,
       );
       // Session-store unavailability is not proof that durable chat history no longer owns media.
@@ -716,8 +706,6 @@ async function loadPendingPreparedAttachmentIds(stateDir: string): Promise<Set<s
 async function recordMatchesTranscriptMessage(
   record: ManagedImageRecord,
   cache?: Map<string, SessionManagedOutgoingAttachmentIndex | null>,
-  storeAvailabilityCache?: Map<string, SessionStoreAvailabilityRead>,
-  storeTargetsReadCache?: SessionStoreTargetsReadCache,
   stateDir?: string,
 ): Promise<ManagedOutgoingTranscriptMatch> {
   if (!record.messageId) {
@@ -736,18 +724,57 @@ async function recordMatchesTranscriptMessage(
   if (!ownerAgentId) {
     return "unavailable";
   }
-  const discovery =
-    storeAvailabilityCache?.get(ownerAgentId) ??
-    resolveExistingAgentSessionStoreTargetsReadOnlyResult(cfg, ownerAgentId, {
-      cache: storeTargetsReadCache,
-      ...(stateDir ? { env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } } : {}),
-    });
-  storeAvailabilityCache?.set(ownerAgentId, discovery);
+  const env = stateDir ? { ...process.env, OPENCLAW_STATE_DIR: stateDir } : process.env;
+  const missing = () => {
+    cache?.set(cacheKey, null);
+    return "missing" as const;
+  };
+  const readIndex = async (scope: SessionTranscriptReadScope, assertCurrent: () => void) => {
+    if (!scope.sessionId) {
+      return missing();
+    }
+    const index = await readManagedImageSessionIndex(
+      scope,
+      cache ? undefined : requestedMessageId,
+      (messageId, content) =>
+        collectManagedOutgoingAttachmentRefs(content, sessionKey).map(({ attachmentId }) =>
+          buildManagedOutgoingAttachmentRefKey(messageId, attachmentId),
+        ),
+      assertCurrent,
+    );
+    assertCurrent();
+    cache?.set(cacheKey, index);
+    return index.has(refKey) ? ("match" as const) : ("missing" as const);
+  };
+  if (
+    !isIncognitoSessionKey(sessionKey) &&
+    !(
+      cfg.session?.store &&
+      isIncognitoOpenClawAgentSqlitePath(cfg.session.store, { agentId: ownerAgentId, env })
+    )
+  ) {
+    return (
+      (await withManagedImageSessionRead(
+        {
+          cfg,
+          agentId: ownerAgentId,
+          sessionKey,
+          stateDir: stateDir ?? resolveStateDir(),
+          assertCurrent: () => {},
+          onMissing: missing,
+        },
+        readIndex,
+      )) ?? "unavailable"
+    );
+  }
+  // Process-held incognito discovery cannot reopen its database in a reader worker.
+  const discovery = resolveExistingAgentSessionStoreTargetsReadOnlyResult(cfg, ownerAgentId, {
+    env,
+  });
   if (!discovery.available) {
     return "unavailable";
   }
   const usesRuntimeState = !stateDir || path.resolve(stateDir) === path.resolve(resolveStateDir());
-  const env = stateDir ? { ...process.env, OPENCLAW_STATE_DIR: stateDir } : process.env;
   type SessionEntry = ReturnType<typeof loadGatewaySessionEntryReadOnly>["entry"];
   let matched: { entry: NonNullable<SessionEntry>; storePath: string } | undefined;
   for (const target of discovery.targets) {
@@ -807,35 +834,7 @@ async function recordMatchesTranscriptMessage(
     return "missing";
   }
 
-  // Archive file stats cannot establish current SQLite visibility. Reuse membership
-  // only within a cleanup pass; each new request must select canonical history again.
-  // Cleanup also owns off-path branches because rewind/switch can expose them again;
-  // serving stays limited to visible history.
-  const scope = { agentId, sessionEntry: entry, sessionId, sessionKey, storePath };
-  const pages = cache
-    ? iterateSessionTranscriptSourcePages(readSessionMessagesWithSourceAsync, scope, {
-        allowResetArchiveFallback: true,
-        includeOffPathMessages: true,
-      })
-    : [{ messages: await readSessionMessagesMatchingIdAsync(scope, requestedMessageId) }];
-  const index: SessionManagedOutgoingAttachmentIndex = new Set();
-  for await (const { messages } of pages) {
-    for (const message of messages) {
-      const messageId = asOptionalRecord(asOptionalRecord(message)?.["__openclaw"])?.id;
-      if (typeof messageId !== "string" || !messageId) {
-        continue;
-      }
-      for (const ref of collectManagedOutgoingAttachmentRefs(
-        readAssistantDisplayContent(message),
-        sessionKey,
-      )) {
-        index.add(buildManagedOutgoingAttachmentRefKey(messageId, ref.attachmentId));
-      }
-    }
-  }
-
-  cache?.set(cacheKey, index);
-  return index.has(refKey) ? "match" : "missing";
+  return readIndex({ agentId, sessionEntry: entry, sessionId, sessionKey, storePath }, () => {});
 }
 
 async function resolveManagedOutgoingMediaArtifactDownloadForRecord(
@@ -908,13 +907,7 @@ async function withManagedOutgoingMediaRead<T>(
         env: { ...process.env, OPENCLAW_STATE_DIR: stateDir },
       }))
   ) {
-    const match = await recordMatchesTranscriptMessage(
-      record,
-      undefined,
-      undefined,
-      undefined,
-      stateDir,
-    );
+    const match = await recordMatchesTranscriptMessage(record, undefined, stateDir);
     assertCallerCurrent();
     return match === "match" ? consume(assertCallerCurrent) : null;
   }

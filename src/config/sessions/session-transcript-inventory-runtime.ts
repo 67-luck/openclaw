@@ -10,8 +10,11 @@ import {
   readSessionEntryInWorker,
   withSessionStoreReaderInWorker,
 } from "./session-entry-read-runtime.js";
-import { readMemorySessionTargets } from "./session-memory-targets.js";
-import type { MemorySessionSelectors } from "./session-memory-targets.types.js";
+import { readMemorySessionMetadata, readMemorySessionTargets } from "./session-memory-targets.js";
+import type {
+  MemorySessionMetadataScope,
+  MemorySessionSelectors,
+} from "./session-memory-targets.types.js";
 import { resolveSessionStorePathForScope } from "./session-store-path.js";
 import type { SessionArchiveInventoryScope } from "./session-transcript-inventory.types.js";
 
@@ -80,6 +83,26 @@ export async function readSessionTranscriptCorpusInWorker(
       const entries = await reader.readCorpusInventory({ scope, options, artifacts, continuation });
       assertCurrent();
       return entries;
+    },
+    { backing: true, dataOnly: true },
+  );
+}
+
+export async function readMemorySessionMetadataInWorker(input: MemorySessionMetadataScope) {
+  const scope = { ...input, env: cloneEnvWithPlatformSemantics(process.env) };
+  const storePath = resolveSessionStorePathForScope(scope);
+  if (isIncognitoOpenClawAgentSqlitePath(storePath, scope)) {
+    return readMemorySessionMetadata({ ...scope, storePath });
+  }
+  return withSessionStoreReaderInWorker(
+    { ...scope, storePath },
+    async ({ reader, database, logicalAgentId, continuation, assertCurrent }) => {
+      const metadata = await reader.readMemorySessionMetadata({
+        params: { ...scope, agentId: logicalAgentId, storePath: database.path },
+        continuation,
+      });
+      assertCurrent();
+      return metadata;
     },
     { backing: true, dataOnly: true },
   );

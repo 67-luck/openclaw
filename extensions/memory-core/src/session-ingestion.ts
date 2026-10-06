@@ -4,7 +4,7 @@ import path from "node:path";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import {
   buildSessionEntry,
-  loadMemorySessionMetadata,
+  loadMemorySessionMetadataAsync,
   matchesSessionEntryPrefixHash,
   sessionPathForFile,
   statSessionEntrySync,
@@ -152,11 +152,11 @@ export function resolveAdmissionPolicy(
   return Object.values(policy).some((entries) => entries.length > 0) ? policy : undefined;
 }
 
-export function sessionExclusionReason(
+export async function sessionExclusionReason(
   source: SessionIngestionSource,
   policy: SessionAdmissionPolicy | undefined,
   forgottenSessionIds: ReadonlySet<string>,
-): string | undefined {
+): Promise<string | undefined> {
   if (!source.sessionOrigin) {
     return undefined;
   }
@@ -167,7 +167,7 @@ export function sessionExclusionReason(
   if (!policy) {
     return undefined;
   }
-  const metadata = loadMemorySessionMetadata({
+  const metadata = await loadMemorySessionMetadataAsync({
     ...source.sessionOrigin,
     storePath: source.buildOptions.storePath,
   });

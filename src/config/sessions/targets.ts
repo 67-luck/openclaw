@@ -97,7 +97,10 @@ export function resolveConfiguredSessionStoreTargets(
 /** Lists configured owners plus persisted owners whose registered DB still matches this store. */
 export function listKnownSessionStoreAgentIds(
   cfg: OpenClawConfig,
-  params: Pick<SessionStoreTargetReadOptions, "env" | "registeredDatabases"> = {},
+  params: Pick<
+    SessionStoreTargetReadOptions,
+    "env" | "registeredDatabases" | "readCandidates"
+  > = {},
 ): string[] {
   const env = params.env ?? process.env;
   const defaultAgentId = resolveSessionStoreCompatibilityAgentId(cfg);
@@ -113,6 +116,7 @@ export function listKnownSessionStoreAgentIds(
       defaultAgentId,
       env,
       registeredDatabases: params.registeredDatabases,
+      readCandidates: params.readCandidates,
       isSameDatabasePath,
     });
     // Fixed stores can outlive their registry row. Preserve the database-recorded
@@ -155,6 +159,7 @@ export function listKnownSessionStoreAgentIds(
       defaultAgentId,
       env,
       registeredDatabases: params.registeredDatabases,
+      readCandidates: params.readCandidates,
       isSameDatabasePath,
     }).path;
     if (isSameDatabasePath(registered.path, expectedPath)) {
@@ -597,6 +602,7 @@ export function resolveConfiguredAgentDatabaseTargets(
   params: {
     env: NodeJS.ProcessEnv;
     registeredDatabases?: SessionStoreRegistryRead;
+    readCandidates?: readonly SessionStoreReadCandidate[];
   },
 ): Array<{ agentId: string; path: string }> {
   const targets = resolveSessionStoreTargets(cfg, { allAgents: true }, params).map((target) => {
@@ -607,6 +613,7 @@ export function resolveConfiguredAgentDatabaseTargets(
         : resolveSessionStoreCompatibilityAgentId(cfg),
       env: params.env,
       registeredDatabases: params.registeredDatabases,
+      readCandidates: params.readCandidates,
     });
     // Shared stores partition logical agents inside one physical schema owner.
     return { agentId: resolved.agentId ?? target.agentId, path: resolved.path };

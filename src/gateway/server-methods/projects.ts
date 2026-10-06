@@ -397,29 +397,39 @@ export function createProjectsHandlers(service: ProjectWorktreeService): Gateway
               .store;
           } else {
             const projection = requireSessionRowProjection(context);
-            do {
-              await projection.ensureMaterialized();
-            } while (projection.needsMaterialization);
-            assertCurrent();
-            if (getSessionRowProjection(context) !== projection || projection.state.cfg !== cfg) {
-              throw new Error(
-                "Session projection changed while preparing the listing. Retry the request.",
-              );
-            }
-            store = loadCombinedSessionStoreForGatewayCore(cfg, {
-              projection: "list",
-              // Federation and process-local incognito stores retain the existing loader.
-              loadEntries: (target) =>
-                projection
-                  .selectEntries({ storePath: target.storePath, sortBy: null })
-                  .map((row) => ({
-                    sessionKey: row.key,
-                    entry: row.storedEntry ?? row.entry,
-                    keyBytes: Buffer.from(row.key),
-                  }))
-                  // SQLite's binary key order breaks locale-equal recency ties.
-                  .toSorted((left, right) => Buffer.compare(left.keyBytes, right.keyBytes)),
-            }).store;
+            store = (
+              await loadCombinedSessionStoreForGatewayCoreAsync(
+                cfg,
+                {
+                  projection: "list",
+                  // Federation and process-local incognito stores retain the existing loader.
+                  loadEntries: (target) =>
+                    projection
+                      .selectEntries({ storePath: target.storePath, sortBy: null })
+                      .map((row) => ({
+                        sessionKey: row.key,
+                        entry: row.storedEntry ?? row.entry,
+                        keyBytes: Buffer.from(row.key),
+                      }))
+                      // SQLite's binary key order breaks locale-equal recency ties.
+                      .toSorted((left, right) => Buffer.compare(left.keyBytes, right.keyBytes)),
+                },
+                async () => {
+                  do {
+                    await projection.ensureMaterialized();
+                  } while (projection.needsMaterialization);
+                  assertCurrent();
+                  if (
+                    getSessionRowProjection(context) !== projection ||
+                    projection.state.cfg !== cfg
+                  ) {
+                    throw new Error(
+                      "Session projection changed while preparing the listing. Retry the request.",
+                    );
+                  }
+                },
+              )
+            ).store;
           }
           assertCurrent();
         }
