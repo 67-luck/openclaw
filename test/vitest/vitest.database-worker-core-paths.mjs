@@ -93,6 +93,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run-entry.cleanup.test.ts",
   "src/agents/embedded-agent-runner/run-entry.cyber-failover.runner.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.rooted-proof.test.ts",
+  "src/agents/embedded-agent-runner/run-orchestrator.required-profile.test.ts",
   "src/agents/embedded-agent-runner/run-orchestrator.suspension.test.ts",
   "src/agents/embedded-agent-runner/run.cli-dispatch-lane.test.ts",
   "src/agents/embedded-agent-runner.run-embedded-agent.finalization-scope.test.ts",
