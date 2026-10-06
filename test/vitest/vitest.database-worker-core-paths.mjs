@@ -96,6 +96,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run/attempt-session.test.ts",
   "src/agents/embedded-agent-runner/run/attempt-tool-search-prompt.test.ts",
   "src/config/sessions/session-entry-readonly.worker.test.ts",
+  // Native memory SDK modules retain SQLite owners across source-module resets.
+  "src/config/sessions/session-accessor.sqlite-reclamation-memory.test.ts",
   "src/cli/daemon-cli/restart-health-client.test.ts",
   "src/acp/control-plane/manager.test.ts",
   "src/acp/control-plane/manager.turn-preflight.test.ts",

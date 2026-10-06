@@ -813,6 +813,7 @@ describe("projects vitest config", () => {
   });
 
   it.each([
+    "src/config/sessions/session-accessor.sqlite-reclamation-memory.test.ts",
     "src/wizard/setup.inference-recovery.integration.test.ts",
     "src/plugins/loader.trust-diagnostics.test.ts",
     "src/plugins/public-artifact-environment.test.ts",
@@ -831,6 +832,7 @@ describe("projects vitest config", () => {
     expect(buildVitestRunPlans([file]).map((plan) => plan.config)).toEqual([project]);
     expect(testConfig.include).toContain(file);
     expect(testConfig.pool).toBe(diagnosticForksPool);
+    expect(testConfig.isolate).toBe(true);
     expect(rootVitestProjects).toContain(project);
     expect(fullSuiteVitestShards.flatMap((shard) => shard.projects ?? [])).toContain(project);
   });
