@@ -409,63 +409,67 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
     if (canUseProjectProfile && !(await validateExecutionMode(dispatchTarget))) {
       return;
     }
-    let lastEligibilityError: string | undefined;
-    const candidates = autoDevice ? automaticDeviceIds : [dispatchTarget.deviceId];
-    for (let attempt = 0; attempt < candidates.length; attempt += 1) {
-      if (attempt > 0) {
-        const destination = resolveWorkerPlacementDestination({
-          cfg,
-          deviceId: candidates[attempt],
-        });
-        if (!destination.ok || !destination.value) {
-          respondInvalidWorkerSession(
-            respond,
-            destination.ok ? "automatic device placement did not select a node" : destination.error,
-          );
-          return;
-        }
-        dispatchTarget = destination.value;
-      }
-      if (autoDevice) {
-        const eligibility = await resolveDevicePlacementEligibility({
-          environmentService: context.workerEnvironmentService,
-          deviceId: candidates[attempt]!,
-          runtimeId: sessionRuntime,
-          executionMode,
-          requirement: devicePlacement,
-          config: cfg,
-          currentNode: context.nodeRegistry.get(candidates[attempt]!),
-        });
-        if (!eligibility.ok) {
-          lastEligibilityError = eligibility.error;
-          continue;
-        }
-        // Recheck after asynchronous eligibility, before dispatch registers its pending owner.
-        if (
-          devicePlacement?.consumesWorkerSlot &&
-          eligibility.availableSlots <=
-            (dispatchService.getPendingDeviceDispatchCount?.(candidates[attempt]!, sessionId) ?? 0)
-        ) {
-          lastEligibilityError = deviceUnavailableText(candidates[attempt]!, {
-            available: false,
-            unavailableReason: "at-capacity",
-          });
-          continue;
-        }
-      }
-      let attemptedPlacement: WorkerSessionPlacementRecord | undefined;
-      try {
-        const request: WorkerPlacementDispatchRequest = {
-          ...session,
-          executionMode,
-          runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
-          ...dispatchTarget,
-          ...(devicePlacement ? { devicePlacement } : {}),
-        };
-        const placement = await withWorkerPlacementAuthorization(
-          sessionMutationAuthorization,
-          (authorize) =>
-            dispatchService.dispatch(
+    const initialDispatchTarget = dispatchTarget;
+    try {
+      const result = await withWorkerPlacementAuthorization<
+        { placement: WorkerSessionPlacementRecord } | { invalid: string }
+      >(sessionMutationAuthorization, async (authorize) => {
+        let candidateTarget = initialDispatchTarget;
+        let lastEligibilityError: string | undefined;
+        const candidates = autoDevice ? automaticDeviceIds : [candidateTarget.deviceId];
+        for (let attempt = 0; attempt < candidates.length; attempt += 1) {
+          if (attempt > 0) {
+            const destination = resolveWorkerPlacementDestination({
+              cfg,
+              deviceId: candidates[attempt],
+            });
+            if (!destination.ok || !destination.value) {
+              return {
+                invalid: destination.ok
+                  ? "automatic device placement did not select a node"
+                  : destination.error,
+              };
+            }
+            candidateTarget = destination.value;
+          }
+          if (autoDevice) {
+            const eligibility = await resolveDevicePlacementEligibility({
+              environmentService: context.workerEnvironmentService,
+              deviceId: candidates[attempt]!,
+              runtimeId: sessionRuntime,
+              executionMode,
+              requirement: devicePlacement,
+              config: cfg,
+              currentNode: context.nodeRegistry.get(candidates[attempt]!),
+            });
+            if (!eligibility.ok) {
+              lastEligibilityError = eligibility.error;
+              continue;
+            }
+            // Keep the final capacity check and pending-owner registration in one synchronous turn.
+            if (
+              devicePlacement?.consumesWorkerSlot &&
+              eligibility.availableSlots <=
+                (dispatchService.getPendingDeviceDispatchCount?.(candidates[attempt]!, sessionId) ??
+                  0)
+            ) {
+              lastEligibilityError = deviceUnavailableText(candidates[attempt]!, {
+                available: false,
+                unavailableReason: "at-capacity",
+              });
+              continue;
+            }
+          }
+          let attemptedPlacement: WorkerSessionPlacementRecord | undefined;
+          try {
+            const request: WorkerPlacementDispatchRequest = {
+              ...session,
+              executionMode,
+              runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
+              ...candidateTarget,
+              ...(devicePlacement ? { devicePlacement } : {}),
+            };
+            const placement = await dispatchService.dispatch(
               request,
               (observed) => {
                 attemptedPlacement = { ...observed };
@@ -476,44 +480,47 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
               },
               authorize,
               signal,
-            ),
+            );
+            return { placement };
+          } catch (error) {
+            if (error instanceof SessionMutationAuthorizationChangedError) {
+              throw error;
+            }
+            if (
+              !autoDevice ||
+              !candidateTarget.deviceId ||
+              !canRetryDeviceDispatch({
+                error,
+                deviceId: candidateTarget.deviceId,
+                ...session,
+                attempted: attemptedPlacement,
+                current: placementReader.getMany([sessionId]).get(sessionId),
+                environments: context.workerEnvironmentService,
+              })
+            ) {
+              throw error;
+            }
+            lastEligibilityError = formatErrorMessage(error);
+          }
+        }
+        throw new Error(
+          `automatic device placement failed after ${candidates.length} attempts; ${lastEligibilityError ?? "no eligible host remains; reconnect a paired session-host node and retry"}`,
         );
+      });
+      if ("invalid" in result) {
+        respondInvalidWorkerSession(respond, result.invalid);
+      } else {
         respondWorkerPlacement({
           respond,
           key: sessionKey,
           sessionId,
           context,
-          placement,
+          placement: result.placement,
         });
-        return;
-      } catch (error) {
-        if (error instanceof SessionMutationAuthorizationChangedError) {
-          throw error;
-        }
-        if (
-          !autoDevice ||
-          !dispatchTarget.deviceId ||
-          !canRetryDeviceDispatch({
-            error,
-            deviceId: dispatchTarget.deviceId,
-            ...session,
-            attempted: attemptedPlacement,
-            current: placementReader.getMany([sessionId]).get(sessionId),
-            environments: context.workerEnvironmentService,
-          })
-        ) {
-          respondWorkerDispatchError(error, respond);
-          return;
-        }
-        lastEligibilityError = formatErrorMessage(error);
       }
+    } catch (error) {
+      respondWorkerDispatchError(error, respond);
     }
-    respondWorkerDispatchError(
-      new Error(
-        `automatic device placement failed after ${candidates.length} attempts; ${lastEligibilityError ?? "no eligible host remains; reconnect a paired session-host node and retry"}`,
-      ),
-      respond,
-    );
   },
   "sessions.move": async ({ params, respond, context, sessionMutationAuthorization }) => {
     if (!assertValidParams(params, validateSessionsMoveParams, "sessions.move", respond)) {
