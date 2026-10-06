@@ -83,7 +83,11 @@ export async function withCombinedSessionLineage<T>(
   if (!preparedAgentIds) {
     return consume();
   }
-  const complete = new Set([...preparedAgentIds, ...rows.map((row) => row.agentId)]);
+  // Captured private rows do not prove that their owner's durable inventory is complete.
+  const complete = new Set([
+    ...preparedAgentIds,
+    ...rows.filter((row) => !isIncognitoSessionKey(row.sessionKey)).map((row) => row.agentId),
+  ]);
   const keyFor = (agentId: string, key: string) => `${normalizeAgentId(agentId)}\0${key}`;
   const stored = new Map<string, SessionEntry | undefined>(
     rows.map((row) => [keyFor(row.agentId, row.sessionKey), row.entry]),
@@ -101,7 +105,12 @@ export async function withCombinedSessionLineage<T>(
       entry.spawnedBy,
       resolveSessionParentSessionKey(sessionKey),
     ]) {
-      if (key && parseAgentSessionKey(key) && !isIncognitoSessionKey(key)) {
+      const parsed = key ? parseAgentSessionKey(key) : undefined;
+      if (
+        key &&
+        parsed &&
+        (!isIncognitoSessionKey(key) || stored.has(keyFor(parsed.agentId, key)))
+      ) {
         queue.push({ agentId, key });
       }
     }
@@ -117,14 +126,20 @@ export async function withCombinedSessionLineage<T>(
   };
   const native = createGatewaySessionLineageReader(cfg);
   const reader: LineageReader = {
-    readStored: (agentId, key) =>
-      isIncognitoSessionKey(key)
-        ? native.readStored(agentId, key)
-        : stored.get(keyFor(agentId, key)),
-    readAlias: (key, agentId) =>
-      isIncognitoSessionKey(key)
-        ? native.readAlias(key, agentId)
-        : aliases.get(keyFor(agentId, key)),
+    readStored(agentId, key) {
+      if (!isIncognitoSessionKey(key)) {
+        return stored.get(keyFor(agentId, key));
+      }
+      const identity = keyFor(parseAgentSessionKey(key)?.agentId ?? agentId, key);
+      return stored.has(identity) ? stored.get(identity) : native.readStored(agentId, key);
+    },
+    readAlias(key, agentId) {
+      if (!isIncognitoSessionKey(key)) {
+        return aliases.get(keyFor(agentId, key));
+      }
+      const identity = keyFor(parseAgentSessionKey(key)?.agentId ?? agentId, key);
+      return stored.has(identity) ? stored.get(identity) : native.readAlias(key, agentId);
+    },
   };
   const visit = async (): Promise<T> => {
     for (;;) {

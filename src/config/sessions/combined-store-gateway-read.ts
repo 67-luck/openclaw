@@ -28,6 +28,10 @@ import {
 import { storeTargetKey, type GatewaySessionStoreDiscovery } from "./combined-store-paths.js";
 import type { SessionEntrySummary } from "./session-accessor.types.js";
 import {
+  captureIncognitoSessionTopology,
+  withIncognitoSessionStoreEntries,
+} from "./session-incognito-binding.js";
+import {
   assertSessionStoreReadCandidate,
   captureSessionStoreCandidateIdentities,
   captureSessionStoreReadCandidate,
@@ -36,6 +40,24 @@ import { prepareSessionStoreTargetInventory } from "./session-store-target-inven
 import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabases } from "./session-transcript-worker-runtime.js";
 import { listConfiguredSessionStoreAgentIds } from "./targets.js";
+
+function captureDiscoveryCandidates(
+  configured: ReturnType<typeof prepareSessionStoreTargetInventory>["candidates"],
+  discovery?: GatewaySessionStoreDiscovery,
+) {
+  const candidates = [...configured];
+  for (const row of discovery?.snapshot?.registeredAgentDatabases ?? []) {
+    const candidate = captureSessionStoreReadCandidate(row.path);
+    if (
+      !candidates.some(
+        (existing) => existing.path === candidate.path && existing.scope === candidate.scope,
+      )
+    ) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
 
 export async function readKnownSessionStoreAgentIdsInWorker(
   cfg: OpenClawConfig,
@@ -98,17 +120,7 @@ export async function withPreparedGatewaySessionTopology<T>(
   capturedIdentities = captureSessionStoreCandidateIdentities(inventory.candidates),
 ): Promise<T> {
   const config = inventory.config;
-  const candidates = [...inventory.candidates];
-  for (const row of options.discovery.snapshot?.registeredAgentDatabases ?? []) {
-    const candidate = captureSessionStoreReadCandidate(row.path);
-    if (
-      !candidates.some(
-        (existing) => existing.path === candidate.path && existing.scope === candidate.scope,
-      )
-    ) {
-      candidates.push(candidate);
-    }
-  }
+  const candidates = captureDiscoveryCandidates(inventory.candidates, options.discovery);
   const identities = new Map(capturedIdentities);
   for (const [pathname, identity] of captureSessionStoreCandidateIdentities(candidates)) {
     if (!identities.has(pathname)) {
@@ -227,9 +239,69 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
   prepareEntries?: () => Promise<void>,
 ): Promise<GatewayCombinedSessionStore> {
   const ambientStateDir = resolveStateDir(process.env);
-  const options = { ...opts };
-  const env = cloneEnvWithPlatformSemantics(options.discovery?.env ?? process.env);
+  const topology = opts.includeIncognito === false ? undefined : captureIncognitoSessionTopology();
+  const env = cloneEnvWithPlatformSemantics(opts.discovery?.env ?? topology?.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  if (topology && env.OPENCLAW_STATE_DIR !== resolveStateDir(topology.env)) {
+    throw new Error("Combined discovery belongs to another incognito state root");
+  }
+  const options = { ...opts, ...(opts.discovery && { discovery: { ...opts.discovery, env } }) };
+  const inventory = prepareSessionStoreTargetInventory(
+    cfg,
+    listConfiguredSessionStoreAgentIds(cfg),
+    env,
+    "recovery",
+  );
+  inventory.candidates = captureDiscoveryCandidates(inventory.candidates, options.discovery);
+  const identities = captureSessionStoreCandidateIdentities(inventory.candidates);
+  for (const candidate of inventory.candidates) {
+    const identity = identities.get(candidate.physicalPath);
+    if (identity && !candidate.scope) {
+      identities.set(candidate.path, identity);
+    }
+  }
+  const captured = {
+    env,
+    ambientStateDir,
+    inventory,
+    identities,
+    discovery: options.discovery
+      ? undefined
+      : prepareAgentDatabaseDeletionSnapshotRead({ env }, "runtime"),
+  };
+  const result = topology
+    ? withIncognitoSessionStoreEntries(
+        (stores) => loadCombinedSessionStore(cfg, options, captured, stores, prepareEntries),
+        options.projection ?? "list",
+      )
+    : loadCombinedSessionStore(cfg, options, captured, undefined, prepareEntries);
+  return result.then((value) => {
+    if (resolveStateDir(process.env) !== ambientStateDir) {
+      throw new Error("Session stores changed while preparing the listing. Retry the request.");
+    }
+    return value;
+  });
+}
+
+/** Descriptive listings retain federation policy while durable rows are read by its worker. */
+async function loadCombinedSessionStore(
+  cfg: OpenClawConfig,
+  options: GatewaySessionStoreOptions,
+  captured: {
+    env: NodeJS.ProcessEnv;
+    ambientStateDir: string;
+    inventory: ReturnType<typeof prepareSessionStoreTargetInventory>;
+    identities: ReturnType<typeof captureSessionStoreCandidateIdentities>;
+    discovery: ReturnType<typeof prepareAgentDatabaseDeletionSnapshotRead> | undefined;
+  },
+  incognitoStores?: readonly {
+    agentId: string;
+    storePath: string;
+    entries: SessionEntrySummary[];
+  }[],
+  prepareEntries?: () => Promise<void>,
+): Promise<GatewayCombinedSessionStore> {
+  const { env, ambientStateDir, inventory, identities } = captured;
   const read = async (
     config: OpenClawConfig,
     readOptions: typeof options,
@@ -240,8 +312,22 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
     }
     return withPreparedGatewaySessionTopology(
       config,
-      { ...readOptions, discovery: readOptions.discovery },
+      {
+        ...readOptions,
+        discovery: readOptions.discovery,
+        ...(incognitoStores && { includeIncognito: false }),
+      },
       async (prepared, discovery, _scopes, assertTopologyCurrent) => {
+        if (incognitoStores) {
+          prepared.targets = {
+            ...prepared.targets,
+            incognitoTargets: incognitoStores.filter(
+              (store) =>
+                !prepared.targets.requestedAgentId ||
+                store.agentId === prepared.targets.requestedAgentId,
+            ),
+          };
+        }
         const identities = prepared.reads.map(
           ({ storeTarget }) =>
             capturedIdentities.get(storeTarget.storePath) ??
@@ -315,6 +401,15 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
                       : target.agentId),
                 })),
               );
+              for (const store of incognitoStores ?? []) {
+                roots.push(
+                  ...store.entries.map(({ sessionKey, entry }) => ({
+                    sessionKey,
+                    entry,
+                    agentId: parseAgentSessionKey(sessionKey)?.agentId ?? store.agentId,
+                  })),
+                );
+              }
               return await withCombinedSessionLineage(
                 config,
                 env,
@@ -338,19 +433,26 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
                   if (
                     resolveStateDir(process.env) !== ambientStateDir ||
                     registryToken !== readOpenClawAgentDatabaseRegistryToken() ||
-                    incognitoGeneration !== readOpenIncognitoAgentDatabaseGeneration()
+                    (!incognitoStores &&
+                      incognitoGeneration !== readOpenIncognitoAgentDatabaseGeneration())
                   ) {
                     throw new Error(
                       "Session stores changed while preparing the listing. Retry the request.",
                     );
                   }
-                  // The merger rechecks admission and reads process-local incognito handles at consumption.
+                  // The merger rechecks admission while the outer reader retains incognito custody.
                   return mergeCombinedSessionStore(
                     config,
                     { ...readOptions, discovery },
                     prepared,
                     readEntries,
                     lineage,
+                    incognitoStores &&
+                      ((target) =>
+                        expectDefined(
+                          incognitoStores.find((store) => store.storePath === target.storePath),
+                          "captured actor",
+                        ).entries),
                   );
                 },
               );
@@ -360,23 +462,12 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
           },
         );
       },
+      inventory,
+      capturedIdentities,
     );
   };
   if (!options.discovery) {
-    const inventory = prepareSessionStoreTargetInventory(
-      cfg,
-      listConfiguredSessionStoreAgentIds(cfg),
-      env,
-      "recovery",
-    );
-    const identities = captureSessionStoreCandidateIdentities(inventory.candidates);
-    for (const candidate of inventory.candidates) {
-      const identity = identities.get(candidate.physicalPath);
-      if (identity && !candidate.scope) {
-        identities.set(candidate.path, identity);
-      }
-    }
-    const discovery = prepareAgentDatabaseDeletionSnapshotRead({ env }, "runtime");
+    const discovery = expectDefined(captured.discovery, "captured deletion discovery");
     return withSessionHistoryWorkerReadCandidates(inventory.candidates, async (owner) => {
       const assertCaptured = () => {
         owner.assertCurrent();
@@ -408,5 +499,5 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
     });
   }
 
-  return read(cfg, options, new Map());
+  return read(cfg, options, identities);
 }

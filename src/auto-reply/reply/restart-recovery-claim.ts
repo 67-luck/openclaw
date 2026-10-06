@@ -6,10 +6,7 @@ import {
   hasRestartRecoveryTerminalRun,
 } from "../../config/sessions/restart-recovery-state.js";
 import type { RestartRecoveryBeforeAgentReplyState } from "../../config/sessions/restart-recovery-types.js";
-import {
-  patchSessionEntryCore,
-  updateSessionEntry,
-} from "../../config/sessions/session-accessor.js";
+import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import type { SessionTranscriptTurnLifecyclePatch } from "../../config/sessions/session-transcript-turn-lifecycle.types.js";
 import {
@@ -71,9 +68,10 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
   sessionKey: string;
   sourceTurnId: string;
   storePath: string;
+  assertCurrent?: () => void;
 }): Promise<SessionEntry | undefined> {
   let didRetire = false;
-  const retired = await updateSessionEntry(
+  const retired = await patchSessionEntryCore(
     { agentId: params.agentId, storePath: params.storePath, sessionKey: params.sessionKey },
     (current) => {
       if (
@@ -94,8 +92,13 @@ export async function retireTerminalRestartRecoverySourceClaim(params: {
         updatedAt: Date.now(),
       };
     },
-    { skipMaintenance: true, takeCacheOwnership: true },
+    {
+      skipMaintenance: true,
+      takeCacheOwnership: true,
+      workerGuard: { assertCurrent: params.assertCurrent },
+    },
   );
+  params.assertCurrent?.();
   return didRetire ? (retired ?? undefined) : undefined;
 }
 
@@ -127,9 +130,12 @@ export function createReplyRestartRecoveryClaimController(params: {
   let trackedSessionId: string | undefined;
   let tracked = false;
   let confirmedArmed = false;
-  const assertReadCurrent = () => {
+  const assertReadCurrent = (sessionId?: string) => {
     if (params.lifecycleGeneration) {
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
+    }
+    if (sessionId !== undefined && params.getSessionId() !== sessionId) {
+      throw createRestartRecoveryClaimChangedError();
     }
   };
 
@@ -141,6 +147,7 @@ export function createReplyRestartRecoveryClaimController(params: {
     sessionKey: string;
     storePath: string;
   }): Promise<SessionEntry> => {
+    assertReadCurrent(options.sessionId);
     const expectedSessionState = buildRestartRecoveryExpectedState(options.entry);
     if (options.recorder && !options.recorder.hasPersisted()) {
       const result = await options.recorder.persistApproved({
@@ -154,13 +161,14 @@ export function createReplyRestartRecoveryClaimController(params: {
         expectedSessionState,
         sessionLifecyclePatch: options.patch,
       });
+      assertReadCurrent(options.sessionId);
       if (!result?.sessionEntry) {
         throw new Error("session changed before durable user-turn admission");
       }
       return result.sessionEntry as SessionEntry;
     }
     let didCommit = false;
-    const persisted = await updateSessionEntry(
+    const persisted = await patchSessionEntryCore(
       { agentId: params.agentId, storePath: options.storePath, sessionKey: options.sessionKey },
       (current) => {
         if (
@@ -174,7 +182,9 @@ export function createReplyRestartRecoveryClaimController(params: {
         didCommit = true;
         return options.patch;
       },
+      { workerGuard: { assertCurrent: () => assertReadCurrent(options.sessionId) } },
     );
+    assertReadCurrent(options.sessionId);
     if (!didCommit || !persisted) {
       throw createRestartRecoveryClaimChangedError();
     }
@@ -276,6 +286,7 @@ export function createReplyRestartRecoveryClaimController(params: {
             sessionKey: params.sessionKey,
             sourceTurnId,
             storePath: params.storePath,
+            assertCurrent: () => assertReadCurrent(sessionId),
           });
           if (retired) {
             params.setEntry(retired);
@@ -432,11 +443,13 @@ export function createReplyRestartRecoveryClaimController(params: {
     if (!tracked || !params.sessionKey || !params.storePath) {
       return;
     }
+    const sessionId = params.getSessionId();
+    assertReadCurrent(sessionId);
     const updatedAt = Date.now();
-    const persisted = await updateSessionEntry(
+    const persisted = await patchSessionEntryCore(
       { agentId: params.agentId, storePath: params.storePath, sessionKey: params.sessionKey },
       (current) =>
-        current.sessionId === params.getSessionId() &&
+        current.sessionId === sessionId &&
         current.restartRecoveryDeliveryRunId === recoveryRunId &&
         current.restartRecoveryDeliverySourceRunId === recoverySourceRunId &&
         current.restartRecoveryBeforeAgentReplyState === expectedState
@@ -465,8 +478,13 @@ export function createReplyRestartRecoveryClaimController(params: {
               updatedAt,
             }
           : null,
-      { skipMaintenance: true, takeCacheOwnership: true },
+      {
+        skipMaintenance: true,
+        takeCacheOwnership: true,
+        workerGuard: { assertCurrent: () => assertReadCurrent(sessionId) },
+      },
     );
+    assertReadCurrent(sessionId);
     if (!persisted) {
       throw new Error(
         `before_agent_reply ${expectedState === "pending" ? "checkpoint" : "start"} lost restart recovery ownership`,

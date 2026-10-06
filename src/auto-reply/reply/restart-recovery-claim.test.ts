@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
@@ -22,6 +23,7 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { isAgentRunStaleLifecycleError } from "../../infra/agent-lifecycle-error.js";
+import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { useStateDatabaseTempDirs } from "../../test-utils/state-database-temp-dirs.js";
@@ -330,27 +332,31 @@ describe("createReplyRestartRecoveryClaimController", () => {
         { sessionId: "ops-session", restartRecoveryDeliveryRunId: "ops-recovery" },
         { ...ops, admissionRunId: "ops-recovery" },
       );
-      await expect(controller.admitUserTurn()).resolves.toBe("admitted");
       const hostSql = observeHostDataSql();
       try {
         expect(loadSessionEntry(ops)?.sessionId).toBe("ops-session");
         expect(hostSql.calls.some((call) => call.mock.calls.length > 0)).toBe(true);
         hostSql.calls.forEach((call) => call.mockClear());
+        hostSql.queries.length = 0;
+        await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+        expect(hostSql.queries).toEqual([]);
+        hostSql.calls.forEach((call) => call.mockClear());
         expect(await controller.isArmed()).toBe(false);
         hostSql.calls.forEach((call) => expect(call).not.toHaveBeenCalled());
+        await expect(controller.beginBeforeAgentReply()).resolves.toBe(true);
+        await controller.checkpointBeforeAgentReply({
+          state: "handled-reply",
+          pendingFinalDelivery: {
+            intentId: "ops-intent",
+            text: "ops hook reply",
+            deliveries: [{ id: "ops-delivery", state: "prepared" }],
+          },
+        });
+        await controller.clear();
+        expect(hostSql.queries).toEqual([]);
       } finally {
         hostSql.restore();
       }
-      await expect(controller.beginBeforeAgentReply()).resolves.toBe(true);
-      await controller.checkpointBeforeAgentReply({
-        state: "handled-reply",
-        pendingFinalDelivery: {
-          intentId: "ops-intent",
-          text: "ops hook reply",
-          deliveries: [{ id: "ops-delivery", state: "prepared" }],
-        },
-      });
-      await controller.clear();
       expect(loadSessionEntry(ops)).toMatchObject({
         sessionId: "ops-session",
         restartRecoveryBeforeAgentReplyState: "handled-reply",
@@ -558,7 +564,13 @@ describe("createReplyRestartRecoveryClaimController", () => {
       },
     );
 
-    await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+    const hostSql = observeHostDataSql();
+    try {
+      await expect(controller.admitUserTurn()).resolves.toBe("admitted");
+      expect(hostSql.queries).toEqual([]);
+    } finally {
+      hostSql.restore();
+    }
     expect(read()).toMatchObject({
       restartRecoveryDeliveryContext: deliveryContext,
       restartRecoveryDeliveryReceiptState: "terminal-pending",
@@ -569,6 +581,70 @@ describe("createReplyRestartRecoveryClaimController", () => {
       status: "running",
     });
   });
+
+  it("retires a terminal redelivery claim through worker admission", async () => {
+    const { controller, read } = await createTrackedClaim(
+      { status: "done", restartRecoveryDeliverySourceRunId: "terminal-source" },
+      { admissionRunId: "later-run", sourceTurnId: "terminal-source" },
+    );
+    const hostSql = observeHostDataSql();
+    try {
+      await expect(controller.admitUserTurn()).resolves.toBe("duplicate-source");
+      expect(hostSql.queries).toEqual([]);
+    } finally {
+      hostSql.restore();
+    }
+    expect(read()).toMatchObject({
+      status: "done",
+      restartRecoveryTerminalRunIds: ["terminal-source"],
+    });
+    expect(read()?.restartRecoveryDeliveryRunId).toBeUndefined();
+  });
+
+  it.each(["admission", "checkpoint"] as const)(
+    "refuses %s persistence when the lifecycle changes at commit",
+    async (phase) => {
+      const { controller, read } = await createTrackedClaim({
+        restartRecoveryBeforeAgentReplyState: "pending",
+      });
+      if (phase === "checkpoint") {
+        await controller.admitUserTurn();
+        await controller.beginBeforeAgentReply();
+      }
+      const before = read();
+      const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
+      let interrupted = false;
+      const admission = vi
+        .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
+        .mockImplementation((callback, attachment) =>
+          createAdmission((request, grant) => {
+            if (
+              !interrupted &&
+              request.stage === "commit" &&
+              isRecord(request.facts) &&
+              isRecord(request.facts.publication) &&
+              request.facts.publication.kind === "session-entry-patch-committed"
+            ) {
+              interrupted = true;
+              rotateAgentEventLifecycleGeneration();
+            }
+            callback(request, grant);
+          }, attachment),
+        );
+      try {
+        const outcome = await (
+          phase === "admission"
+            ? controller.admitUserTurn()
+            : controller.checkpointBeforeAgentReply({ state: "continue" })
+        ).catch((error: unknown) => error);
+        expect(interrupted).toBe(true);
+        expect(isAgentRunStaleLifecycleError(outcome)).toBe(true);
+        expect(read()).toEqual(before);
+      } finally {
+        admission.mockRestore();
+      }
+    },
+  );
 
   it("retargets durable user-turn admission to the prepared reply session", async () => {
     const storePath = path.join(tempDirs.make("openclaw-reply-admission-"), "sessions.json");
