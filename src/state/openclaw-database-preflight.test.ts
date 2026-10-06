@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../../package.json" with { type: "json" };
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { SQLITE_STAGING_TOKEN_FILES } from "../infra/sqlite-staging-token.js";
@@ -97,7 +98,6 @@ describe("OpenClaw database schema preflight", () => {
         VALUES ('retained', ?, '', '', ?, 1, 1, 0)`)
         .run(path.dirname(agent.path), JSON.stringify([agent.path]));
     });
-    const { DatabaseSync } = requireNodeSqlite();
     for (const retained of [true, false]) {
       if (!retained) {
         withDatabase(statePath, (database) => {
@@ -105,27 +105,14 @@ describe("OpenClaw database schema preflight", () => {
         });
       }
       const callerSql: string[] = [];
-      const recordSql = (database: DatabaseSync, sql: string) => {
+      const observer = observeHostDataSql((sql, database) => {
         // Snapshot staging locks retain their native owner; payload inspection must move.
-        if (path.basename(database.location() ?? "") !== SQLITE_STAGING_TOKEN_FILES[0]) {
+        if (
+          database &&
+          path.basename(database.location() ?? "") !== SQLITE_STAGING_TOKEN_FILES[0]
+        ) {
           callerSql.push(sql);
         }
-      };
-      const nativePrepare = DatabaseSync.prototype.prepare;
-      const nativeExec = DatabaseSync.prototype.exec;
-      const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
-        this: DatabaseSync,
-        ...args: Parameters<DatabaseSync["prepare"]>
-      ) {
-        recordSql(this, args[0]);
-        return nativePrepare.apply(this, args);
-      });
-      const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
-        this: DatabaseSync,
-        sql: string,
-      ) {
-        recordSql(this, sql);
-        nativeExec.call(this, sql);
       });
       try {
         const readiness = assertOpenClawDatabasesReady({ env, operation: "gateway-restart" });
@@ -145,8 +132,7 @@ describe("OpenClaw database schema preflight", () => {
         }
         expect(callerSql).toEqual([]);
       } finally {
-        prepare.mockRestore();
-        exec.mockRestore();
+        observer.restore();
       }
     }
   });
