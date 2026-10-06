@@ -3521,7 +3521,8 @@ function splitHostedReleaseShard(shard: NodeTestShard): NodeTestShard[] {
     timings[parentShardName] ?? 0,
     timings[original.timingKeys[0]!] ?? 0,
     readCompleteSplitGenerationSeconds(timings, original.selectorKey) ?? 0,
-    historicalWholeSeconds,
+    // Setup and the second runtime consume the remaining 12 minutes of the job timeout.
+    historicalWholeSeconds > budget * 4 ? historicalWholeSeconds : 0,
   );
   if (seconds <= budget) {
     return [
