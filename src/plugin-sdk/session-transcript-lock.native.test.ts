@@ -105,8 +105,17 @@ it("skips async preparation on replay and rejects a stale fresh preparation", as
       role: string;
       content: string;
       idempotencyKey: string;
-      custom?: bigint;
-    } = { role: "assistant", content: "original", idempotencyKey: "original", custom: 1n };
+      custom?: { toJSON(): never };
+    } = {
+      role: "assistant",
+      content: "original",
+      idempotencyKey: "original",
+      custom: {
+        toJSON() {
+          throw new Error("Discarded input must not be serialized");
+        },
+      },
+    };
     await withSessionTranscriptWriteLock(scope, (locked) =>
       locked.appendMessage({
         eventId: "original",
@@ -132,7 +141,7 @@ it("skips async preparation on replay and rejects a stale fresh preparation", as
     await expect(
       withSessionTranscriptWriteLock(scope, (locked) =>
         locked.appendMessage({
-          message: { role: "assistant", content: "suppressed", custom: 1n },
+          message: { ...original, idempotencyKey: "suppressed" },
           prepareMessageAfterIdempotencyCheckAsync: async () => undefined,
         }),
       ),

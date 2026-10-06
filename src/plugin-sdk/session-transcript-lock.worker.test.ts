@@ -78,6 +78,44 @@ it("creates the first transcript in an absent custom store through the SDK", asy
   });
 });
 
+it.each([false, true])(
+  "preserves custom JSON across locked worker writes (prepared=%s)",
+  async (prepared) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+      const scope = await seed(env);
+      const message = {
+        role: "assistant",
+        content: "custom payload",
+        idempotencyKey: "custom-json",
+        custom: { toJSON: () => "stored value" },
+      };
+      const prepare = prepared
+        ? async (input: typeof message) => ({
+            ...input,
+            custom: { toJSON: () => "prepared value" },
+          })
+        : undefined;
+      const expected = { ...message, custom: prepared ? "prepared value" : "stored value" };
+      const result = await withSessionTranscriptWriteLock(scope, (locked) =>
+        locked.appendMessage({
+          eventId: "custom-json",
+          message,
+          prepareMessageAfterIdempotencyCheckAsync: prepare,
+        }),
+      );
+      expect(result).toMatchObject({ appended: true, message: expected });
+      expect(loadTranscriptEventsSync(scope)).toContainEqual(
+        expect.objectContaining({ id: "custom-json", message: expected }),
+      );
+      await expect(
+        withSessionTranscriptWriteLock(scope, (locked) =>
+          locked.appendMessage({ message, prepareMessageAfterIdempotencyCheckAsync: prepare }),
+        ),
+      ).resolves.toMatchObject({ appended: false, message: expected });
+    });
+  },
+);
+
 it("rechecks the Codex prepared guard at the worker commit grant", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
     const scope = await seed(env);

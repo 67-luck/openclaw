@@ -203,6 +203,7 @@ export async function withWorkerTranscriptWriteLock<T>(
               ) => {
                 const {
                   config,
+                  message: originalMessage,
                   prepareMessageAfterIdempotencyCheck: legacyPrepare,
                   prepareMessageAfterIdempotencyCheckAsync: prepare,
                   beforeFreshMessageCommit,
@@ -211,13 +212,35 @@ export async function withWorkerTranscriptWriteLock<T>(
                 const freshGuard = captureExternalSessionCommitGuard(beforeFreshMessageCommit);
                 const input = {
                   ...target,
-                  options: serializable,
+                  options: {
+                    ...serializable,
+                    // Replay and suppression must not serialize discarded custom JSON values.
+                    message:
+                      originalMessage === undefined
+                        ? undefined
+                        : originalMessage === null
+                          ? null
+                          : {
+                              role:
+                                isRecord(originalMessage) && originalMessage.role === "user"
+                                  ? ("user" as const)
+                                  : undefined,
+                              idempotencyKey:
+                                isRecord(originalMessage) &&
+                                typeof originalMessage.idempotencyKey === "string"
+                                  ? originalMessage.idempotencyKey
+                                  : undefined,
+                            },
+                  },
                   snapshot,
                   custody: custody?.facts,
                   relocation: custody?.relocation,
                 };
                 const expected =
-                  prepare || beforeFreshMessageCommit
+                  prepare ||
+                  beforeFreshMessageCommit ||
+                  (input.options.message?.role === "user" &&
+                    typeof input.options.message.idempotencyKey === "string")
                     ? await executeSessionMessageRewriteOperation(worker, database.agentId, {
                         type: "session.transcript.lock.prepare",
                         input,
@@ -252,13 +275,13 @@ export async function withWorkerTranscriptWriteLock<T>(
                 fresh = false;
                 freshSource = authority;
                 try {
-                  let message: TMessage | undefined = options.message;
+                  let message: TMessage | undefined = originalMessage;
                   if (prepare && expected && !expected.pending && !expected.existing) {
-                    message = await prepare(options.message);
+                    message = await prepare(originalMessage);
                   }
                   assertCurrent();
                   const preparedMessageJson =
-                    prepare && (expected?.pending || expected?.existing)
+                    expected?.pending || (prepare && expected?.existing)
                       ? undefined
                       : isRecord(message)
                         ? prepareTranscriptMessageAppendForWorker({ message, config }).messageJson
@@ -274,7 +297,6 @@ export async function withWorkerTranscriptWriteLock<T>(
                     ...(prepare && expected
                       ? {
                           preparation: {
-                            message,
                             prepared: !expected.pending && !expected.existing,
                             version: expected.version,
                           },

@@ -344,10 +344,19 @@ it.each(["turn", "locked"] as const)(
                   messages: [{ message: admitted!.message }],
                 })
               : withSessionTranscriptWriteLock(scope, (locked) =>
-                  locked.appendMessage({ message: admitted!.message }),
+                  locked.appendMessage({
+                    message: {
+                      ...admitted!.message,
+                      custom: {
+                        toJSON() {
+                          throw new Error("Accepted custody must not serialize supplied input");
+                        },
+                      },
+                    },
+                  }),
                 ).then((result) => ({ appendedMessages: [result] })),
           ),
-        ).toMatchObject({ appendedMessages: [{ appended: true }] });
+        ).toMatchObject({ appendedMessages: [{ appended: true, message: admitted!.message }] });
         expect(
           writer === "turn"
             ? queries

@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
+import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { sessionChanges, type SessionRowChange } from "../../sessions/session-row-changes.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { isIncognitoSessionKey } from "../../shared/incognito-session-key.js";
@@ -11,6 +12,8 @@ import { bindPreparedSessionEntryPublication } from "./session-accessor.sqlite-e
 import { publishCommittedSessionIdentity } from "./session-accessor.sqlite-identity.js";
 import { resolveSqliteScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
 import type { IncognitoSessionActor } from "./session-incognito-actor.js";
+import type { IncognitoSessionAuthority } from "./session-incognito-contract.js";
+import type { IncognitoSessionHistoryBinding } from "./session-incognito-history-read.js";
 import type { SessionEntry } from "./types.js";
 
 export type IncognitoSessionBinding = Readonly<{
@@ -52,14 +55,22 @@ export function captureIncognitoSessionBinding(target?: {
   binding.actor.assertCurrent();
   if (target) {
     if (
-      !target.sessionKey &&
       exactPath &&
-      (!target.agentId || target.agentId === binding.actor.agentId)
+      (!target.agentId || target.agentId === binding.actor.agentId) &&
+      (!target.sessionKey ||
+        (target.env === undefined &&
+          isIncognitoSessionKey(target.sessionKey) &&
+          resolveAgentIdFromSessionKey(target.sessionKey) === binding.actor.agentId))
     ) {
+      // Exact captured paths survive environment changes; an explicit environment still resolves below.
       return binding;
     }
     const options = toDatabaseOptions(
-      resolveSqliteScope({ ...target, sessionKey: target.sessionKey ?? "" }),
+      resolveSqliteScope({
+        ...target,
+        env: target.env ?? { OPENCLAW_STATE_DIR: path.resolve(binding.actor.path, "../../../..") },
+        sessionKey: target.sessionKey ?? "",
+      }),
     );
     if (
       options.agentId !== binding.actor.agentId ||
@@ -69,6 +80,59 @@ export function captureIncognitoSessionBinding(target?: {
     }
   }
   return binding;
+}
+
+/**
+ * Capture the shared actor and its current session facts before any history work yields.
+ * @internal P7 Knip production exception: remove when runtime acquisition installs the binding.
+ */
+export function captureIncognitoSessionHistoryBinding(scope: {
+  agentId?: string;
+  env?: NodeJS.ProcessEnv;
+  storePath?: string;
+  sessionKey?: string;
+  sessionId?: string;
+  sessionEntry?: { sessionId?: string };
+}): IncognitoSessionHistoryBinding | undefined {
+  const binding = captureIncognitoSessionBinding(scope);
+  if (!binding) {
+    return undefined;
+  }
+  const { actor, admissionSignal } = binding;
+  const sessionId = scope.sessionId ?? scope.sessionEntry?.sessionId;
+  const sessionKey =
+    scope.sessionKey ??
+    actor.sessions.deadlines().find((entry) => entry.sessionId === sessionId)?.sessionKey;
+  const entry = sessionKey ? actor.sessions.readSharing(sessionKey)?.entry : undefined;
+  if (!sessionKey || !entry || (sessionId !== undefined && entry.sessionId !== sessionId)) {
+    throw new Error("Incognito history requires its current captured session");
+  }
+  const claim = actor.sessions.captureCurrent(sessionKey);
+  const authority = {
+    assertCurrent() {
+      admissionSignal?.throwIfAborted();
+      actor.assertReadable();
+      claim.assertCurrent();
+    },
+  };
+  authority.assertCurrent();
+  return {
+    actor,
+    authority,
+    target: { sessionKey, sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision },
+  };
+}
+
+/** Capture admission once; accepted persistence keeps its actor authority during close. */
+export function captureIncognitoSessionOperation(
+  target: Parameters<typeof captureIncognitoSessionBinding>[0],
+): (IncognitoSessionBinding & { authority: IncognitoSessionAuthority }) | undefined {
+  const binding = captureIncognitoSessionBinding(target);
+  if (!binding) {
+    return undefined;
+  }
+  binding.admissionSignal?.throwIfAborted();
+  return { ...binding, authority: { assertCurrent: () => binding.actor.assertCurrent() } };
 }
 
 /** Facts have already been installed under actor FIFO custody before observers run. */

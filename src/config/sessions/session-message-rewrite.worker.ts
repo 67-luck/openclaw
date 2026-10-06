@@ -221,10 +221,13 @@ type LockedTranscriptTarget = {
 type LockedMessageOptions = Omit<
   LockedTranscriptMessageAppendOptions<unknown>,
   | "config"
+  | "message"
   | "beforeFreshMessageCommit"
   | "prepareMessageAfterIdempotencyCheck"
   | "prepareMessageAfterIdempotencyCheckAsync"
->;
+> & {
+  message: { role?: "user"; idempotencyKey?: string } | null | undefined;
+};
 export type LockedTranscriptCommitted = {
   kind: "session-transcript-locked";
   result?: TranscriptMessageAppendResult<unknown>;
@@ -248,7 +251,6 @@ type LockedTranscriptMutation = LockedTranscriptTarget & {
         sequenced: boolean;
         preparedMessageJson: string | undefined;
         preparation?: {
-          message: unknown;
           prepared: boolean;
           version: SessionTranscriptContextVersion;
         };
@@ -334,6 +336,13 @@ function commitLockedTranscript(
       let messageSeq: number | undefined;
       if (input.kind === "message") {
         const preparation = input.preparation;
+        const preparedMessage =
+          input.preparedMessageJson === undefined
+            ? undefined
+            : {
+                messageJson: input.preparedMessageJson,
+                persistedMessage: JSON.parse(input.preparedMessageJson),
+              };
         result = appendTranscriptMessageInTransaction(
           database,
           input.scope,
@@ -354,7 +363,7 @@ function commitLockedTranscript(
                     ) {
                       throw new SqliteTranscriptMutationConflictError(input.scope.sessionId);
                     }
-                    return preparation.message;
+                    return preparedMessage?.persistedMessage;
                   },
                 }
               : {}),
@@ -365,12 +374,7 @@ function commitLockedTranscript(
               assertSources(true, input.freshSources);
             },
           },
-          input.preparedMessageJson === undefined
-            ? undefined
-            : {
-                messageJson: input.preparedMessageJson,
-                persistedMessage: JSON.parse(input.preparedMessageJson),
-              },
+          preparedMessage,
           projection,
         );
         if (result && input.sequenced) {
