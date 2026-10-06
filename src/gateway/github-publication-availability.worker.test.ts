@@ -1,10 +1,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import {
-  findLiveRegistryWorktreeByOwner,
-  insertRegistryWorktree,
-  updateRegistryWorktree,
-} from "../agents/worktrees/registry.js";
+import { insertRegistryWorktree, updateRegistryWorktree } from "../agents/worktrees/registry.js";
+import { findLiveRegistryWorktreeByOwner } from "../agents/worktrees/registry.test-support.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-support.js";
@@ -29,7 +26,7 @@ vi.mock("../agents/worktrees/service.js", () => ({
       fingerprint: worktree.repoFingerprint,
       originUrl: "https://github.com/example/publication.git",
     }),
-    findLiveByOwner: (kind: ManagedWorktreeRecord["ownerKind"], id: string) =>
+    findLiveByOwner: async (kind: ManagedWorktreeRecord["ownerKind"], id: string) =>
       findLiveRegistryWorktreeByOwner(process.env, kind, id),
   },
 }));

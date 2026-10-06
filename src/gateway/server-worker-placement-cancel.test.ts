@@ -195,7 +195,7 @@ it.each(["success", "failed-write", "setup-failed-write"] as const)(
         loadSessionRuntime: async () =>
           ({
             managedWorktrees: {
-              findLiveByOwner: () => ({
+              findLiveByOwner: async () => ({
                 id: "terminal-worktree",
                 ownerId: target.sessionKey,
                 path: root,

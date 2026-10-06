@@ -10,7 +10,8 @@ import {
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
-import { deleteRegistryWorktree, getRegistryWorktree, updateRegistryWorktree } from "./registry.js";
+import { deleteRegistryWorktree, updateRegistryWorktree } from "./registry.js";
+import { getRegistryWorktree } from "./registry.test-support.js";
 import { acquireWorktreeRunLease, hasLiveWorktreeRunLease } from "./run-lease.js";
 import { resolveRepository } from "./service-preparation.js";
 import { ManagedWorktreeService } from "./service.js";
@@ -44,7 +45,7 @@ describe("interrupted ordinary worktree removal recovery", () => {
       }
       if (cleanupId) {
         expect(hasLiveWorktreeRunLease(env, cleanupId)).toBe(false);
-        deleteRegistryWorktree(env, cleanupId);
+        await deleteRegistryWorktree(env, cleanupId);
       }
       cleanup();
     }),

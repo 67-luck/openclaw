@@ -49,12 +49,11 @@ import {
   requireActiveWorktreeRecord,
   readWorktreeCleanupState,
   readLiveRegistryWorktreeByPath,
+  readLiveRegistryWorktreeByOwner,
 } from "./registry-read.js";
 import { deferTimedOutWorktreeRemoval, isWorktreeRemovalTimeout } from "./registry-retirement.js";
 import {
   assertWorktreeRemovalAvailable,
-  findLiveRegistryWorktreeByOwner,
-  getRegistryWorktree,
   insertRegistryWorktree,
   createWorktreeRemovalClaimsGuard,
   updateRegistryWorktree,
@@ -109,7 +108,7 @@ import type {
   ManagedWorktreeRecord,
   RemoveManagedWorktreeResult,
   RetireManagedWorktreeSnapshotParams,
-  WorktreeWorkerAuthority,
+  WorktreeMutationGuard,
   WorktreeRemovalDeferral,
 } from "./types.js";
 
@@ -137,10 +136,6 @@ type ManagedWorktreeGcParams = WorktreeCleanupOwnerPolicy &
   WorktreeMutationGuard & {
     checkpoint?: (progress: ManagedWorktreeGcResult) => Promise<void>;
   };
-
-type WorktreeMutationGuard = Pick<CreateManagedWorktreeParams, "signal" | "commitGuard"> & {
-  workerAuthority?: WorktreeWorkerAuthority;
-};
 
 type MaterializedRepositoryWorktree = {
   name: string;
@@ -713,16 +708,15 @@ export class ManagedWorktreeService {
   /** Returns persisted worktree facts without probing paths or mutating lifecycle state. */
   listRegistryRecords = (): Promise<ManagedWorktreeRecord[]> => readRegistryWorktrees(this.env);
 
-  findLiveByOwner(
+  async findLiveByOwner(
     ownerKind: ManagedWorktreeOwnerKind,
     ownerId: string,
-  ): ManagedWorktreeRecord | undefined {
-    return findLiveRegistryWorktreeByOwner(this.env, ownerKind, ownerId);
-  }
-
-  findLiveById(id: string): ManagedWorktreeRecord | undefined {
-    const record = getRegistryWorktree(this.env, id);
-    return record?.removedAt === undefined ? record : undefined;
+  ): Promise<ManagedWorktreeRecord | undefined> {
+    return await readLiveRegistryWorktreeByOwner(
+      captureWorktreeRunEndContext(this.env),
+      ownerKind,
+      ownerId,
+    );
   }
 
   /** Resolves the canonical registry root and the caller's own checkout root. */
@@ -766,8 +760,8 @@ export class ManagedWorktreeService {
     });
   }
 
-  async acquire(id: string): Promise<ManagedWorktreeRecord> {
-    return await acquireManagedWorktree(this.env, id, this.now);
+  async acquire(id: string, guard: WorktreeMutationGuard = {}): Promise<ManagedWorktreeRecord> {
+    return await acquireManagedWorktree(this.env, id, this.now, guard);
   }
 
   async release(id: string, guard: WorktreeMutationGuard = {}): Promise<void> {
@@ -1034,6 +1028,7 @@ export class ManagedWorktreeService {
   async removeIfLosslessByPath(
     worktreePath: string,
     owner: Pick<CreateManagedWorktreeParams, "ownerKind" | "ownerId">,
+    guard: WorktreeMutationGuard = {},
   ): Promise<boolean> {
     const record = await readLiveRegistryWorktreeByPath(
       captureWorktreeRunEndContext(this.env),
@@ -1042,16 +1037,16 @@ export class ManagedWorktreeService {
     if (!record || !worktreeOwnerMatches(record, owner)) {
       return false;
     }
-    return await this.removeIfLossless(record.id);
+    return await this.removeIfLossless(record.id, guard);
   }
 
-  async releaseByPath(worktreePath: string): Promise<void> {
+  async releaseByPath(worktreePath: string, guard: WorktreeMutationGuard = {}): Promise<void> {
     const record = await readLiveRegistryWorktreeByPath(
       captureWorktreeRunEndContext(this.env),
       worktreePath,
     );
     if (record) {
-      await this.release(record.id);
+      await this.release(record.id, guard);
     }
   }
 

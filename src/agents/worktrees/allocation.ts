@@ -2,7 +2,6 @@ import {
   collectNestedErrorCandidates,
   extractErrorCode,
 } from "@openclaw/normalization-core/error-coercion";
-import { verifyOpenClawStateLeaseOwnership } from "../../state/openclaw-state-lease-storage.js";
 import { withOpenClawStateLeasesWorkerAdmission } from "../../state/openclaw-state-lease-worker-owner.js";
 import {
   OpenClawStateLeaseError,
@@ -111,6 +110,10 @@ async function withWorktreeLease<T>(
         const leaseSet: WorktreeLeaseSet = {
           context,
           leases: [...(inherited?.leases ?? []), lease],
+          mutationWorktreeIds: [
+            ...(inherited?.mutationWorktreeIds ?? []),
+            ...(scope === WORKTREE_MUTATION_LEASE_SCOPE ? [key] : []),
+          ],
         };
         return withOpenClawStateLeasesWorkerAdmission(
           leaseSet.leases,
@@ -122,17 +125,8 @@ async function withWorktreeLease<T>(
               ? AbortSignal.any([params.signal, lease.signal])
               : lease.signal;
             const assertOwned = () => {
+              // The lease owner checks its live phase, token custody, and shared heartbeat expiry.
               authority.assertCurrent();
-              for (const identity of authority.identities) {
-                verifyOpenClawStateLeaseOwnership({
-                  ...identity,
-                  leaseLabel: "managed worktree allocation lease",
-                  database: {
-                    scope: "shared",
-                    options: { path: context.admission.databasePath, env: context.environment },
-                  },
-                });
-              }
             };
             const commitGuard = () => {
               assertOwned();

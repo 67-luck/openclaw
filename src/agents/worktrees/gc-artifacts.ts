@@ -11,7 +11,8 @@ import {
   resolveManagedWorktreePathKeys,
   shouldPreserveOrphanCandidate,
 } from "./orphan-paths.js";
-import { listRegistryWorktrees } from "./registry.js";
+import { readRegistryWorktrees } from "./registry-read.js";
+import { captureWorktreeRunEndContext } from "./run-end-lifecycle.js";
 import { retireExpiredManagedWorktreeSnapshot } from "./snapshot-host.js";
 import { WORKTREE_TEMPLATE_DIRECTORY } from "./template-cache.js";
 import type { ManagedWorktreeRecord } from "./types.js";
@@ -33,13 +34,16 @@ export async function collectRetiredWorktreeArtifacts({
   progress: WorktreeGcProgress;
   withAllocationLease: (run: (guard: WorktreeAllocationGuard) => Promise<void>) => Promise<void>;
 }): Promise<{ orphansDeleted: number; snapshotsPruned: number }> {
+  const context = captureWorktreeRunEndContext(env);
   let orphansDeleted = 0;
   let snapshotsPruned = 0;
   const expired = records.filter(
     (record) => record.removedAt !== undefined && record.removedAt < expiresBefore,
   );
   const entries = await fs
-    .readdir(path.join(resolveStateDir(env), "worktrees"), { withFileTypes: true })
+    .readdir(path.join(resolveStateDir(context.environment), "worktrees"), {
+      withFileTypes: true,
+    })
     .catch(() => []);
   const hasOrphanCandidates = entries.some(
     (entry) => entry.isDirectory() && entry.name !== WORKTREE_TEMPLATE_DIRECTORY,
@@ -51,10 +55,14 @@ export async function collectRetiredWorktreeArtifacts({
       await withAllocationLease(async (guard) => {
         if (hasOrphanCandidates) {
           try {
+            const currentRecords = await readRegistryWorktrees(env, {}, context);
+            context.admission.assertCurrent();
+            guard.signal?.throwIfAborted();
+            guard.commitGuard?.();
             orphansDeleted = await reconcileOrphans(
-              env,
+              context.environment,
               getConfig,
-              listRegistryWorktrees(env),
+              currentRecords,
               guard,
             );
           } catch (error) {

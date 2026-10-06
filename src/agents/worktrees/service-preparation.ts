@@ -14,6 +14,7 @@ import { runCommandWithTimeout } from "../../process/exec.js";
 import { createCrustaceanSlug } from "../session-slug.js";
 import {
   withWorktreeAllocationLease,
+  withWorktreeMutationLease,
   waitForWorktreeCapacity,
   type WorktreeAllocationGuard,
 } from "./allocation.js";
@@ -31,7 +32,11 @@ import {
 import { appendNameOrdinal, validateName } from "./name.js";
 import { worktreeOwnerMatches } from "./owner.js";
 import { startWorktreePreparationPhase } from "./preparation-timing.js";
-import { readRegistryWorktrees, readLiveRegistryWorktreeByOwner } from "./registry-read.js";
+import {
+  prepareWorktreeRegistryGuard,
+  readRegistryWorktrees,
+  readLiveRegistryWorktreeByOwner,
+} from "./registry-read.js";
 import { updateRegistryWorktree } from "./registry.js";
 import { resolveCheckoutRootFromRealPath } from "./repository-paths.js";
 import { captureWorktreeRunEndContext, withWorktreeRunEnd } from "./run-end-lifecycle.js";
@@ -447,23 +452,42 @@ export async function rebindLiveWorktreeRepository(
     }
     guard.signal?.throwIfAborted();
     guard.commitGuard?.();
-    await updateRegistryWorktree(
-      env,
-      record.id,
-      {
-        repositoryIdentity: {
-          repoRoot: repository.repoRoot,
-          repoFingerprint: repository.fingerprint,
+    const authority = {
+      ...guard.workerAuthority,
+      assertCurrent: guard.workerAuthority?.assertCurrent ?? guard.commitGuard,
+      predicates: [
+        ...(guard.workerAuthority?.predicates ?? []),
+        { kind: "binding" as const, record },
+      ],
+    };
+    if (
+      record.repoRoot === repository.repoRoot &&
+      record.repoFingerprint === repository.fingerprint
+    ) {
+      await prepareWorktreeRegistryGuard(captureWorktreeRunEndContext(env), authority);
+      guard.signal?.throwIfAborted();
+      return record;
+    }
+    const rebind = (workerAuthority: WorktreeWorkerAuthority) =>
+      updateRegistryWorktree(
+        env,
+        record.id,
+        {
+          repositoryIdentity: {
+            repoRoot: repository.repoRoot,
+            repoFingerprint: repository.fingerprint,
+          },
         },
-      },
-      {
-        workerAuthority: {
-          ...guard.workerAuthority,
-          assertCurrent: guard.workerAuthority?.assertCurrent ?? guard.commitGuard,
-          predicates: [...(guard.workerAuthority?.predicates ?? []), { kind: "binding", record }],
-        },
-      },
-    );
+        { workerAuthority },
+      );
+    if (authority.leaseSet?.mutationWorktreeIds?.includes(record.id)) {
+      await rebind(authority);
+    } else {
+      await withWorktreeMutationLease(
+        { env, id: record.id, ...guard, workerAuthority: authority },
+        (held) => rebind(held.workerAuthority),
+      );
+    }
     guard.signal?.throwIfAborted();
     guard.commitGuard?.();
     return { ...record, repoRoot: repository.repoRoot, repoFingerprint: repository.fingerprint };
