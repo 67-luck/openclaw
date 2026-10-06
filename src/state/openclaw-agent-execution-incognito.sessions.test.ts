@@ -13,7 +13,6 @@ import {
 import { loadSessionEntryForAdmission } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { SessionCanonicalKeyMigrationRequiredError } from "../config/sessions/session-canonical-key-error.js";
-import { prepareSessionDeliveryGeneration } from "../config/sessions/session-delivery-generation.js";
 import {
   captureNativeSessionEntryCurrentRead,
   captureSessionEntryCurrentRead,
@@ -24,8 +23,6 @@ import type { IncognitoSessionAuthority } from "../config/sessions/session-incog
 import { readPlacementSessionIdentityEvidence } from "../config/sessions/session-placement-evidence.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import { createBoardWidgetApprovalResolver } from "../gateway/board-widget-approval.js";
-import { createPresenceRecipientProjection } from "../gateway/presence-projection.js";
-import type { GatewayClient } from "../gateway/server-methods/types.js";
 import { prepareGatewaySessionLifecycleTargets } from "../gateway/session-lifecycle-preparation.js";
 import { prepareSessionMutationFacts } from "../gateway/session-sharing-preparation.js";
 import { createCompletionGrantLineageAdmission } from "../gateway/tool-resolution-completion.js";
@@ -38,6 +35,7 @@ import { observeMainThreadSql } from "../test-utils/main-thread-sql-spies.test-s
 import { readAgentDatabaseDeletionSnapshot } from "./agent-deletion-journal.read.js";
 import { getOpenClawAgentDatabaseIfOpen } from "./openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
+import { registerIncognitoActorCompositionTest } from "./openclaw-agent-execution-incognito.composition.test-support.js";
 import type { IncognitoAgentDatabaseExecution } from "./openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution.js";
 import { runOpenClawAgentWorkerWrite } from "./openclaw-agent-write-admission.js";
@@ -561,66 +559,12 @@ it("preserves the original 24-hour deadline and refuses claims after actor repla
   ).toBeUndefined();
 });
 
-it("composes sharing, delivery and presence from current actor facts without host SQL", async () => {
-  const sessionKey = key("authority-composition");
-  const initial = entry("authority-composition");
-  await actor.sessions.create(authority, { sessionKey, entry: initial });
-  const signal = new AbortController();
-  await withIncognitoSessionActor(
-    actor,
-    async () => {
-      const sql = observeMainThreadSql();
-      const facts = await prepareSessionMutationFacts({ cfg: {}, agentId: "main", sessionKey });
-      const delivery = await prepareSessionDeliveryGeneration({
-        agentId: "main",
-        storePath: actor.path,
-        sessionKey,
-        sessionId: initial.sessionId,
-        lifecycleRevision: initial.lifecycleRevision,
-      });
-      try {
-        const person = { text: "actor watcher", ts: 1, watchedSessions: [sessionKey] };
-        const project = createPresenceRecipientProjection({ cfg: {}, presence: [person] });
-        const client: GatewayClient = {
-          connect: {
-            minProtocol: 1,
-            maxProtocol: 1,
-            role: "operator",
-            scopes: ["operator.admin"],
-            client: {
-              id: "openclaw-control-ui",
-              version: "test",
-              platform: "test",
-              mode: "webchat",
-            },
-          },
-        };
-        expect(facts.storageTarget.storePath).toBe(actor.path);
-        expect(facts.readCurrent({}).target.entry.sessionId).toBe(initial.sessionId);
-        expect(project(client)).toEqual([person]);
-        delivery.assertCurrent();
-        await actor.sessions.sideData(authority, {
-          type: "session.sharing.add",
-          input: { sessionKey, params: { identityId: "viewer", addedBy: "owner" } },
-        });
-        expect(facts.readCurrent({}).membership.has("viewer")).toBe(true);
-        delivery.assertCurrent();
-        signal.abort(new Error("authority revoked"));
-        expect(() => facts.readCurrent({})).toThrow("Session access facts are unavailable");
-        expect(() => delivery.assertCurrent()).toThrow(
-          "Session delivery generation is unavailable",
-        );
-        expect(() => project(client)).toThrow("authority revoked");
-        sql.expectIdle();
-      } finally {
-        delivery.release();
-        facts.release();
-        sql.restore();
-      }
-    },
-    signal.signal,
-  );
-});
+registerIncognitoActorCompositionTest(() => ({
+  actor,
+  authority,
+  sessionKey: key("authority-composition"),
+  entry: entry("authority-composition"),
+}));
 
 it("retains actor identity before sharing waits for storage readiness", async () => {
   const sessionKey = key("authority-storage-wait");
