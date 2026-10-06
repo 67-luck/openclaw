@@ -21,6 +21,8 @@ minimumReleaseAgeExclude:
   - "@openclaw/fs-safe-linux-x64-gnu@0.23.1"
   - "@openclaw/fs-safe-linux-x64-musl@0.23.1"
   - "@openclaw/fs-safe-win32-x64-msvc@0.23.1"
+  # Security release for GHSA-68fv-2mgg-jv7q; remove after 2026-10-07T14:08:09.382Z.
+  - source-map-js@1.2.2
 
 # Isolated installs let pnpm reuse whole-package APFS clones instead of relinking every file.
 nodeLinker: isolated
@@ -56,6 +58,7 @@ overrides:
   fast-xml-parser: 5.11.1
   request: "npm:@cypress/request@4.0.1"
   request-promise: "npm:@cypress/request-promise@5.0.0"
+  source-map-js: 1.2.2
   basic-ftp: 6.2.1
   brace-expansion: 5.0.12
   file-type: 22.1.1
