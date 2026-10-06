@@ -8,7 +8,10 @@ import { loadCombinedSessionStoreForGatewayCoreAsync } from "../config/sessions/
 import { createSessionEntryWithTranscript } from "../config/sessions/session-accessor.entry-mutation.js";
 import { resolveSessionEntryCandidateTargetForRuntime } from "../config/sessions/session-accessor.entry.js";
 import { loadSessionEntryForAdmission } from "../config/sessions/session-accessor.sqlite-entry-admission.js";
-import { replaceSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
+import {
+  replaceSessionEntry,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.sqlite-entry.js";
 import { SessionCanonicalKeyMigrationRequiredError } from "../config/sessions/session-canonical-key-error.js";
 import { prepareSessionDeliveryGeneration } from "../config/sessions/session-delivery-generation.js";
 import {
@@ -797,7 +800,7 @@ it("discovers every captured actor and preserves placement identity evidence", a
   const mainKey = key("topology-main");
   const otherKey = key("topology-other", "topology-peer");
   const ancestorKey = "agent:main:topology-ancestor";
-  await replaceSessionEntry(
+  replaceSessionEntrySync(
     { agentId: "main", sessionKey: ancestorKey, env },
     { sessionId: "topology-ancestor", updatedAt: 1, model: "inherited-model" },
   );

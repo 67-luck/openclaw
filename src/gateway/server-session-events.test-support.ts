@@ -72,11 +72,16 @@ const { subscribePluginSessionsChanged } = await import("../plugins/services.tes
 
 const projection = {
   get state() {
-    return { rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() } };
+    return {
+      cfg: runtimeConfigState.value,
+      rowContext: { projectedAgentRuns: buildProjectedAgentRunIndex() },
+    };
   },
   ensureMaterialized: async () => {},
   prepareMembership: async () => {},
   needsMembershipPreparation: () => false,
+  // This row-only fixture does not provide the resident owner's complete ancestry graph.
+  ancestorRows: (() => undefined) satisfies SessionRowProjection["ancestorRows"],
   withPreparedExactRows: (async (queries, consume) => {
     queries(runtimeConfigState.value);
     return { kind: "complete", value: consume(projection) };
