@@ -2,6 +2,11 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import {
+  listSessionPlacementRecoveryStorageKeys,
+  requiredSessionPlacementRecoveryExactStorageKey,
+  sessionPlacementRecoveryExactStorageKey,
+} from "./session-placement-recovery-storage-key.ts";
+import {
   readSessionPlacementRecovery,
   writeSessionPlacementRecovery,
   type SessionPlacementRecovery,
@@ -145,6 +150,35 @@ it("restores a required target and reconciles uncertain delivery without a dupli
     phase: "sending",
   };
   expect(writeSessionPlacementRecovery(recovery)).toBe(true);
+  const stored = JSON.parse(
+    sessionStorage.getItem(
+      requiredSessionPlacementRecoveryExactStorageKey(
+        recovery.gatewayUrl,
+        recovery.recoveryScope,
+        recovery.sessionKey,
+      ),
+    )!,
+  ) as { target: Record<string, unknown>; requiredProfileId?: string };
+  expect(stored.target).toEqual({ kind: "profile", profileId: target.profileId });
+  expect(stored.requiredProfileId).toBe(target.profileId);
+  expect(
+    listSessionPlacementRecoveryStorageKeys(recovery.gatewayUrl, recovery.recoveryScope),
+  ).toEqual([
+    requiredSessionPlacementRecoveryExactStorageKey(
+      recovery.gatewayUrl,
+      recovery.recoveryScope,
+      recovery.sessionKey,
+    ),
+  ]);
+  expect(
+    sessionStorage.getItem(
+      sessionPlacementRecoveryExactStorageKey(
+        recovery.gatewayUrl,
+        recovery.recoveryScope,
+        recovery.sessionKey,
+      ),
+    ),
+  ).toBeNull();
   const restored = readSessionPlacementRecovery(
     recovery.gatewayUrl,
     recovery.recoveryScope,

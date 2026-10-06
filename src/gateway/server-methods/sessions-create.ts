@@ -1,15 +1,12 @@
 import { randomUUID } from "node:crypto";
-import path from "node:path";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../../packages/gateway-client/src/timeouts.js";
 import {
   ErrorCodes,
   errorShape,
-  missingScopeErrorShape,
   validateSessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { raceWithTimeout } from "../../../packages/retry/src/index.js";
-import { assertRequiredWorkerSelection } from "../../config/required-worker-profile.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
@@ -55,11 +52,16 @@ import {
   prepareSessionRepositoryWorkspace,
   resolveSessionRepositoryCreation,
   validateSessionProjectPreparation,
-  prepareRequiredWorkerWorkspaceInput,
-  requiredWorkerWorkspaceReuseError,
 } from "./session-create-project.js";
 import {
+  assertRequiredWorkerSessionCreateCurrent,
+  prepareRequiredWorkerCreatedSession,
+  prepareRequiredWorkerSessionCreate,
+  requiredWorkerWorkspaceReuseError,
+} from "./session-create-required-worker.js";
+import {
   prepareSessionCreateFilesystemRoot,
+  prepareSessionCreateRequestedCwd,
   resolveSessionCreateRootParameters,
 } from "./session-create-root.js";
 import {
@@ -74,7 +76,6 @@ import { sessionLog } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { prepareSessionModelAccountAccess } from "./users-model-account-access.js";
 import { assertValidParams } from "./validation.js";
-import { resolveWorkspacePathContainment } from "./workspace-path-containment.js";
 
 export const sessionCreateHandlers: GatewayRequestHandlers = {
   "sessions.create": idempotentSessionCreate(async (options) => {
@@ -102,14 +103,12 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = structuredClone(params);
-    const requiredProfile = context.getRuntimeConfig().cloudWorkers?.requiredProfile;
-    try {
-      assertRequiredWorkerSelection(context.getRuntimeConfig(), p);
-    } catch (error) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));
+    const requiredWorker = prepareRequiredWorkerSessionCreate(p, context.getRuntimeConfig());
+    if (requiredWorker.error) {
+      respond(false, undefined, requiredWorker.error);
       return;
     }
-    const automaticEmptyWorkspace = prepareRequiredWorkerWorkspaceInput(p, requiredProfile);
+    const { requiredProfile, automaticEmptyWorkspace } = requiredWorker;
     const requestAuthority = readGatewayRequestMutationAuthority(options);
     const getCurrentConfig = context.getRuntimeConfig;
     const requestingOperatorProfileId = client?.authenticatedUserProfile?.profileId;
@@ -163,10 +162,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     // Both uncommitted selections must remain authorized after awaited preparation.
     const commitGuard = () => {
       requestAuthority.assertCurrent();
-      if (getCurrentConfig().cloudWorkers?.requiredProfile !== requiredProfile) {
-        throw new Error("Required worker policy changed during session creation; retry.");
-      }
-      assertRequiredWorkerSelection(getCurrentConfig(), p);
+      assertRequiredWorkerSessionCreateCurrent(getCurrentConfig(), requiredProfile, p);
       authority.commitGuard?.();
       sessionMutationAuthorization?.assertCurrent();
       assertPreparedSkillLibrarySelection(sessionCreation.skillLibrarySelections);
@@ -307,45 +303,20 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       respond(false, undefined, projectPreparationError);
       return;
     }
-    // Agent tools expand `~` before RPC; the Gateway contract stays absolute-only.
-    // Remote nodes may use Windows paths; local cwd must match the Gateway host.
-    const cwdIsAbsolute =
-      !requestedCwd ||
-      (requestedExecNode
-        ? path.isAbsolute(requestedCwd) || path.win32.isAbsolute(requestedCwd)
-        : path.isAbsolute(requestedCwd));
-    if (!cwdIsAbsolute) {
-      respond(
-        false,
-        undefined,
-        errorShape(ErrorCodes.INVALID_REQUEST, "sessions.create cwd must be absolute"),
-      );
-      return;
-    }
     const clientScopes = Array.isArray(client?.connect?.scopes) ? [...client.connect.scopes] : [];
-    if (p.permissionMode === "full" && client !== null && !clientScopes.includes(ADMIN_SCOPE)) {
-      respond(
-        false,
-        undefined,
-        missingScopeErrorShape({ missingScope: ADMIN_SCOPE, requiredScopes: [ADMIN_SCOPE] }),
-      );
+    const preparedCwd = await prepareSessionCreateRequestedCwd({
+      cfg,
+      requestedCwd,
+      requestedExecNode,
+      permissionMode: p.permissionMode,
+      clientPresent: client !== null,
+      clientScopes,
+    });
+    if (!preparedCwd.ok) {
+      respond(false, undefined, preparedCwd.error);
       return;
     }
-    if (requestedCwd && !requestedExecNode && !clientScopes.includes(ADMIN_SCOPE)) {
-      const containment = await resolveWorkspacePathContainment(requestedCwd, cfg);
-      if (!containment) {
-        respond(
-          false,
-          undefined,
-          missingScopeErrorShape({
-            missingScope: ADMIN_SCOPE,
-            requiredScopes: [ADMIN_SCOPE],
-          }),
-        );
-        return;
-      }
-      requestedCwd = containment.path;
-    }
+    requestedCwd = preparedCwd.value;
     const worktreeBaseRef = normalizeOptionalString(p.worktreeBaseRef);
     const requestedWorktreeName = normalizeOptionalString(p.worktreeName);
     const explicitSessionLabel = normalizeOptionalString(p.label);
@@ -620,25 +591,15 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
         if (!authority.hasActive()) {
           return;
         }
-        if (requiredProfile && !preparedWorktree?.pendingWorktree && !requestedProjectGitUrl) {
-          const prepare = context.workerPlacementDispatchService?.prepareRequiredSession;
-          if (!prepare) {
-            throw new Error(
-              "Required worker placement is unavailable; repair the configured profile and retry.",
-            );
-          }
-          await prepare(
-            {
-              sessionId: session.entry.sessionId,
-              sessionKey: session.key,
-              agentId: session.agentId,
-            },
-            commitGuard,
-            signal,
-            { waitForReady: false },
-          );
-          commitGuard();
-        }
+        await prepareRequiredWorkerCreatedSession({
+          requiredProfile,
+          pendingWorktree: Boolean(preparedWorktree?.pendingWorktree),
+          requestedProjectGitUrl,
+          prepare: context.workerPlacementDispatchService?.prepareRequiredSession,
+          session,
+          assertCurrent: commitGuard,
+          signal,
+        });
         if (!hasInitialTurn) {
           scheduleCreatedDashboardSessionTitle(session, cfg, context, p.titleSource);
           return;

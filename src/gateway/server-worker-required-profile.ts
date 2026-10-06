@@ -4,11 +4,8 @@ import {
   assertRequiredWorkerSelection,
   RequiredWorkerProfileError,
 } from "../config/required-worker-profile.js";
-import {
-  loadSessionEntryReadOnly,
-  patchSessionEntryCore,
-} from "../config/sessions/session-accessor.js";
-import { createSessionEntryRevisionGuard } from "../config/sessions/session-accessor.sqlite-entry-revision.js";
+import { patchSessionEntryCore } from "../config/sessions/session-accessor.js";
+import { retainPreparedSessionEntryPredicate } from "../config/sessions/session-accessor.sqlite-entry-cache-publication-state.js";
 import {
   prepareSqliteTranscriptReadScope,
   toDatabaseOptions,
@@ -18,8 +15,16 @@ import { resolveSessionStorePathForScope } from "../config/sessions/session-stor
 import { captureSessionTranscriptTargetBinding } from "../config/sessions/transcript-target-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
+import {
+  prepareSessionRowPublicationScope,
+  sessionChangeAffectsStoredRow,
+} from "../sessions/session-row-facts.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { isOpenClawAgentDatabasePathCurrent } from "../state/openclaw-agent-db-identity.js";
+import {
+  findOpenClawAgentDatabaseIdentity,
+  isOpenClawAgentDatabasePathCurrent,
+} from "../state/openclaw-agent-db-identity.js";
 import { retainOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../state/openclaw-agent-db-resources.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
@@ -82,6 +87,25 @@ export function createRequiredWorkerSessionPreparation(options: {
     if (!retained.found) {
       throw new RequiredWorkerProfileError("Required worker session source is unavailable.");
     }
+    const publication = prepareSessionRowPublicationScope([configuredStorePath, storePath]);
+    let sessionChanged = false;
+    let acceptNextPublication = false;
+    const stopPublication = sessionChanges.subscribeFacts((change) => {
+      if (
+        sessionChangeAffectsStoredRow(change, {
+          ...publication,
+          agentId: scope.agentId,
+          sessionKeys: [scope.sessionKey],
+          ignoreStoreTopology: true,
+        })
+      ) {
+        if (acceptNextPublication) {
+          acceptNextPublication = false;
+        } else {
+          sessionChanged = true;
+        }
+      }
+    });
     const owned = await (async () => {
       try {
         const entry = await withSessionEntryReadOnlyInWorker(
@@ -110,6 +134,7 @@ export function createRequiredWorkerSessionPreparation(options: {
         }
         return { entry, retained, source };
       } catch (error) {
+        stopPublication();
         retained.claim.release();
         throw error;
       }
@@ -121,7 +146,47 @@ export function createRequiredWorkerSessionPreparation(options: {
       storeKeys: [scope.sessionKey],
     };
     const original = owned.entry;
-    let currentEntry: NonNullable<ReturnType<typeof loadSessionEntryReadOnly>> = original;
+    if (original.archivedAt !== undefined) {
+      stopPublication();
+      owned.retained.claim.release();
+      throw new RequiredWorkerProfileError("Required worker session source is unavailable.");
+    }
+    const databaseIdentity = findOpenClawAgentDatabaseIdentity(owned.retained.database)?.identity;
+    if (databaseIdentity === undefined) {
+      stopPublication();
+      owned.retained.claim.release();
+      throw new RequiredWorkerProfileError("Required worker session source is unavailable.");
+    }
+    publication.databaseIdentities.add(databaseIdentity);
+    if (sessionChanged) {
+      stopPublication();
+      owned.retained.claim.release();
+      throw new RequiredWorkerProfileError(
+        "Session changed during required worker placement; retry.",
+      );
+    }
+    const retainedEntry =
+      typeof databaseIdentity === "string"
+        ? retainPreparedSessionEntryPredicate({
+            databaseIdentity: `file:${databaseIdentity}`,
+            sessionKey: scope.sessionKey,
+            entry: original,
+            matches: (before, after) =>
+              Boolean(
+                before &&
+                after &&
+                before.sessionId === after.sessionId &&
+                before.lifecycleRevision === after.lifecycleRevision &&
+                after.archivedAt === undefined &&
+                isDeepStrictEqual(before.agentRuntimeOverride, after.agentRuntimeOverride) &&
+                isDeepStrictEqual(before.execNode, after.execNode),
+              ),
+          })
+        : undefined;
+    if (retainedEntry) {
+      stopPublication();
+    }
+    let currentEntry = original;
     let released = false;
     let background: Promise<unknown> | undefined;
     const completion = createDeferredCore();
@@ -134,6 +199,8 @@ export function createRequiredWorkerSessionPreparation(options: {
       }
       released = true;
       unregister();
+      stopPublication();
+      retainedEntry?.release();
       owned.retained.claim.release();
       completion.resolve();
     };
@@ -153,35 +220,17 @@ export function createRequiredWorkerSessionPreparation(options: {
         );
       }
     };
-    // Worker-read facts are reused until the canonical revision guard observes a
-    // commit. Only its exact captured source may refresh the policy predicate.
-    const assertRevisionCurrent = createSessionEntryRevisionGuard(
-      owned.retained.database.db,
-      assertSourceCurrent,
-      () => {
-        const entry = loadSessionEntryReadOnly({
-          ...scope,
-          storePath: owned.source.path,
-          env: owned.source.env,
-        });
-        if (
-          !entry ||
-          entry.sessionId !== original.sessionId ||
-          entry.lifecycleRevision !== original.lifecycleRevision ||
-          entry.archivedAt !== undefined
-        ) {
-          return false;
-        }
-        assertRequiredWorkerSelection(options.getConfig(), {
-          agentRuntime: entry.agentRuntimeOverride,
-          execNode: entry.execNode,
-        });
-        currentEntry = entry;
-        return true;
-      },
-    );
     const assertCurrent = () => {
-      assertRevisionCurrent();
+      assertSourceCurrent();
+      if (sessionChanged || retainedEntry?.isCurrent() === false) {
+        throw new RequiredWorkerProfileError(
+          "Session changed during required worker placement; retry.",
+        );
+      }
+      assertRequiredWorkerSelection(options.getConfig(), {
+        agentRuntime: currentEntry.agentRuntimeOverride,
+        execNode: currentEntry.execNode,
+      });
       return currentEntry;
     };
     try {
@@ -370,6 +419,9 @@ export function createRequiredWorkerSessionPreparation(options: {
                 assertCommitAllowed: assertDispatchCurrent,
                 requireWriteSuccess: true,
                 skipMaintenance: true,
+                onCommitted: () => {
+                  acceptNextPublication = true;
+                },
               },
             );
             if (!updated) {
@@ -377,6 +429,7 @@ export function createRequiredWorkerSessionPreparation(options: {
                 "Session disappeared during required worker setup.",
               );
             }
+            currentEntry = updated;
           } catch (error) {
             await prepared.value.rollback?.();
             throw error;

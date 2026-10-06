@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { managedWorktrees } from "../agents/worktrees/service.js";
 import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import { initSessionState } from "../auto-reply/reply/session.js";
@@ -241,7 +242,14 @@ test.each(["channel", "incognito", "shared"] as const)(
     const dispatch = vi.fn<
       Parameters<typeof createRequiredWorkerSessionPreparation>[0]["dispatch"]["dispatch"]
     >(async (request, onTransition, assertCurrent) => {
-      assertCurrent?.();
+      const sql = observeHostDataSql();
+      try {
+        assertCurrent?.();
+        assertCurrent?.();
+        expect(sql.queries).toEqual([]);
+      } finally {
+        sql.restore();
+      }
       const requested = await placements.startDispatch(request);
       onTransition?.(requested);
       await finish.promise;
