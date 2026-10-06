@@ -13,6 +13,7 @@ import { sessionEntrySnapshotsSchemaSql } from "../../state/openclaw-agent-sessi
 import { readExactSessionEntryRowValidated } from "./session-accessor.sqlite-entry-read.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import {
+  type SessionEntrySnapshot,
   splitSessionEntrySnapshots,
   writeSessionEntrySnapshots,
 } from "./session-entry-snapshots.js";
@@ -76,6 +77,72 @@ function addOwnerColumns(db: DatabaseSync) {
   }
 }
 
+it("batches snapshot replacement while preserving values, revisions, and rollback", () => {
+  const database = createDatabase();
+  const key = database.keys[0];
+  const snapshots: SessionEntrySnapshot[] = [
+    { field: "sessionDiffBaseline", valueJson: '{"sessionId":"session-0"}' },
+    { field: "skillsSnapshot", valueJson: '{"prompt":"saved prompt","skills":[]}' },
+    { field: "systemPromptReport", valueJson: '{"source":"run"}' },
+  ];
+  const rows = () =>
+    database.db
+      .prepare(
+        "SELECT field, value_json FROM session_entry_snapshots WHERE session_key = ? ORDER BY field",
+      )
+      .all(key);
+  const revision = () =>
+    database.db
+      .prepare("SELECT snapshot_revision FROM session_nodes WHERE session_key = ?")
+      .get(key)?.snapshot_revision;
+  const sql = trackSqliteStatementExecutions(database.db, ["writes"], (query) =>
+    /^(?:insert into|delete from) "session_entry_snapshots"/iu.test(query) ? "writes" : null,
+  );
+  const replace = (values: readonly SessionEntrySnapshot[], commit = true) => {
+    const before = sql.counts.writes;
+    database.db.exec("BEGIN");
+    writeSessionEntrySnapshots(database, key, values);
+    database.db.exec(commit ? "COMMIT" : "ROLLBACK");
+    expect.soft(sql.counts.writes - before).toBe(values.length > 0 ? 2 : 1);
+  };
+  try {
+    replace(snapshots);
+    expect(rows()).toEqual([
+      { field: "sessionDiffBaseline", value_json: '{"sessionId":"session-0"}' },
+      { field: "skillsSnapshot", value_json: '{"prompt":"saved prompt","skills":[]}' },
+      { field: "systemPromptReport", value_json: '{"source":"run"}' },
+    ]);
+    expect(revision()).toBe(3);
+
+    replace(snapshots);
+    expect(revision()).toBe(3);
+
+    replace([
+      snapshots[0]!,
+      { field: "skillsSnapshot", valueJson: '{"prompt":"changed prompt","skills":[]}' },
+    ]);
+    const changed = [
+      { field: "sessionDiffBaseline", value_json: '{"sessionId":"session-0"}' },
+      { field: "skillsSnapshot", value_json: '{"prompt":"changed prompt","skills":[]}' },
+    ];
+    expect(rows()).toEqual(changed);
+    expect(revision()).toBe(5);
+
+    replace(snapshots, false);
+    expect(rows()).toEqual(changed);
+    expect(revision()).toBe(5);
+
+    replace([]);
+    expect(rows()).toEqual([]);
+    expect(revision()).toBe(7);
+    expect(
+      readExactSessionEntryRowValidated(database, database.keys[1])?.entry.skillsSnapshot,
+    ).toEqual({ prompt: "saved prompt", skills: [] });
+  } finally {
+    sql.restore();
+  }
+});
+
 describe("prepared session entry reads", () => {
   it("reuses detached entry and participant facts until the transaction changes", () => {
     const database = createDatabase();
@@ -123,6 +190,43 @@ describe("prepared session entry reads", () => {
       queries.restore();
     }
     expect(read()?.entry.participants?.[0]?.identity.id).toBe("participant-0");
+  });
+
+  it("refreshes warm row facts after data-only foreign commits and connection reopen", () => {
+    const filename = path.join(tempDirs.make("session-row-freshness-"), "agent.sqlite");
+    const database = createDatabase(filename);
+    database.db.exec("PRAGMA journal_mode=WAL");
+    const peer = new DatabaseSync(filename);
+    openedDatabases.push(peer);
+    const key = database.keys[0];
+    const read = () => readExactSessionEntryRowValidated(database, key, "list")?.entry;
+    const commit = (value: string) => {
+      peer.exec("BEGIN IMMEDIATE");
+      peer
+        .prepare(
+          "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.label', ?) WHERE session_key = ?",
+        )
+        .run(value, key);
+      peer
+        .prepare("UPDATE session_participants SET actor_id = ? WHERE session_key = ?")
+        .run(value, key);
+      peer.exec("COMMIT");
+    };
+    expect(read()?.label).toBe("label-0");
+    expect(read()?.participants?.[0]?.identity.id).toBe("participant-0");
+    commit("foreign");
+    expect(read()).toMatchObject({
+      label: "foreign",
+      participants: [{ identity: { id: "foreign" } }],
+    });
+    database.db.close();
+    commit("reopened");
+    database.db.open();
+    admitSqliteSchema(database.db);
+    expect(read()).toMatchObject({
+      label: "reopened",
+      participants: [{ identity: { id: "reopened" } }],
+    });
   });
 
   it("keeps fresh bindings and participant values without recompiling warm metadata reads", () => {

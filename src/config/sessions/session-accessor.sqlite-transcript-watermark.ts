@@ -20,14 +20,8 @@ import {
 } from "./session-accessor.sqlite-scope.js";
 import type { SessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark-read.js";
 
-const watermarkQuery = createSqliteQueryCache((database) => {
-  const db =
-    getNodeSqliteKysely<
-      Pick<
-        DB,
-        "transcript_events" | "transcript_rewrite_watermarks" | "session_transcript_cold_archives"
-      >
-    >(database);
+const retainedWatermarkQuery = createSqliteQueryCache((database) => {
+  const db = getNodeSqliteKysely<DB>(database);
   return prepareSqliteQueryTakeFirstSync<
     string,
     { generation: string | null; max_seq: number | null }
@@ -55,12 +49,12 @@ const watermarkQuery = createSqliteQueryCache((database) => {
   });
 });
 
-/** Read hot generation and retained cold position on the caller's admitted snapshot. */
+/** Read hot generation and retained cold position together on the admitted snapshot. */
 export function readSessionTranscriptWatermarkInDatabase(
   database: OpenClawAgentReadOnlyDatabase,
   sessionId: string,
 ): SessionTranscriptWatermark {
-  const row = watermarkQuery(database.db)(sessionId);
+  const row = retainedWatermarkQuery(database.db)(sessionId);
   return { generation: row?.generation ?? null, maxSeq: row?.max_seq ?? null };
 }
 
