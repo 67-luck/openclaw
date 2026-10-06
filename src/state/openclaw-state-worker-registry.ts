@@ -51,7 +51,7 @@ import type { OnboardingRecommendationWriteOperations } from "./onboarding-recom
 import type { AgentDatabaseRegistryWorkerOperations } from "./openclaw-agent-db-contract.js";
 import type { RepositoryWorkspaceWorkerOperations } from "./session-repository-workspaces.worker-contract.js";
 import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
-import type { WorkerOperations } from "./worker-operation-registry.js";
+import type { WorkerOperations, WorkerWriteOperationContext } from "./worker-operation-registry.js";
 import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
 
 export type RegisteredStateWorkerOperations = WorkerOperations<typeof localWorkspaceOperations> &
@@ -106,7 +106,10 @@ export type RegisteredStateWorkerOperations = WorkerOperations<typeof localWorks
   RepositoryWorkspaceWorkerOperations &
   UserProfileWorkerOperations;
 
-export const stateWorkerRegistry = createWorkerOperationRegistry<RegisteredStateWorkerOperations>({
+export const stateWorkerRegistry = createWorkerOperationRegistry<
+  RegisteredStateWorkerOperations,
+  WorkerWriteOperationContext
+>({
   localWorkspace: () =>
     import("../gateway/worker-environments/local-workspace-store.worker.js").then(
       (m) => m.localWorkspaceOperations,

@@ -39,7 +39,10 @@ import type {
   OpenClawStateWorkerOpenPreparation,
   OpenClawStateWorkerOperations,
 } from "./openclaw-state-worker-contract.js";
-import { createWorkerOperationRegistry } from "./worker-operation-registry.js";
+import {
+  createWorkerOperationRegistry,
+  type WorkerWriteOperationContext,
+} from "./worker-operation-registry.js";
 
 // PR provisioning retains allocation and template owners without the application runtime.
 const provisionRegistry = createWorkerOperationRegistry<
@@ -118,7 +121,7 @@ function createSharedStateWorkerBackend(
   let borrow = nativeDatabase ? retainOpenClawStateDatabase(nativeDatabase) : undefined;
   let closed = false;
   let secretSchemaAdmitted = false;
-  const open = (): OpenClawStateDatabase => {
+  const retainedDatabase = (): OpenClawStateDatabase => {
     if (!nativeDatabase) {
       const opened = openOpenClawStateDatabase({
         path: context.databasePath,
@@ -135,12 +138,25 @@ function createSharedStateWorkerBackend(
     ) {
       throw new Error("Shared-state worker lost its retained native database");
     }
-    return openOpenClawStateDatabase({
-      database: nativeDatabase,
+    return nativeDatabase;
+  };
+  const open = (): OpenClawStateDatabase =>
+    openOpenClawStateDatabase({
+      database: retainedDatabase(),
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
     });
-  };
+  // The transaction owner validates schema and write authority after BEGIN.
+  const write: WorkerWriteOperationContext["write"] = (operation, transactionOptions) =>
+    runOpenClawStateWriteTransaction(
+      operation,
+      {
+        database: retainedDatabase(),
+        path: context.databasePath,
+        env: getSqliteWorkerStateContext().environment,
+      },
+      transactionOptions,
+    );
   return {
     [SQLITE_WORKER_PREPARE_COMMAND](commandType) {
       if (
@@ -349,6 +365,7 @@ function createSharedStateWorkerBackend(
         command,
         context,
         open,
+        write,
         () =>
           (updateRunWriter ??= currentRuntime.openUpdateRunWriter({
             path: context.databasePath,

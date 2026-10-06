@@ -305,10 +305,9 @@ describe("worker placement dispatch reclaim", () => {
     });
     const active = await harness.service.dispatch(REQUEST);
 
-    let authorizationChecks = 0;
+    let authorized = true;
     const authorize = vi.fn(() => {
-      authorizationChecks += 1;
-      if (authorizationChecks === 3) {
+      if (!authorized) {
         throw new Error("session access revoked");
       }
     });
@@ -320,6 +319,7 @@ describe("worker placement dispatch reclaim", () => {
           ReturnType<typeof createHarness>["service"]["dispatch"]
         >[2],
       ) => {
+        authorized = false;
         destinationAuthorize?.();
         throw new Error("destination dispatch lost authorization");
       },
@@ -344,7 +344,7 @@ describe("worker placement dispatch reclaim", () => {
           ownerEpoch: draining.activeOwnerEpoch,
           expectedGeneration: draining.generation,
         });
-        const local = placementStore.completePlacementMoveSourceToLocal({
+        const local = await placementStore.completePlacementMoveSourceToLocal({
           operationId: intent.operationId,
           sessionId: intent.sessionId,
           expectedGeneration: reconciling.generation,
@@ -382,7 +382,6 @@ describe("worker placement dispatch reclaim", () => {
       ),
     ).rejects.toThrow("session access revoked");
 
-    expect(authorize).toHaveBeenCalledTimes(3);
     expect(destinationDispatch).toHaveBeenCalledOnce();
     expect(placementStore.get(active.sessionId)).toMatchObject({ state: "local" });
   });
@@ -443,7 +442,7 @@ describe("worker placement dispatch reclaim", () => {
         ownerEpoch: active.activeOwnerEpoch,
       },
     });
-    const begun = placementStore.beginPlacementMove({
+    const begun = await placementStore.beginPlacementMove({
       sessionId: active.sessionId,
       source: {
         generation: active.generation,

@@ -18,6 +18,7 @@ import { resolveDevicePlacementEligibility } from "../worker-environments/device
 import { selectDevicePlacementCandidates } from "../worker-environments/device-placement-selector.js";
 import { DEVICE_WORKER_PROVIDER_ID } from "../worker-environments/device-provider-identity.js";
 import { deviceUnavailableText } from "../worker-environments/device-provider.js";
+import type { WorkerPlacementAuthorization } from "../worker-environments/placement-authorization.js";
 import {
   resolveProjectProfileDestination,
   resolveWorkerPlacementDestination,
@@ -36,6 +37,7 @@ import {
   resolveWorkerPlacementSessionRuntime,
 } from "../worker-environments/placement-session-runtime.js";
 import { isFailedWorkerPlacementEnvironmentGone } from "../worker-environments/placement-target.js";
+import type { WorkerPlacementDispatchRequest } from "../worker-environments/service-contract.js";
 import type { WorkerSessionWorkspace } from "../worker-environments/session-workspace.js";
 import { listGatewayEnvironments } from "./environments.js";
 import { emitSessionsChanged } from "./session-change-event.js";
@@ -44,7 +46,12 @@ import {
   loadAccessorSessionEntryForGatewayTarget,
   requireSessionKey,
 } from "./sessions-shared.js";
-import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
+import type {
+  GatewayRequestContext,
+  GatewayRequestHandlers,
+  RespondFn,
+  SessionMutationAuthorization,
+} from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 function respondInvalidWorkerSession(respond: RespondFn, message: string): void {
@@ -52,6 +59,26 @@ function respondInvalidWorkerSession(respond: RespondFn, message: string): void 
 }
 
 const MAX_AUTO_DEVICE_PLACEMENT_ATTEMPTS = 3;
+
+async function withWorkerPlacementAuthorization<T>(
+  authorization: SessionMutationAuthorization | undefined,
+  operation: (authorize: WorkerPlacementAuthorization | undefined) => Promise<T>,
+): Promise<T> {
+  const assertCurrent = authorization?.assertCurrent;
+  const prepared = await authorization?.prepareWorkerGrant?.();
+  try {
+    return await operation(
+      prepared
+        ? Object.assign(() => prepared.assertCurrent(), {
+            assertWorkerGrant: prepared.assertCurrent,
+            assertWorkerLifetime: prepared.assertLifetimeCurrent,
+          })
+        : assertCurrent,
+    );
+  } finally {
+    await prepared?.release();
+  }
+}
 
 function resolveWorkerSessionTarget(
   method: "dispatch" | "move" | "reclaim",
@@ -292,7 +319,10 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
         config: cfg,
         getPendingDispatchCount: (deviceId) =>
           dispatchService.getPendingDeviceDispatchCount?.(deviceId, sessionId) ?? 0,
-        getAdmittedSessionCounts: () => dispatchService.getAdmittedDeviceSessionCounts?.(sessionId),
+        getAdmittedSessionCounts: () =>
+          dispatchService.getAdmittedDeviceSessionCountsAsync
+            ? dispatchService.getAdmittedDeviceSessionCountsAsync(sessionId)
+            : dispatchService.getAdmittedDeviceSessionCounts?.(sessionId),
       });
       if (!selection.ok) {
         respondInvalidWorkerSession(respond, selection.error);
@@ -425,23 +455,28 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
       }
       let attemptedPlacement: WorkerSessionPlacementRecord | undefined;
       try {
-        const placement = await dispatchService.dispatch(
-          {
-            ...session,
-            executionMode,
-            runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
-            ...dispatchTarget,
-            ...(devicePlacement ? { devicePlacement } : {}),
-          },
-          (observed) => {
-            attemptedPlacement = { ...observed };
-            emitSessionsChanged(context, {
-              reason: "dispatch",
-              sessionKey,
-            });
-          },
-          sessionMutationAuthorization?.assertCurrent,
-          signal,
+        const request: WorkerPlacementDispatchRequest = {
+          ...session,
+          executionMode,
+          runSetupScript: client?.connect?.scopes?.includes(ADMIN_SCOPE) === true,
+          ...dispatchTarget,
+          ...(devicePlacement ? { devicePlacement } : {}),
+        };
+        const placement = await withWorkerPlacementAuthorization(
+          sessionMutationAuthorization,
+          (authorize) =>
+            dispatchService.dispatch(
+              request,
+              (observed) => {
+                attemptedPlacement = { ...observed };
+                emitSessionsChanged(context, {
+                  reason: "dispatch",
+                  sessionKey,
+                });
+              },
+              authorize,
+              signal,
+            ),
         );
         respondWorkerPlacement({
           respond,
@@ -519,19 +554,23 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const placement = await placementService.move!(
-        {
-          ...session,
-          source: params.expected,
-          target: params.target,
-          ...("abandonSource" in params ? { abandonSource: true } : {}),
-        },
-        () =>
-          emitSessionsChanged(context, {
-            reason: "move",
-            sessionKey,
-          }),
-        sessionMutationAuthorization?.assertCurrent,
+      const placement = await withWorkerPlacementAuthorization(
+        sessionMutationAuthorization,
+        (authorize) =>
+          placementService.move!(
+            {
+              ...session,
+              source: params.expected,
+              target: params.target,
+              ...("abandonSource" in params ? { abandonSource: true } : {}),
+            },
+            () =>
+              emitSessionsChanged(context, {
+                reason: "move",
+                sessionKey,
+              }),
+            authorize,
+          ),
       );
       respond(
         true,
