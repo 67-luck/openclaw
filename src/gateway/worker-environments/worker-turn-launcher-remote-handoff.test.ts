@@ -363,30 +363,33 @@ describe("worker turn launcher remote handoff", () => {
     );
     const imagePath = savedImage.path;
     const manager = openSessionManager();
-    manager.appendMessage(
+    await manager.appendMessageAsync(
       makeAgentAssistantMessage({
         content: [{ type: "toolCall", id: "shared-call", name: "read", arguments: {} }],
         stopReason: "toolUse",
         timestamp: 16,
       }),
     );
-    const firstKeptEntryId = manager.appendMessage(
+    const firstKeptEntryId = await manager.appendMessageAsync(
       makeAgentUserMessage({ content: "Earlier request", timestamp: 17 }),
     );
-    manager.appendMessage(
+    if (!firstKeptEntryId) {
+      throw new Error("expected persisted pre-reset user entry");
+    }
+    await manager.appendMessageAsync(
       makeTextToolResult("shared-call", "read", "Discarded owner result", false, 18),
     );
-    manager.appendMessage(
+    await manager.appendMessageAsync(
       makeAgentAssistantMessage({
         content: [{ type: "toolCall", id: "shared-call", name: "read", arguments: {} }],
         stopReason: "toolUse",
         timestamp: 19,
       }),
     );
-    manager.appendMessage(
+    await manager.appendMessageAsync(
       makeTextToolResult("shared-call", "read", "Kept owner result", false, 20),
     );
-    manager.appendMessage(
+    await manager.appendMessageAsync(
       makeAgentAssistantMessage({
         content: [{ type: "text", text: "Earlier reply" }],
         timestamp: 21,
@@ -415,7 +418,7 @@ describe("worker turn launcher remote handoff", () => {
           socketPath: "/worker/gateway.sock",
         });
         const completed = openSessionManager();
-        const leafId = completed.appendMessage(
+        const leafId = await completed.appendMessageAsync(
           makeAgentAssistantMessage({
             content: [{ type: "text", text: "Worker reply" }],
             timestamp: 21,
