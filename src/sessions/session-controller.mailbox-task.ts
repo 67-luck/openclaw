@@ -3,29 +3,10 @@ import { toErrorObject } from "../infra/errors.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { logSessionControllerSourceClaim } from "./session-controller.diagnostics.js";
 import { releaseSessionControllerClaim } from "./session-controller.mailbox-claim.js";
-import { reserveSessionControllerSource } from "./session-controller.mailbox.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
 } from "./session-controller.mailbox.types.js";
-import type { SessionTarget } from "./session-controller.target.js";
-
-/** Native producer admission enters the same sequence, not a parallel runnable list. */
-export function submitSessionControllerTask(
-  key: string,
-  params: {
-    signal?: AbortSignal;
-    target?: SessionTarget;
-    start(claim: SessionControllerMailboxClaim): void;
-  },
-): Promise<SessionControllerMailboxClaim> {
-  const input = reserveSessionControllerSource(key, {
-    policy: { mode: "followup" },
-    target: params.target,
-    adapter: { signal: params.signal },
-  });
-  return claimSessionControllerTask(input, (claim) => params.start(claim));
-}
 
 /** A prepared producer consumes its existing source, never submits another runnable input. */
 export function claimSessionControllerTask(

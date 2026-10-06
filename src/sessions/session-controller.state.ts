@@ -5,10 +5,6 @@ import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import {
-  registerReplyOperationSuccessorBarrier,
-  resolveReplyRunAdmissionSource,
-} from "./session-controller.barriers.js";
-import {
   REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS,
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
@@ -430,51 +426,6 @@ export function resolveSessionControllerOperationForSignal(
     : undefined;
 }
 
-/** Resolve only the live operation admitted with this exact upstream signal. */
-export function resolveActiveReplyRunOwnerForSignal(signal: AbortSignal):
-  | {
-      sessionId: string;
-      sessionKey: string;
-      abort: () => boolean;
-      handoff: (settle: (producerCompleted: Promise<void>) => Promise<void>) => boolean;
-    }
-  | undefined {
-  const operation = controllerStorage.operationsByUpstreamAbortSignal.get(signal);
-  if (!operation) {
-    return undefined;
-  }
-  const { key: sessionKey, sessionId } = operation;
-  const isCurrent = () =>
-    !signal.aborted &&
-    !operation.result &&
-    operation.key === sessionKey &&
-    operation.sessionId === sessionId &&
-    isCurrentSessionControllerOperation(operation);
-  if (!isCurrent()) {
-    return undefined;
-  }
-  return {
-    sessionId,
-    sessionKey,
-    // A retained selector must never cancel the operation that replaced this owner.
-    abort: () => isCurrent() && operation.abortByUser(),
-    handoff: (settle) => {
-      const producerCompleted = controllerStorage.producerCompletionByOperation.get(operation);
-      if (!isCurrent() || !producerCompleted) {
-        return false;
-      }
-      const settlement = settle(producerCompleted);
-      registerReplyOperationSuccessorBarrier({
-        operation,
-        sessionId,
-        sessionKeys: [sessionKey],
-        start: () => settlement,
-      });
-      return true;
-    },
-  };
-}
-
 export function runAfterReplyOperationClear(
   operation: ReplyOperation,
   afterClear: (sessionId: string) => void,
@@ -522,15 +473,23 @@ export function mergeReplyRunAdmissionSource<T extends ReplyRunAdmissionSource>(
   return source;
 }
 
-export {
-  registerReplyOperationSuccessorBarrier,
-  startReplyOperationSuccessorBarriers,
-  updateSuccessorAdmissionSessionId,
-  isReplyRunSuccessorAdmissionBlocked,
-  flushReplyOperationAfterClear,
-  registerFollowupAdmissionBarrier,
-  updateFollowupAdmissionSessionId,
-} from "./session-controller.barriers.js";
+/** Carries the exact operation lineage and physical database into an admission fence. */
+export function resolveReplyRunAdmissionSource(
+  operation: ReplyOperation,
+  sessionId: string,
+  previous?: ReplyRunAdmissionSource,
+): ReplyRunAdmissionSource {
+  return mergeReplyRunAdmissionSource(
+    {
+      sessionId,
+      sessionIds: operation.captureOwnedSessionIds(),
+      operation,
+      databaseIdentity:
+        controllerStorage.lifecycleAdmissionByOperation.get(operation)?.databaseIdentity,
+    },
+    previous,
+  );
+}
 
 export function clearReplyRunState(params: {
   sessionKey: string;

@@ -22,6 +22,13 @@ import {
   transitionReplyOperation,
   type ReplyOperationEvent,
 } from "./reply-operation-state.js";
+import {
+  flushReplyOperationAfterClear,
+  registerFollowupAdmissionBarrier,
+  startReplyOperationSuccessorBarriers,
+  updateFollowupAdmissionSessionId,
+  updateSuccessorAdmissionSessionId,
+} from "./session-controller.barriers.js";
 import type { ReplyBackendCancelReason, ReplyOperation } from "./session-controller.contracts.js";
 import {
   releaseSessionControllerOperation,
@@ -37,22 +44,17 @@ import { bindReplyOperationUpstreamAbort } from "./session-controller.operation-
 import {
   clearReplyRunState,
   evictReplyOperationByOperation,
-  flushReplyOperationAfterClear,
   getAttachedBackend,
   isReplyOperationAbortable,
   notifyReplyRunEnded,
   operationsByUpstreamAbortSignal,
   producerCompletionByOperation,
   prepareReplyRunKeyUpdate,
-  registerFollowupAdmissionBarrier,
   getSessionControllerEntry,
   addSessionControllerEntryAlias,
   controllerEntryByOperation,
   resolveReplyOperationAgentId,
   runAfterReplyOperationClear,
-  startReplyOperationSuccessorBarriers,
-  updateFollowupAdmissionSessionId,
-  updateSuccessorAdmissionSessionId,
 } from "./session-controller.state.js";
 import { captureSessionControllerStop, stopSession } from "./session-controller.stop.js";
 import { createTerminalProducerFenceRegistry } from "./session-controller.terminal-producer-fences.js";

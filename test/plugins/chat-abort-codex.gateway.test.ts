@@ -20,16 +20,14 @@ import {
 } from "../../src/gateway/server-methods/chat.abort.test-helpers.js";
 import { claimAgentRunDelegatedAuthority } from "../../src/infra/agent-run-registry.js";
 import { withSessionTurn } from "../../src/sessions/session-controller.admission.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../../src/sessions/session-controller.barriers.js";
 import { createReplyOperation } from "../../src/sessions/session-controller.js";
 import { captureSessionTarget } from "../../src/sessions/session-controller.lifecycle.js";
 import {
   tryClaimSessionControllerTask,
   releaseSessionControllerClaim,
 } from "../../src/sessions/session-controller.mailbox.js";
-import {
-  resolveActiveReplyRunOwnerForSignal,
-  markReplyOperationExecutionStarted,
-} from "../../src/sessions/session-controller.state.js";
+import { markReplyOperationExecutionStarted } from "../../src/sessions/session-controller.state.js";
 import { AsyncWorkScope } from "../../src/shared/async-work-scope.js";
 import { createDeferredCore } from "../../src/shared/deferred.js";
 import { withOpenClawTestState } from "../../src/test-utils/openclaw-test-state.js";

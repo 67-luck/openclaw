@@ -5,8 +5,8 @@ import {
   resolveActiveEmbeddedRunOwnerByRunId,
 } from "../agents/embedded-agent-runner/runs.js";
 import { getDiagnosticSessionActivitySnapshot } from "../logging/diagnostic-run-activity.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../sessions/session-controller.barriers.js";
 import { resolveActiveSessionRunId } from "../sessions/session-controller.queries.js";
-import { resolveActiveReplyRunOwnerForSignal } from "../sessions/session-controller.state.js";
 
 export const realtimeVoiceControlRuntime = {
   abortEmbeddedAgentRun,

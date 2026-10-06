@@ -22,6 +22,10 @@ import {
   settleSessionControllerSourceInjectionOrder,
   retireSessionControllerInput,
 } from "./session-controller.mailbox-source.js";
+import {
+  claimSessionControllerTask,
+  tryClaimSessionControllerTask,
+} from "./session-controller.mailbox-task.js";
 import type {
   SessionControllerInput,
   SessionControllerMailboxClaim,
@@ -450,11 +454,24 @@ function pumpSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   }
 }
 
-export {
-  submitSessionControllerTask,
-  claimSessionControllerTask,
-  tryClaimSessionControllerTask,
-} from "./session-controller.mailbox-task.js";
+/** Native producer admission enters the same sequence, not a parallel runnable list. */
+export function submitSessionControllerTask(
+  key: string,
+  params: {
+    signal?: AbortSignal;
+    target?: SessionTarget;
+    start(claim: SessionControllerMailboxClaim): void;
+  },
+): Promise<SessionControllerMailboxClaim> {
+  const input = reserveSessionControllerSource(key, {
+    policy: { mode: "followup" },
+    target: params.target,
+    adapter: { signal: params.signal },
+  });
+  return claimSessionControllerTask(input, (claim) => params.start(claim));
+}
+
+export { claimSessionControllerTask, tryClaimSessionControllerTask };
 
 function disposeSessionControllerMailbox(mailbox: SessionControllerMailbox): void {
   const now = Date.now();

@@ -18,6 +18,7 @@ import {
   findSessionControllerEntry,
   mergeReplyRunAdmissionSource,
   pruneSessionControllerEntry,
+  resolveReplyRunAdmissionSource,
 } from "./session-controller.state.js";
 import type {
   ReplyRunAdmissionSource,
@@ -26,24 +27,6 @@ import type {
   ReplyOperationSuccessorBarrierGroup,
 } from "./session-controller.state.types.js";
 import * as controllerStorage from "./session-controller.storage.js";
-
-/** Carries the exact operation lineage and physical database into an admission fence. */
-export function resolveReplyRunAdmissionSource(
-  operation: ReplyOperation,
-  sessionId: string,
-  previous?: ReplyRunAdmissionSource,
-): ReplyRunAdmissionSource {
-  return mergeReplyRunAdmissionSource(
-    {
-      sessionId,
-      sessionIds: operation.captureOwnedSessionIds(),
-      operation,
-      databaseIdentity:
-        controllerStorage.lifecycleAdmissionByOperation.get(operation)?.databaseIdentity,
-    },
-    previous,
-  );
-}
 
 function registerReplyRunAdmissionBarrier(
   barrierKind: "followupBarrier" | "successorBarrier",
@@ -169,6 +152,51 @@ export function registerReplyOperationSuccessorBarrier(params: {
     new Set<() => void>();
   starts.add(start);
   controllerStorage.successorBarrierStartsByOperation.set(params.operation, starts);
+}
+
+/** Resolve only the live operation admitted with this exact upstream signal. */
+export function resolveActiveReplyRunOwnerForSignal(signal: AbortSignal):
+  | {
+      sessionId: string;
+      sessionKey: string;
+      abort: () => boolean;
+      handoff: (settle: (producerCompleted: Promise<void>) => Promise<void>) => boolean;
+    }
+  | undefined {
+  const operation = controllerStorage.operationsByUpstreamAbortSignal.get(signal);
+  if (!operation) {
+    return undefined;
+  }
+  const { key: sessionKey, sessionId } = operation;
+  const isCurrent = () =>
+    !signal.aborted &&
+    !operation.result &&
+    operation.key === sessionKey &&
+    operation.sessionId === sessionId &&
+    isCurrentSessionControllerOperation(operation);
+  if (!isCurrent()) {
+    return undefined;
+  }
+  return {
+    sessionId,
+    sessionKey,
+    // A retained selector must never cancel the operation that replaced this owner.
+    abort: () => isCurrent() && operation.abortByUser(),
+    handoff: (settle) => {
+      const producerCompleted = controllerStorage.producerCompletionByOperation.get(operation);
+      if (!isCurrent() || !producerCompleted) {
+        return false;
+      }
+      const settlement = settle(producerCompleted);
+      registerReplyOperationSuccessorBarrier({
+        operation,
+        sessionId,
+        sessionKeys: [sessionKey],
+        start: () => settlement,
+      });
+      return true;
+    },
+  };
 }
 
 export function startReplyOperationSuccessorBarriers(operation: ReplyOperation): void {

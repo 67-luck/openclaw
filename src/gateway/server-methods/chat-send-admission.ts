@@ -17,6 +17,7 @@ import {
   isProgressCardRefreshInputProvenance,
   progressCardRefreshRunProjection,
 } from "../../sessions/input-provenance.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.barriers.js";
 import {
   type ReplyMessageInjectionTarget,
   type ReplyOperation,
@@ -31,7 +32,6 @@ import {
   hasRpcSourceForController,
   isRpcSourceRegistered,
 } from "../../sessions/session-controller.rpc-sources.js";
-import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import type { DedupeEntry } from "../server-shared.js";
 import {

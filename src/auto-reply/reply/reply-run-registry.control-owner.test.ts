@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.barriers.js";
 import {
   beginReplyMessageInjectionTarget,
   ReplyRunFollowupAdmissionBlockedError,
@@ -9,7 +10,6 @@ import {
   getSessionControllerOperation,
   captureCurrentReplyMessageInjectionTarget,
 } from "../../sessions/session-controller.js";
-import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.state.js";
 import { SESSION_WATCHDOG_CLEANUP_MS } from "../../sessions/session-controller.watchdog-state.js";
 import { createTestReplyOperation } from "./reply-run-registry.test-helpers.js";
 

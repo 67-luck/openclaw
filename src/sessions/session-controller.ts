@@ -44,12 +44,14 @@ export {
   getSessionControllerOperation,
   hasCommittedReplyOperationOutcome,
   hasReplyOperationExecutionStarted,
-  isReplyRunSuccessorAdmissionBlocked,
   markReplyOperationExecutionStarted,
-  registerReplyOperationSuccessorBarrier,
   runAfterReplyOperationClear,
   waitForReplyBarrierSettlement,
 } from "./session-controller.state.js";
+export {
+  isReplyRunSuccessorAdmissionBlocked,
+  registerReplyOperationSuccessorBarrier,
+} from "./session-controller.barriers.js";
 export { bindSessionControllerSourceTurnId } from "./session-controller.source-turn.js";
 export { markReplyOperationGlobalLaneWaitProgress } from "./session-controller.lifecycle-runtime.js";
 export {
