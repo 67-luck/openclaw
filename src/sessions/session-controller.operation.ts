@@ -11,11 +11,6 @@ import { createAbortError } from "../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
 import { markDiagnosticRunProgress } from "../logging/diagnostic-run-activity.js";
 import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
-import {
-  bindGatewayContextResolver,
-  getGatewayContextResolver,
-  getPluginRuntimeGatewayRequestScope,
-} from "../plugins/runtime/gateway-request-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   initialReplyOperationState,
@@ -32,12 +27,12 @@ import {
 import type { ReplyBackendCancelReason, ReplyOperation } from "./session-controller.contracts.js";
 import {
   releaseSessionControllerOperation,
-  retainSessionControllerOperation,
   bindSessionControllerTarget,
   captureSessionTarget,
 } from "./session-controller.lifecycle.js";
 import {
   prepareReplyOperationAdmission,
+  installReplyOperationAdmission,
   type CreateReplyOperationParams,
 } from "./session-controller.operation-admission.js";
 import { bindReplyOperationUpstreamAbort } from "./session-controller.operation-upstream.js";
@@ -704,26 +699,7 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     }
   });
 
-  bindGatewayContextResolver(
-    operation,
-    params.mailboxClaim
-      ? getGatewayContextResolver(params.mailboxClaim)
-      : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
-  );
-  owner.active = operation;
-  const projectSessionActive = params.mailboxClaim?.inputs[0]?.sourceAdapter?.projectSessionActive;
-  if (projectSessionActive !== undefined) {
-    owner.attachment = { operation, projectSessionActive };
-  }
-  addSessionControllerEntryAlias(owner, sessionId);
-  controllerEntryByOperation.set(operation, owner);
-  retainSessionControllerOperation(operation);
-  if (owner.target) {
-    bindSessionControllerTarget(operation, owner.target);
-  }
-  if (params.mailboxClaim) {
-    params.mailboxClaim.operation = operation;
-  }
+  installReplyOperationAdmission(operation, admitted, params.mailboxClaim);
   installed = true;
   watchdog.start();
   markProgress("reply_operation:queued");

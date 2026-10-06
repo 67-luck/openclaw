@@ -1,16 +1,28 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import {
+  bindGatewayContextResolver,
+  getGatewayContextResolver,
+  getPluginRuntimeGatewayRequestScope,
+} from "../plugins/runtime/gateway-request-scope.js";
 import { evaluateTurnAdmission } from "./session-controller.admission-rule.js";
 import {
   ReplyRunAlreadyActiveError,
   ReplyRunFollowupAdmissionBlockedError,
   ReplyRunSuccessorAdmissionBlockedError,
+  type ReplyOperation,
   type ReplyTurnKind,
 } from "./session-controller.contracts.js";
+import {
+  bindSessionControllerTarget,
+  retainSessionControllerOperation,
+} from "./session-controller.lifecycle.js";
 import type { SessionControllerMailboxClaim } from "./session-controller.mailbox.js";
 import {
   getSessionControllerEntry,
   bindSessionControllerEntryTarget,
   sessionControllers,
+  addSessionControllerEntryAlias,
+  controllerEntryByOperation,
 } from "./session-controller.state.js";
 import type { SessionTarget } from "./session-controller.target.js";
 
@@ -57,4 +69,34 @@ export function prepareReplyOperationAdmission(params: CreateReplyOperationParam
     throw new ReplyRunAlreadyActiveError(sessionKey);
   }
   return { sessionKey, sessionId, owner };
+}
+
+/** Publishes the prepared operation's context, exact owner, and retained custody. */
+export function installReplyOperationAdmission(
+  operation: ReplyOperation,
+  admitted: ReturnType<typeof prepareReplyOperationAdmission>,
+  mailboxClaim?: SessionControllerMailboxClaim,
+): void {
+  const { owner, sessionId } = admitted;
+  bindGatewayContextResolver(
+    operation,
+    mailboxClaim
+      ? getGatewayContextResolver(mailboxClaim)
+      : getPluginRuntimeGatewayRequestScope()?.resolveGatewayContext,
+  );
+  owner.active = operation;
+  const projectSessionActive = mailboxClaim?.inputs[0]?.sourceAdapter?.projectSessionActive;
+  if (projectSessionActive !== undefined) {
+    owner.attachment = { operation, projectSessionActive };
+  }
+  // Lifecycle retention and target binding consume the exact installed owner.
+  addSessionControllerEntryAlias(owner, sessionId);
+  controllerEntryByOperation.set(operation, owner);
+  retainSessionControllerOperation(operation);
+  if (owner.target) {
+    bindSessionControllerTarget(operation, owner.target);
+  }
+  if (mailboxClaim) {
+    mailboxClaim.operation = operation;
+  }
 }
