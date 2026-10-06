@@ -83,7 +83,7 @@ class AuthProfileSharedSourceChangedError extends Error {}
 
 /** The existing SQLite worker owns BEGIN/read/save/COMMIT; host callbacks keep their scope. */
 type AuthProfileStoreUpdate = {
-  databaseTarget?: { kind: "agent"; agentId: string; path: string; env: NodeJS.ProcessEnv };
+  existingDatabaseTarget?: { kind: "agent"; agentId: string; path: string; env: NodeJS.ProcessEnv };
   agentDir?: string;
   envOnly: boolean;
   peerGeneration?: AuthStoreUpdateInput["peerGeneration"];
@@ -117,7 +117,7 @@ export function runAuthProfileStoreUpdate(params: AuthProfileStoreUpdate): Promi
         : resolveSharedMainAuthAgentDir(env)
       : params.agentDir;
     const target =
-      params.databaseTarget ??
+      params.existingDatabaseTarget ??
       (capturedAgentDir
         ? {
             kind: "agent" as const,
@@ -140,7 +140,7 @@ export function runAuthProfileStoreUpdate(params: AuthProfileStoreUpdate): Promi
     const reservation = reserveAuthProfileUsagePreparation([
       resolveOpenClawStateSqlitePath(env),
       ...(params.agentDir
-        ? [params.databaseTarget?.path ?? resolveAuthProfileDatabasePath(params.agentDir)]
+        ? [params.existingDatabaseTarget?.path ?? resolveAuthProfileDatabasePath(params.agentDir)]
         : []),
     ]);
     try {
@@ -151,7 +151,7 @@ export function runAuthProfileStoreUpdate(params: AuthProfileStoreUpdate): Promi
         assertCurrent,
       );
       assertCurrent();
-      const databaseTarget = params.databaseTarget ?? prepared.databaseTarget;
+      const databaseTarget = params.existingDatabaseTarget ?? prepared.databaseTarget;
       transferred = databaseTarget.kind === "agent" && databaseTarget.path === target?.path;
       // Bootstrap's acknowledged handoff selects the already-captured shared-state owner.
       followsCapturedAgent = transferred;
@@ -408,7 +408,10 @@ async function runPreparedAuthProfileStoreUpdate(
       const value = await runOpenClawAgentWriteAdmission(
         databaseTarget,
         async () => {
-          await execution.prepare(source);
+          // Captured peers use existing-only admission; ordinary saves retain first-use creation.
+          if (!params.existingDatabaseTarget) {
+            await execution.prepare(source);
+          }
           const result = await execution.runExisting(source, async (scope) => {
             const invoked = await executeOpenClawAgentWorkerPublication<
               InlineAuthFailureOperations,

@@ -198,7 +198,7 @@ async function runCandidateAuthProfileUpdate(
   let store: AuthProfileStore | undefined;
   await runAuthProfileStoreUpdate({
     agentDir: candidate.agentDir,
-    databaseTarget: {
+    existingDatabaseTarget: {
       kind: "agent",
       agentId: candidate.agentId,
       path: candidate.databasePath,
