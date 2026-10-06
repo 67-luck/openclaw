@@ -1,3 +1,4 @@
+/* oxlint-disable max-lines -- Stable keeps the pre-refactor Doctor service owner layout. */
 /** Doctor repairs for installed gateway service config and duplicate legacy services. */
 import fs from "node:fs/promises";
 import os from "node:os";

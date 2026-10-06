@@ -133,6 +133,7 @@ export async function beginDoctorMaintenance(
   let deferredStateReleaseFailure: unknown;
   const throwDeferredStateReleaseFailure = () => {
     if (deferredStateReleaseFailure !== undefined) {
+      // oxlint-disable-next-line typescript/only-throw-error -- Preserve the exact deferred cleanup refusal.
       throw deferredStateReleaseFailure;
     }
   };
