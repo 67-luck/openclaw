@@ -11,6 +11,7 @@ import {
   resolveReplyRunForCurrentSessionId,
   getSessionControllerEntryForOperation,
 } from "./session-controller.state.js";
+import type { SessionTarget } from "./session-controller.target.js";
 
 export function isSessionRunActive(sessionId: string): boolean {
   return resolveReplyRunForCurrentSessionId(sessionId).kind !== "none";
@@ -79,8 +80,12 @@ export function listActiveSessionRunKeys(): string[] {
 export function listActiveSessionRunIds(): string[] {
   return [...activeSessionOperations()].map((operation) => operation.sessionId).toSorted();
 }
-export function resolveActiveSessionRunId(sessionKey: string): string | undefined {
-  return getSessionControllerOperation(sessionKey.trim())?.sessionId;
+/** Resolves the active run for one logical key, narrowed to a physical owner when provided. */
+export function resolveActiveSessionRunId(
+  sessionKey: string,
+  target?: SessionTarget,
+): string | undefined {
+  return getSessionControllerOperation(sessionKey.trim(), target)?.sessionId;
 }
 
 /** A logical key is busy even when it selects multiple physical owners. */

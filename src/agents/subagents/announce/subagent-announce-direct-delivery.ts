@@ -418,6 +418,7 @@ export async function sendSubagentAnnounceDirectly(
           }
         : {}),
       sessionKey: canonicalRequesterSessionKey,
+      ...(requesterAgentId ? { agentId: requesterAgentId } : {}),
       message: turnMessage,
       deliver: shouldDeliverAgentFinal,
       bestEffortDeliver: params.bestEffortDeliver,

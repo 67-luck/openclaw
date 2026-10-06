@@ -11,6 +11,7 @@ import {
   parseAgentSessionKey,
 } from "../../../routing/session-key.js";
 import { resolveActiveSessionRunId } from "../../../sessions/session-controller.queries.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.target.js";
 import { resolveRequesterStoreKey } from "./subagent-requester-store-key.js";
 export { resolveQueueSettings } from "../../../auto-reply/reply/queue.js";
 export { resolveExternalBestEffortDeliveryTarget } from "../../../infra/outbound/best-effort-delivery.js";
@@ -84,14 +85,21 @@ export function loadRequesterSessionEntry(
 }
 
 export function getSubagentRequesterSessionActivity(
-  _requesterSessionKey: string,
-  requester: Pick<RequesterSessionEntryResult, "agentId" | "canonicalKey" | "entry">,
+  requesterSessionKey: string,
+  requester: Pick<RequesterSessionEntryResult, "agentId" | "canonicalKey" | "entry" | "storePath">,
 ) {
-  if (!requester.agentId) {
+  if (!requester.agentId || !requester.storePath) {
     return { isActive: false };
   }
   const storedSessionId = requester.entry?.sessionId;
-  const activeSessionId = resolveActiveSessionRunId(requester.canonicalKey);
+  const target = captureSessionTarget({
+    storeScope: requester.storePath,
+    sessionKey: requester.canonicalKey,
+    aliases: [requesterSessionKey],
+    agentId: requester.agentId,
+    incarnation: storedSessionId,
+  });
+  const activeSessionId = resolveActiveSessionRunId(requester.canonicalKey, target);
   const sessionId = activeSessionId ?? storedSessionId;
   return {
     sessionId,
