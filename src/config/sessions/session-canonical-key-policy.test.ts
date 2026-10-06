@@ -230,7 +230,7 @@ describe("canonical main-key policy facts", () => {
         const abort = db.prepare("INSERT INTO policy_abort VALUES (1)");
         // Direct native stepping models transaction loss outside the tracked mutation wrapper.
         expect(() =>
-          mode === "tracked" ? abort.run() : StatementSync.prototype.run.call(abort),
+          mode === "tracked" ? abort.run() : StatementSync.prototype.run.call(abort, {}),
         ).toThrow("policy rollback");
         expect(db.isTransaction).toBe(false);
         if (mode === "native-before-begin") {
