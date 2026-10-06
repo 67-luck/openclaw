@@ -678,6 +678,29 @@ export function prepareDeferredPluginSessionImportReader(params: {
   };
 }
 
+/** Resolve the verified live or archived legacy index retained for plugin-owned migration. */
+export function resolveDeferredPluginSessionStoreSource(params: {
+  cfg: OpenClawConfig;
+  target: LegacySessionStoreTarget;
+  env: NodeJS.ProcessEnv;
+}): string | undefined {
+  const sqlite = resolveSqliteTargetFromSessionStorePath(params.target.storePath, {
+    agentId: params.target.agentId,
+    env: params.env,
+  });
+  const imported = readDeferredPluginSessionImport({
+    ...params,
+    sqlitePath: sqlite.path,
+    purpose: "canonical",
+  });
+  const index = imported?.sources.find(
+    (source) => source.path === path.resolve(params.target.storePath),
+  );
+  return index
+    ? resolveVerifiedSessionSource(index, { ...params.target, sqlitePath: sqlite.path }, params.env)
+    : undefined;
+}
+
 /** Called after full core import validation, before any original can be retired. */
 export function recordDeferredPluginSessionImport(
   params: SessionImportSource & {

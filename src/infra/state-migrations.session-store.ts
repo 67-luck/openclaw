@@ -40,6 +40,7 @@ import {
   deferredPluginSessionStoreIds,
   prepareDeferredPluginSessionImportReader,
   preserveDeferredPluginSessionSource,
+  resolveDeferredPluginSessionStoreSource,
 } from "./deferred-plugin-session-sources.js";
 import { readFirstLineSync } from "./first-line-read.js";
 import { expandHomePrefix } from "./home-dir.js";
@@ -848,12 +849,16 @@ export async function migrateLegacyAcpSessionMetadata(params: {
   const scope = params.cfg.session?.scope as SessionScope | undefined;
   const storeGroups: Array<{
     target: (typeof targets)[number];
+    sourcePath: string;
     agentIds: Set<string>;
     aliasCandidates: Set<string>;
   }> = [];
 
   for (const target of targets) {
-    if (!migrationFileExists(target.storePath)) {
+    const sourcePath = migrationFileExists(target.storePath)
+      ? target.storePath
+      : resolveDeferredPluginSessionStoreSource({ cfg: params.cfg, target, env });
+    if (!sourcePath) {
       continue;
     }
     const group = storeGroups.find(({ target: existing }) =>
@@ -873,6 +878,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
     }
     storeGroups.push({
       target,
+      sourcePath,
       agentIds: new Set([
         normalizeAgentId(target.agentId),
         ...matchingDeclaredTargets.map((declaredTarget) => declaredTarget.agentId),
@@ -884,7 +890,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
     });
   }
 
-  for (const { target, agentIds, aliasCandidates } of storeGroups) {
+  for (const { target, sourcePath, agentIds, aliasCandidates } of storeGroups) {
     const storePath = target.storePath;
     if (deferredPluginSessionStoreIds({ target, pending }).some(isPluginDoctorMigrationDeferred)) {
       continue;
@@ -901,7 +907,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
     );
     let parsed: ReturnType<typeof readSessionStoreJson5>;
     try {
-      parsed = readSessionStoreJson5(storePath);
+      parsed = readSessionStoreJson5(sourcePath);
     } catch (err) {
       warnings.push(`Could not read ${storePath}: ${String(err)}`);
       continue;
@@ -1005,7 +1011,7 @@ export async function migrateLegacyAcpSessionMetadata(params: {
       continue;
     }
     try {
-      if (!preserveSource) {
+      if (!preserveSource && sourcePath === storePath) {
         await saveSessionStoreStrict(storePath, normalized);
       }
       changes.push(
@@ -1042,6 +1048,10 @@ function resolveLegacyAcpMetadataSessionStoreTargets(
       targets.set(storePath, { agentId, storePath });
     }
   };
+
+  // The pre-agent shared store can already be archived by canonical session
+  // import while its ACP metadata still awaits an installed plugin generation.
+  addTarget(DEFAULT_AGENT_ID, path.join(stateDir, "sessions", "sessions.json"));
 
   for (const target of resolveAllAgentSessionStoreTargetsSync(cfg, { env })) {
     addTarget(target.agentId, target.storePath);

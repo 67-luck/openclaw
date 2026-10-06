@@ -325,6 +325,27 @@ describe("retained legacy ACP metadata", () => {
     });
   });
 
+  it("imports retained ACP metadata after core session sources are archived", async () => {
+    await withOpenClawTestState({ label: "retained-acp-archived-source" }, async (state) => {
+      const fixture = await seedRetainedSource(state);
+      expect((await fixture.importCore()).totals.importedEntries).toBe(1);
+      fixture.assertOriginalsRetained();
+
+      await recordDeferredPluginMigrations({
+        env: state.env,
+        pending: [],
+        resolvedPluginIds: [PLUGIN_ID],
+      });
+      await reopenDatabases();
+      expect((await fixture.importCore()).targets.flatMap((target) => target.issues)).toEqual([]);
+      expect(fs.existsSync(fixture.scope.storePath)).toBe(false);
+
+      await reopenDatabases();
+      expect((await fixture.migrateAcp()).warnings).toEqual([]);
+      expect(readAcpSessionMeta(fixture.acpScope)).toEqual(LEGACY_META);
+    });
+  });
+
   it("preserves canonical session deletion before the first ACP import", async () => {
     await withOpenClawTestState({ label: "retained-acp-deletion" }, async (state) => {
       const fixture = await seedRetainedSource(state);
