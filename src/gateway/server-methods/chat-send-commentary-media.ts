@@ -34,7 +34,7 @@ import { formatForLog } from "../ws-log.js";
 import type { AssistantDisplayContentBlock } from "./chat-assistant-content.js";
 import {
   captureWebchatReplyMediaScope,
-  getWebchatReplyMediaLocalRoots,
+  prepareWebchatReplyMediaLocalRoots,
   normalizeWebchatReplyMediaPathsForDisplay,
   type WebchatReplyMediaRequesterContext,
 } from "./chat-reply-media.js";
@@ -222,6 +222,7 @@ function observeChatSendCommentaryMedia(params: AssistantCommentaryMediaCustodyP
                 ...mediaScope,
                 payloads: mediaUrls.map((url) => ({ mediaUrls: [url] })),
               });
+              const localRoots = await prepareWebchatReplyMediaLocalRoots(mediaScope);
               assertCurrent();
               for (const [index, payload] of payloads.entries()) {
                 // History ownership starts after the rewrite; GC can run during preparation.
@@ -229,7 +230,7 @@ function observeChatSendCommentaryMedia(params: AssistantCommentaryMediaCustodyP
                   sessionKey: scope.sessionKey,
                   agentId: scope.agentId,
                   items: prepareOutgoingMediaFromReplyPayload(payload),
-                  localRoots: getWebchatReplyMediaLocalRoots(mediaScope),
+                  localRoots,
                   continueOnPrepareError: true,
                   assertCurrent: mediaScope.assertCurrent,
                   abortSignal: params.abortSignal,

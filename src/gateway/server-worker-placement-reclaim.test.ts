@@ -561,7 +561,11 @@ it("an idempotent failed-cleanup result does not cancel work already on the loca
   const local = { state: "local", sessionId: REQUEST.sessionId, generation: 4 };
   const cancel = vi.fn();
   const barriers = createGatewayWorkerPlacementReclaimBarriers({
-    placements: { get: () => local as never, waitForTurnClaimRelease: vi.fn() },
+    placements: {
+      get: () => local as never,
+      getAsync: async () => local as never,
+      waitForTurnClaimRelease: vi.fn(),
+    },
     loadSessionRuntime: async () =>
       ({
         managedWorktrees: { findLiveByOwner: () => undefined },

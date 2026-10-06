@@ -55,7 +55,7 @@ import type {
   MutationTarget,
   PreparedPatchTarget,
 } from "./sessions-patch-types.js";
-import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
+import { prepareSessionWorkerPlacementPatchError } from "./sessions-shared.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -165,7 +165,7 @@ export async function executeSessionPatchMutations(params: {
     }
     let initialPlacementPatchError: string | undefined;
     try {
-      initialPlacementPatchError = resolveSessionWorkerPlacementPatchError({
+      initialPlacementPatchError = await prepareSessionWorkerPlacementPatchError({
         agentId: resolved.agentId,
         cfg,
         context: params.context,

@@ -65,7 +65,11 @@ function fixture(name: string, state: "active" | "failed" | "local" | "reclaimed
   };
   const cancel = vi.fn(async (input: { assertCurrent: () => void }) => input.assertCurrent());
   const barriers = createGatewayWorkerPlacementReclaimBarriers({
-    placements: { get: () => ({ ...placement }) as never, waitForTurnClaimRelease: async () => {} },
+    placements: {
+      get: () => ({ ...placement }) as never,
+      getAsync: async () => ({ ...placement }) as never,
+      waitForTurnClaimRelease: async () => {},
+    },
     loadSessionRuntime: async () => ({
       managedWorktrees: { findLiveByOwner: () => undefined },
       resolveGatewaySessionStoreTargetWithStore: () => target,

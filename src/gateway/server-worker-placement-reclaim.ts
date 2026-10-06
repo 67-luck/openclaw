@@ -22,7 +22,7 @@ import { matchesWorkerPlacementTarget } from "./worker-environments/placement-ta
 import type { WorkerPlacementReclaimRequest } from "./worker-environments/service-contract.js";
 
 type WorkerPlacementReclaimBarrierParams = {
-  placements: Pick<WorkerSessionPlacementStore, "get" | "waitForTurnClaimRelease">;
+  placements: Pick<WorkerSessionPlacementStore, "get" | "getAsync" | "waitForTurnClaimRelease">;
   loadSessionRuntime: () => Promise<WorkerPlacementSessionRuntime>;
   cancelSessionWork: WorkerPlacementSessionWorkCancellation;
   revokeSessionAuthority: (request: { sessionId: string; sessionKeys: readonly string[] }) => void;
@@ -150,9 +150,9 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         );
       }
     };
+    const placement = await params.placements.getAsync(sessionId);
     assertCurrent();
     beforeDrain?.();
-    const placement = params.placements.get(sessionId);
     const pending = pendingOperations?.isCurrent() ? pendingOperations : undefined;
     const dispatch = pending?.hasPendingDispatch() === true;
     if (
@@ -238,7 +238,9 @@ export function createGatewayWorkerPlacementReclaimBarriers(
           expectedTarget: target,
           errorMessage: `Session ${sessionKey} changed before cloud worker stop. Retry.`,
         });
-        const placement = params.placements.get(sessionId);
+        const placement = await params.placements.getAsync(sessionId);
+        authorize?.();
+        resolved.assertBindingCurrent(getRuntimeConfig());
         if (
           placement?.state !== "active" &&
           placement?.state !== "draining" &&
@@ -319,10 +321,11 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         scope: target.storePath,
         identities: lifecycleIdentities,
         prepare: async (lifecycle) => {
-          assertCurrent();
           // A preceding failed cleanup may already have returned this placement to local.
           // Its idempotent result must not cancel work admitted after that completed Stop.
-          if (params.placements.get(sessionId)?.state === "failed") {
+          const placement = await params.placements.getAsync(sessionId);
+          assertCurrent();
+          if (placement?.state === "failed") {
             await cancelAndDrain(lifecycle.closeWorkAdmissions, assertCurrent);
           }
         },

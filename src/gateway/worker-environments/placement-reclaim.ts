@@ -66,7 +66,9 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
       authorize,
       beforeDrain,
       begin: async (assertCurrent) => {
-        const current = placements.get(request.sessionId);
+        const current = await placements.getAsync(request.sessionId);
+        assertCurrent?.();
+        beforeDrain?.assertCurrent?.();
         // A queued stop can observe the previous stop's completion only after
         // entering the lifecycle fence; joining an outside promise can deadlock it.
         if (

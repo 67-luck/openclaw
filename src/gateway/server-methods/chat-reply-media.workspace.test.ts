@@ -17,7 +17,7 @@ import { createWorkerSessionPlacementStore } from "../worker-environments/placem
 import { buildAssistantReplyContent } from "./chat-assistant-content.js";
 import {
   captureWebchatReplyMediaScope,
-  getWebchatReplyMediaLocalRoots,
+  prepareWebchatReplyMediaLocalRoots,
   normalizeWebchatReplyMediaPathsForDisplay,
 } from "./chat-reply-media.js";
 
@@ -135,7 +135,7 @@ describe("WebChat reply media workspace ownership", () => {
             sessionKey: TEST_SESSION_KEY,
             agentId: "main",
             payloads: [payload],
-            managedMediaLocalRoots: getWebchatReplyMediaLocalRoots(scope),
+            managedMediaLocalRoots: await prepareWebchatReplyMediaLocalRoots(scope),
             assertCurrent: scope.assertCurrent,
           });
     const rejected = expect(delivery).rejects.toThrow("Session media access changed");
@@ -204,7 +204,7 @@ describe("WebChat reply media workspace ownership", () => {
         sessionKey: TEST_SESSION_KEY,
         agentId: "main",
         payloads: [{ mediaUrls: [sourcePath], trustedLocalMedia: true }],
-        managedMediaLocalRoots: getWebchatReplyMediaLocalRoots({
+        managedMediaLocalRoots: await prepareWebchatReplyMediaLocalRoots({
           cfg,
           agentId: "main",
           sessionEntry,
@@ -281,7 +281,11 @@ describe("WebChat reply media workspace ownership", () => {
         sessionEntry,
         payloads: audioPaths.map((source) => ({ mediaUrls: [source], trustedLocalMedia: true })),
       });
-      const localRoots = getWebchatReplyMediaLocalRoots({ cfg, agentId: "main", sessionEntry });
+      const localRoots = await prepareWebchatReplyMediaLocalRoots({
+        cfg,
+        agentId: "main",
+        sessionEntry,
+      });
       const { assistantContent } = await buildAssistantReplyContent({
         sessionKey: TEST_SESSION_KEY,
         agentId: "main",
@@ -453,7 +457,7 @@ describe("WebChat reply media workspace ownership", () => {
               .path,
         ),
       );
-      const localRoots = getWebchatReplyMediaLocalRoots({
+      const localRoots = await prepareWebchatReplyMediaLocalRoots({
         cfg,
         agentId: "main",
         sessionEntry,
@@ -508,7 +512,7 @@ describe("WebChat reply media workspace ownership", () => {
       sessionKey: TEST_SESSION_KEY,
       agentId: "main",
       payloads: [{ mediaUrls: [aliasedSource], trustedLocalMedia: true }],
-      managedMediaLocalRoots: getWebchatReplyMediaLocalRoots({
+      managedMediaLocalRoots: await prepareWebchatReplyMediaLocalRoots({
         cfg,
         agentId: "main",
         sessionEntry,

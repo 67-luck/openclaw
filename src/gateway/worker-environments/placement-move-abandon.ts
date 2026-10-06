@@ -99,7 +99,8 @@ export function createWorkerPlacementMoveAbandonment(
     intent: WorkerPlacementMoveIntent,
     authorize?: WorkerPlacementAuthorization,
   ): Promise<Extract<WorkerDispatchPlacement, { state: "local" }>> => {
-    const current = placements.get(request.sessionId);
+    const current = await placements.getAsync(request.sessionId);
+    authorize?.();
     if (
       !current ||
       (current.state !== "active" &&
@@ -117,7 +118,7 @@ export function createWorkerPlacementMoveAbandonment(
         environmentId: intent.source.environmentId,
         resolveWorkspace: options.resolveWorkspace,
       });
-      const failed = placements.get(request.sessionId);
+      const failed = await placements.getAsync(request.sessionId);
       if (!isForceAbandonedWorkerPlacement(failed)) {
         throw new Error(`Session ${request.sessionKey} abandonment did not fence its remote owner`);
       }
@@ -153,8 +154,8 @@ export function createWorkerPlacementMoveAbandonment(
         });
       }
     });
+    const failed = await placements.getAsync(request.sessionId);
     authorize?.();
-    const failed = placements.get(request.sessionId);
     if (failed?.state !== "failed") {
       throw new Error(`Session ${request.sessionKey} abandonment did not fence its remote owner`);
     }

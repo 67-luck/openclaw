@@ -647,6 +647,7 @@ describe("worker placement startup recovery authority", () => {
       placements: {
         workspaceResultInstanceId: () => "gateway-test",
         get: () => placement,
+        getAsync: async () => placement,
       } as never,
       environments: {} as never,
       gatewayNamespace: "gateway-test",

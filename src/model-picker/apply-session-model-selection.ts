@@ -37,6 +37,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { triggerSessionPatchHook } from "../gateway/session-patch-hooks.js";
 import { resolveSessionWorkerPlacementContext } from "../gateway/session-worker-placement-context.js";
 import { resolveWorkerPlacementSessionRuntimeCapabilities } from "../gateway/worker-environments/placement-session-runtime.js";
+import { readSessionWorkerPlacementAsync } from "../gateway/worker-environments/session-placement-lifecycle.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resolveSystemEventQueueKey } from "../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../infra/system-events.js";
@@ -128,18 +129,23 @@ function rejectNotAllowed(provider: string, model: string): ApplySessionModelSel
  * active cloud-worker placement. Mirrors the sessions.patch guard so directive
  * model changes are validated before they persist.
  */
-function resolveActivePlacementModelSelectionError(params: {
-  cfg: OpenClawConfig;
-  agentId: string;
-  sessionKey: string;
-  entry: SessionEntry;
-}): string | undefined {
+function resolveActivePlacementModelSelectionError(
+  params: {
+    cfg: OpenClawConfig;
+    agentId: string;
+    sessionKey: string;
+    entry: SessionEntry;
+  },
+  prepared?: { placement: Awaited<ReturnType<typeof readSessionWorkerPlacementAsync>> },
+): string | undefined {
   const sessionId = params.entry.sessionId;
   if (!sessionId) {
     return undefined;
   }
   const placementService = resolveSessionWorkerPlacementContext().workerSessionPlacementService;
-  const placement = placementService?.getMany([sessionId]).get(sessionId);
+  const placement = prepared
+    ? prepared.placement
+    : placementService?.getMany([sessionId]).get(sessionId);
   if (!placement || placement.state === "local") {
     return undefined;
   }
@@ -319,12 +325,20 @@ export async function applySessionModelSelectionInternal(
       };
     }
   }
-  const placementError = resolveActivePlacementModelSelectionError({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    sessionKey: params.sessionKey,
-    entry: nextEntry,
-  });
+  const placementError = resolveActivePlacementModelSelectionError(
+    {
+      cfg: params.cfg,
+      agentId: params.agentId,
+      sessionKey: params.sessionKey,
+      entry: nextEntry,
+    },
+    {
+      placement: await readSessionWorkerPlacementAsync({
+        context: resolveSessionWorkerPlacementContext(),
+        sessionId: nextEntry.sessionId,
+      }),
+    },
+  );
   if (placementError) {
     return { status: "rejected", reason: "invalid-runtime", message: placementError };
   }
