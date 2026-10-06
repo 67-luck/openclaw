@@ -1,4 +1,6 @@
+import type { ManagedGatewayUpdateVerdict } from "../cli/update-cli/update-command-service-context-types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { AgentDatabaseMigrationTarget } from "../infra/state-migrations.media-persistence-targets.js";
 import type {
   UpdateDatabaseGenerations,
   UpdateDatabaseWriteReceipt,
@@ -24,6 +26,8 @@ export type DoctorMaintenance = {
   signal: AbortSignal;
   releaseState(): Promise<void>;
   repairSqliteNoCow(paths: readonly string[]): Promise<void>;
+  enableSqliteReclamation(agents: readonly AgentDatabaseMigrationTarget[]): Promise<void>;
+  cleanupRetainedRuntimes(): Promise<void>;
   release(): Promise<void>;
   finish(
     cfg: OpenClawConfig | undefined,
@@ -33,4 +37,5 @@ export type DoctorMaintenance = {
   warnings?: string[];
   failureFacts?: UpdateFailureFact[];
   readonly databaseWrites?: UpdateDatabaseWriteReceipt;
+  readonly serviceUpdateVerdict?: ManagedGatewayUpdateVerdict;
 };

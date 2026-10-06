@@ -3,12 +3,11 @@
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { sanitizeGoogleAssistantFirstOrdering } from "../../shared/google-turn-ordering.js";
 import { sliceUtf16Safe, truncateUtf16Safe } from "../../utils.js";
 import { resolveAgentConfig } from "../agent-scope.js";
-import type { AgentMessage } from "../runtime/index.js";
 import type { WorkspaceBootstrapFile } from "../workspace.js";
 import type { EmbeddedContextFile } from "./context-file.js";
+export { sanitizeGoogleAssistantFirstOrdering as sanitizeGoogleTurnOrdering } from "../../shared/google-turn-ordering.js";
 
 type ContentBlockWithSignature = {
   thought_signature?: unknown;
@@ -375,9 +374,6 @@ function trimBootstrapContent(
 }
 
 function clampToBudget(content: string, budget: number): string {
-  if (budget <= 0) {
-    return "";
-  }
   if (content.length <= budget) {
     return content;
   }
@@ -459,6 +455,18 @@ export function buildBootstrapContextFiles(
   return result;
 }
 
-export function sanitizeGoogleTurnOrdering(messages: AgentMessage[]): AgentMessage[] {
-  return sanitizeGoogleAssistantFirstOrdering(messages);
+/** Builds bounded context files from already-resolved bootstrap file metadata. */
+export function buildBootstrapContextForFiles(
+  bootstrapFiles: WorkspaceBootstrapFile[],
+  params: {
+    config?: OpenClawConfig;
+    agentId?: string | null;
+    warn?: (message: string) => void;
+  },
+): EmbeddedContextFile[] {
+  return buildBootstrapContextFiles(bootstrapFiles, {
+    maxChars: resolveBootstrapMaxChars(params.config, params.agentId),
+    totalMaxChars: resolveBootstrapTotalMaxChars(params.config, params.agentId),
+    warn: params.warn,
+  });
 }

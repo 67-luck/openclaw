@@ -5,35 +5,47 @@ import { resolveRestartRecoverySteeringBlockReason } from "../../config/sessions
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { diagnosticLogger } from "../../logging/diagnostic-runtime.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
   scheduleFollowupDrainAfterReplyOperationClear,
   type RunReplyAgentParams,
 } from "./agent-runner-core.js";
+import { resolveReplySteeringAuthority } from "./agent-runner-fallback-authority.js";
 import {
   admitFollowupRunLifecycle,
+  isFollowupRunAborted,
   parkSteerCandidate,
   resolveFollowupAbortSignal,
   scheduleFollowupDrain,
   type FollowupRun,
 } from "./queue.js";
 import type { ReplyOperationRunState } from "./reply-operation-run-state.js";
+import type { ReplyMessageInjectionRejectionReason } from "./reply-run-registry.contracts.js";
 import {
   beginReplyMessageInjectionTarget,
   finalizeReplyMessageInjectionAttempt,
   type ReplyOperation,
   replyRunRegistry,
 } from "./reply-run-registry.js";
+import { waitForReplyOperationBackend } from "./reply-run-registry.state.js";
 import { refreshReplyOperationTyping } from "./reply-run-typing.js";
 import { buildChannelSourceTurnId } from "./source-turn-id.js";
 import type { TypingSignaler } from "./typing-mode.js";
+
+type ActiveReplySteerFallbackReason =
+  | ReplyMessageInjectionRejectionReason
+  | NonNullable<ReturnType<typeof resolveRestartRecoverySteeringBlockReason>>
+  | "admission-changed"
+  | "reply-owner-ended"
+  | "session-entry-unavailable"
+  | "model-fallback-changed";
 
 type ActiveReplySteerParams = {
   followupRun: RunReplyAgentParams["followupRun"];
   opts: RunReplyAgentParams["opts"];
   providedReplyOperation: ReplyOperation | undefined;
-  automaticFallbackRoute?: ReplyOperation["automaticFallbackRoute"];
   queueKey: string;
   releaseAdmissionTicket: () => void;
   replyOperationRunState: ReplyOperationRunState | undefined;
@@ -47,8 +59,6 @@ type ActiveReplySteerParams = {
   touchActiveSessionEntry: () => Promise<void>;
   typing: RunReplyAgentParams["typing"];
   typingSignals: TypingSignaler;
-  toolAuthorityFingerprint: string;
-  pendingInputAuthorityFingerprint?: string;
 };
 
 function resolveAcceptedSteerRunId(params: ActiveReplySteerParams): string {
@@ -94,13 +104,8 @@ export async function runActiveReplySteer(
   // carries a source-keyed reservation; steering by its stale sessionId
   // would miss the live target run.
   const activeReplyOperation = params.providedReplyOperation;
-  const steerSessionId = activeReplyOperation?.sessionId ?? followupRun.run.sessionId;
-  // Capture exact injection authority before parking or awaiting admission.
-  // A same-key successor must never inherit this turn's steer or abort.
-  const injectionTarget =
-    activeReplyOperation && replyRunRegistry.get(activeReplyOperation.key) === activeReplyOperation
-      ? replyRunRegistry.resolveCurrentMessageInjectionTarget(activeReplyOperation.key)
-      : undefined;
+  const activeReplyKey = activeReplyOperation?.key;
+  let steerSessionId = activeReplyOperation?.sessionId ?? followupRun.run.sessionId;
   const parked = parkSteerCandidate(queueKey, followupRun, resolvedQueue, runFollowup);
   if (!parked) {
     releaseAdmissionTicket();
@@ -121,7 +126,10 @@ export async function runActiveReplySteer(
   };
   scheduleParkedFallback();
   releaseAdmissionTicket();
-  const fallback = async (reason?: string): Promise<"handled"> => {
+  const fallback = async (
+    reason: ActiveReplySteerFallbackReason,
+    activeRunId?: string,
+  ): Promise<"handled"> => {
     parked.fallback();
     if (
       replyOperationRunState &&
@@ -132,9 +140,21 @@ export async function runActiveReplySteer(
     ) {
       replyOperationRunState.admission = { status: "accepted", mode: "followup" };
     }
-    if (reason) {
-      logVerbose(`queue: active session ${steerSessionId} rejected steering (${reason})`);
-    }
+    diagnosticLogger.warn("steering rejected; applying follow-up policy", {
+      reason,
+      disposition:
+        replyOperationRunState?.admission?.status === "skipped" &&
+        replyOperationRunState.admission.reason === "queue-cap"
+          ? "skipped-queue-cap"
+          : "followup-policy",
+      channel:
+        followupRun.originatingChannel ??
+        followupRun.run.messageProvider ??
+        params.sessionCtx.Provider,
+      sessionId: steerSessionId,
+      runId: params.opts?.runId,
+      activeRunId,
+    });
     await touchActiveSessionEntry();
     typing.cleanup();
     return "handled";
@@ -147,10 +167,30 @@ export async function runActiveReplySteer(
       return "handled";
     }
     if (admission === "fallback") {
-      return await fallback();
+      return await fallback("admission-changed");
     }
+    if (
+      !activeReplyOperation ||
+      activeReplyKey === undefined ||
+      activeReplyOperation.key !== activeReplyKey ||
+      replyRunRegistry.get(activeReplyKey) !== activeReplyOperation ||
+      !(await waitForReplyOperationBackend(
+        activeReplyOperation,
+        resolveFollowupAbortSignal(followupRun),
+      )) ||
+      activeReplyOperation.key !== activeReplyKey ||
+      replyRunRegistry.get(activeReplyKey) !== activeReplyOperation
+    ) {
+      return await fallback("reply-owner-ended");
+    }
+    steerSessionId = activeReplyOperation.sessionId;
+    const steeringAuthority = resolveReplySteeringAuthority(followupRun, activeReplyOperation);
+    if (steeringAuthority.shouldQueueAuthorityMismatch) {
+      return await fallback("tool_authority_mismatch");
+    }
+    const injectionTarget = replyRunRegistry.resolveCurrentMessageInjectionTarget(activeReplyKey);
     if (!injectionTarget) {
-      return await fallback("no injectable reply operation");
+      return await fallback("injection_unavailable");
     }
     // A predecessor's admission may wait past this run's terminal delivery.
     // Keep the parked input in the ordered queue if its target is no longer eligible.
@@ -163,8 +203,8 @@ export async function runActiveReplySteer(
             storePath: params.storePath,
             readConsistency: "latest",
           }) ?? entry;
-      } catch (error) {
-        return await fallback(`session entry unavailable: ${formatErrorMessage(error)}`);
+      } catch {
+        return await fallback("session-entry-unavailable", injectionTarget.runId);
       }
     }
     const blockReason = resolveRestartRecoverySteeringBlockReason(
@@ -175,16 +215,16 @@ export async function runActiveReplySteer(
         "",
     );
     if (blockReason) {
-      return await fallback(`terminal source-reply delivery is closed (${blockReason})`);
+      return await fallback(blockReason, injectionTarget.runId);
     }
-    const automaticFallbackRoute = params.automaticFallbackRoute;
+    const automaticFallbackRoute = steeringAuthority.automaticFallbackRoute;
     const isCurrentFallback = () =>
       !automaticFallbackRoute ||
       (activeReplyOperation?.automaticFallbackRoute === automaticFallbackRoute &&
         activeReplyOperation.toolAuthorityRoute?.provider === automaticFallbackRoute.provider &&
         activeReplyOperation.toolAuthorityRoute.model === automaticFallbackRoute.model);
     if (!isCurrentFallback()) {
-      return await fallback("automatic model fallback changed during steering admission");
+      return await fallback("model-fallback-changed", injectionTarget.runId);
     }
     const injectionAttempt = beginReplyMessageInjectionTarget(injectionTarget, followupRun.prompt, {
       currentInboundContext: followupRun.currentInboundContext,
@@ -203,15 +243,15 @@ export async function runActiveReplySteer(
         (followupRun.run.inputProvenance?.kind === undefined ||
           followupRun.run.inputProvenance.kind === "external_user"),
       terminalReplyExpectation: followupRun.run.terminalReplyExpectation,
-      toolAuthorityFingerprint: params.toolAuthorityFingerprint,
+      toolAuthorityFingerprint: steeringAuthority.toolAuthorityFingerprint,
       personalToolParticipant: {
         operatorAuthority: followupRun.operatorAuthority,
         senderId: followupRun.run.senderId,
         senderName: followupRun.run.senderName,
         gatewayUiCommandTarget: followupRun.run.gatewayUiCommandTarget,
       },
-      ...(params.pendingInputAuthorityFingerprint
-        ? { pendingInputAuthorityFingerprint: params.pendingInputAuthorityFingerprint }
+      ...(steeringAuthority.pendingInputAuthorityFingerprint
+        ? { pendingInputAuthorityFingerprint: steeringAuthority.pendingInputAuthorityFingerprint }
         : {}),
       ...(followupRun.images?.length ? { images: followupRun.images } : {}),
       ...(followupRun.imageOrder?.length ? { imageOrder: followupRun.imageOrder } : {}),
@@ -245,7 +285,7 @@ export async function runActiveReplySteer(
       shouldAbortOnAdoptionError: isIngressAdoptionLostError,
     });
     if (finalization.status === "rejected") {
-      return await fallback(finalization.outcome.reason);
+      return await fallback(finalization.outcome.reason, injectionAttempt.targetRunId);
     }
     // Accepted or indeterminate input cannot be abandoned for replay, even
     // when the source's later adoption callback rejects.
@@ -286,7 +326,7 @@ export async function runActiveReplySteer(
     typing.cleanup();
     return "handled";
   } catch (error) {
-    if (resolveFollowupAbortSignal(followupRun)?.aborted) {
+    if (isFollowupRunAborted(followupRun)) {
       parked.consume();
     } else {
       parked.fallback();
@@ -294,7 +334,7 @@ export async function runActiveReplySteer(
     throw error;
   } finally {
     if (followupRun.steerPending) {
-      if (resolveFollowupAbortSignal(followupRun)?.aborted) {
+      if (isFollowupRunAborted(followupRun)) {
         parked.consume();
       } else {
         parked.fallback();

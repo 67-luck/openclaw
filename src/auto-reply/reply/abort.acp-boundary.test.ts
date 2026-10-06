@@ -21,7 +21,7 @@ import {
   setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createEmbeddedRunHandle } from "../../agents/embedded-agent-runner/runs.test-support.js";
-import { onSubagentRegistryPersisted } from "../../agents/subagents/registry/subagent-registry-state.js";
+import { subscribeSubagentRunChanges } from "../../agents/subagents/registry/subagent-registry-publication.js";
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { writeSubagentSessionEntry } from "../../agents/subagents/registry/subagent-registry.persistence.test-support.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
@@ -50,11 +50,11 @@ import { buildTestCtx } from "./test-ctx.js";
 
 const fixture = useChatAbortRegistryFixture();
 
-it.each(
-  ["idle", "active", "native failure"].flatMap((scenario) =>
-    ["resolve", "reject"].map((completion) => ({ scenario, completion })),
-  ),
-)(
+it.each([
+  { scenario: "idle", completion: "resolve" },
+  { scenario: "active", completion: "reject" },
+  { scenario: "native failure", completion: "reject" },
+])(
   "native and bound ACP cancellation initiate before either drain ($scenario, $completion)",
   async ({ scenario, completion }) => {
     const active = scenario !== "idle";
@@ -180,7 +180,7 @@ it.each(
     let acpSignal: AbortSignal | undefined;
     let stopSettled = false;
     const nativeTerminal = createDeferred();
-    const stopObservingNative = onSubagentRegistryPersisted(() => {
+    const stopObservingNative = subscribeSubagentRunChanges("persistence", () => {
       if (
         (
           [

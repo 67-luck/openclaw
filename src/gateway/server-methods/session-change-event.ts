@@ -1,6 +1,5 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-// Shared sessions.changed broadcaster for gateway RPC and chat-command mutations.
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
@@ -426,7 +425,7 @@ export function emitSessionsChanged(
   if (!catalogOnly) {
     invalidateSessionSharingSnapshot(payload.sessionKey);
     // Inbox subscriptions are independent of session-list subscriptions, including a closed sidebar.
-    context.mentionInbox?.invalidate(payload.sessionKey);
+    void context.mentionInbox?.invalidateAsync(payload.sessionKey);
   }
   const connIds = context.getSessionEventSubscriberConnIds();
   if (!hasSessionChangeReceivers(connIds)) {

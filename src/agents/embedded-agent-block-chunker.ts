@@ -116,7 +116,6 @@ export class EmbeddedBlockChunker {
     this.#chunking = chunking;
   }
 
-  /** Add streamed text to the pending chunk buffer. */
   append(text: string) {
     if (!text) {
       return;
@@ -201,12 +200,10 @@ export class EmbeddedBlockChunker {
     return changed;
   }
 
-  /** Return the currently buffered text for tests and flush logic. */
   get bufferedText() {
     return this.#buffer ? `${this.#reopenPrefix}${this.#buffer}` : "";
   }
 
-  /** Return true when there is pending text to drain. */
   hasBuffered(): boolean {
     return this.#buffer.length > 0;
   }
@@ -540,9 +537,6 @@ export class EmbeddedBlockChunker {
         ? fenceSplit.closeFenceLine
         : `\n${fenceSplit.closeFenceLine}`;
       rawChunk = `${rawChunk}${closeFence}`;
-    }
-
-    if (fenceSplit) {
       const closeFenceStart = findFenceCloseLineStart(source, fenceSplit.fence);
       if (absoluteBreakIdx === closeFenceStart) {
         // The synthetic closer already owns this boundary; replaying the source
@@ -751,10 +745,7 @@ function findNextParagraphBreak(
   re.lastIndex = startIndex;
   let match: RegExpExecArray | null;
   while ((match = re.exec(buffer)) !== null) {
-    const index = match.index ?? -1;
-    if (index < 0) {
-      continue;
-    }
+    const index = match.index;
     if (index - startIndex < minCharsFromStart) {
       continue;
     }
