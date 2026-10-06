@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { SpawnOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
@@ -26,7 +27,10 @@ class MockChild extends EventEmitter {
   });
   kill = vi.fn<(_signal?: NodeJS.Signals) => boolean>(() => true);
 }
-const mock = vi.hoisted(() => ({ spawn: vi.fn<() => MockChild>() }));
+const mock = vi.hoisted(() => ({
+  spawn:
+    vi.fn<(_executable: string, _argv: readonly string[], _options: SpawnOptions) => MockChild>(),
+}));
 vi.mock("node:child_process", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: mock.spawn,
@@ -34,7 +38,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 
 type Session = ReturnType<typeof createSqliteReadOnlyWorkerSession>;
 const sessions: Array<{ session: Session; child: MockChild }> = [];
-function createSession() {
+function createSession(cwd = "/fixture/launch") {
   const child = new MockChild();
   mock.spawn.mockReturnValueOnce(child);
   const readBudget = vi.fn(() => ({ timeoutMs: 60_000, size: "fixture" }));
@@ -45,7 +49,7 @@ function createSession() {
   const env = { OPENCLAW_STATE_DIR: "/fixture/state" };
   const session = createSqliteReadOnlyWorkerSession({
     env,
-    cwd: "/fixture/launch",
+    cwd,
     transport: { kind: "native" },
     argv: ["--fixture-readonly-session"],
     retainLifetime: false,
@@ -89,11 +93,15 @@ afterEach(async () => {
 });
 
 describe("SQLite read-only session operation custody", () => {
-  it.each([false, true])(
-    "attributes errors to startup only before the spawn event (spawned=%s)",
-    async (spawned) => {
+  it.each(
+    ["EACCES", "ENOENT", "EPERM"].flatMap((code) =>
+      [false, true].map((spawned) => ({ code, spawned })),
+    ),
+  )(
+    "attributes $code to startup only before the spawn event (spawned=$spawned)",
+    async ({ code, spawned }) => {
       const { session, child } = createSession();
-      const failure = Object.assign(new Error("fixture process refusal"), { code: "EACCES" });
+      const failure = Object.assign(new Error("fixture process refusal"), { code });
       const result = session.run("/fixture/snapshot", { mode: "staging-create" });
       const observed = result.catch((error: unknown) => error);
       const settled = observeSettlement(result);
@@ -108,15 +116,23 @@ describe("SQLite read-only session operation custody", () => {
       if (spawned) {
         expect(error).toBe(failure);
       } else {
-        expect(error).toMatchObject({ code: "EACCES", cause: failure });
+        expect(error).toMatchObject({ code, cause: failure });
+        expect((error as Error).message).toContain("runtime binary not executable");
         expect((error as Error).message).toContain(process.execPath);
         expect((error as Error).message).toContain("/fixture/launch");
+        expect((error as Error).message).not.toMatch(/disk space|XDG_CACHE_HOME/);
         expect((error as Error).message).not.toContain("OPENCLAW_STATE_DIR");
         expect((error as Error).message).not.toContain("--fixture-readonly-session");
       }
       await session.close();
     },
   );
+
+  it("inherits an unchanged native working directory", () => {
+    createSession(process.cwd());
+    const options = mock.spawn.mock.calls.at(-1)?.[2];
+    expect(options).not.toHaveProperty("cwd");
+  });
 
   it.each([
     "staging-create",

@@ -490,7 +490,7 @@ describe.skipIf(skipBroker)("auth SQLite broker lifecycle", () => {
           expect(nativeClosed).toBe(true);
           expect(nativeChild?.exitCode).toBe(0);
           expect(nativeChild?.connected).toBe(false);
-          expect(nativeOptions?.cwd).toBe(brokerOptions?.cwd);
+          expect(nativeOptions?.cwd ?? process.cwd()).toBe(brokerOptions?.cwd);
         }
         expect(proxyClosed).toBe(true);
       } finally {

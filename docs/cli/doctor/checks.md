@@ -21,6 +21,16 @@ postures and maintenance modes documented on the other pages.
 
 ## Config writes and backups
 
+Update-history inspection and reconciliation are best-effort maintenance. A failure
+prints a warning and allows independent Doctor repairs and plugin registry mutations
+to continue. Writable passes also try to save the warning on the latest existing
+SQLite update run without changing its outcome or activity timestamps. Unsettled
+process cleanup still blocks mutations.
+
+Native snapshot workers inherit an unchanged working directory instead of repeating
+the directory change after a service-account switch. Spawn refusals name the runtime
+and working directory so operators can distinguish permissions from storage failures.
+
 - On npm global installs, Doctor reports retained `.openclaw.package-backup-*.databases` directories (and `.openclaw-package-backup-*.databases`, the name a failed cleanup retires them under) beside the installed package, with their total regular-file size in bytes and human-readable units and a quoted removal command for each directory. The scan is bounded; incomplete sizes are lower bounds. If inspection is incomplete before any snapshot is found, Doctor warns and asks you to list the npm global root manually, including hidden entries. A missing global root produces no warning. This is warning-only, including with `--fix`: confirm no update is in progress and no recovery needs the snapshots before removing them manually. Updater-driven Doctor passes defer this check so they do not report the active update's snapshots; run standalone Doctor after the update settles.
 - Any config write (including a `--fix` repair) rotates a backup to `~/.openclaw/openclaw.json.bak` (with a numbered `.bak.1`..`.bak.4` ring). `--fix` also drops unknown config keys reported by schema validation, listing each removal; it skips this while an update is in progress so partially written upgrade state is not stripped before its migration finishes.
 - If `openclaw.json` cannot be parsed and no last-known-good config can be recovered, `doctor --fix` leaves the file unchanged and exits with an error instead of writing a partial replacement. The error points to `openclaw config validate` for the exact parse position and explains how to edit or regenerate the config.
