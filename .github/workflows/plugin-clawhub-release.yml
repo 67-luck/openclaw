@@ -893,7 +893,7 @@ jobs:
         approve_plugins_clawhub_release,
       ]
     if: always() && github.event_name == 'workflow_dispatch' && needs.preview_plugins_clawhub.outputs.has_publish_candidates == 'true' && needs.pack_plugins_clawhub_artifacts.result == 'success' && (inputs.dry_run == true || needs.approve_plugins_clawhub_release.result == 'success')
-    uses: openclaw/clawhub/.github/workflows/package-publish.yml@196cb055c0c509d4180a63eb7fb318f0e3f1e704 # reviewed sealed receipt and failure-evidence contract
+    uses: openclaw/clawhub/.github/workflows/package-publish.yml@3396fa146e4c135c3569f502f4d3df2ce1161630 # reviewed sealed receipt and failure-evidence contract
     permissions:
       actions: read
       contents: read
