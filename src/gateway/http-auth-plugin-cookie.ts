@@ -59,7 +59,11 @@ function readControlUiPluginCookieRequest(
   if (grants.length === 0) {
     return null;
   }
-  return { cfg, grants };
+  const profileId = grants[0]?.profileId;
+  if (grants.some((grant) => grant.profileId !== profileId)) {
+    return null;
+  }
+  return { cfg, grants, profileId };
 }
 
 export async function prepareControlUiPluginCookieRequest(
@@ -67,10 +71,7 @@ export async function prepareControlUiPluginCookieRequest(
   params: { requestPath: string; authGeneration: string | undefined; res: ServerResponse },
 ) {
   const selected = readControlUiPluginCookieRequest(req, params);
-  if (
-    selected?.grants.some((grant) => grant.profileId) &&
-    !(await prepareHttpUserProfileCatalog(params.res))
-  ) {
+  if (selected?.profileId && !(await prepareHttpUserProfileCatalog(params.res))) {
     return null;
   }
   return authorizeControlUiPluginCookieRequest(req, params);
@@ -84,11 +85,8 @@ export function authorizeControlUiPluginCookieRequest(
   if (!selected) {
     return null;
   }
-  const { cfg, grants } = selected;
-  const profileAuth = checkHttpCookieUserProfile(
-    cfg,
-    grants.map((grant) => grant.profileId),
-  );
+  const { cfg, grants, profileId } = selected;
+  const profileAuth = checkHttpCookieUserProfile(cfg, profileId);
   if (!profileAuth.ok) {
     if (profileAuth.authResult.reason === "operator_access_denied" && params.res) {
       sendGatewayHttpAuthFailure(params.res, profileAuth.authResult);

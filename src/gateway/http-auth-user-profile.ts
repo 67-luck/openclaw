@@ -70,13 +70,9 @@ export async function checkAuthenticatedHttpUserProfile(
 /** A signed cookie retains one exact profile reference; current policy still governs its admission. */
 export function checkHttpCookieUserProfile(
   cfg: OpenClawConfig,
-  profileIds: readonly (string | undefined)[],
+  profileId: string | undefined,
 ): HttpUserProfileAuthResult {
-  const profileId = profileIds[0];
-  if (
-    profileIds.some((candidate) => candidate !== profileId) ||
-    (!profileId && (cfg.gateway?.roles || hasGatewayOperatorAccessPolicies(cfg)))
-  ) {
+  if (!profileId && (cfg.gateway?.roles || hasGatewayOperatorAccessPolicies(cfg))) {
     return failedHttpProfileAuthentication();
   }
   // A signed viewer still narrows session sharing when named roles are disabled.
@@ -92,6 +88,9 @@ export function checkHttpCookieUserProfile(
 
 /** Response disclosure retains the existing profile owner through its last synchronous check. */
 export async function prepareHttpUserProfileCatalog(res: ServerResponse): Promise<boolean> {
+  if (res.writableEnded || res.destroyed) {
+    return false;
+  }
   let catalog: Awaited<ReturnType<typeof prepareUserProfileCatalog>>;
   try {
     catalog = await prepareUserProfileCatalog();

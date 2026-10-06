@@ -9,7 +9,11 @@ import { getRuntimeConfig } from "../config/io.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
-import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
+import {
+  isUserProfileCatalogReady,
+  prepareUserProfileCatalog,
+} from "../state/user-profile-list.js";
 import { setCanonicalUserProfileRole } from "../state/user-profile-writes.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -328,8 +332,71 @@ describe("Control UI plugin auth cookie profile binding", () => {
   );
 
   it.each([
-    { name: "mixed profiles", profiles: ["viewer", "another-profile"], roles: false },
-    { name: "mixed bound and unbound grants", profiles: ["viewer", undefined], roles: false },
+    { name: "mixed profiles", profiles: ["first", "second"], response: "open" },
+    { name: "mixed bound and unbound grants", profiles: ["first", undefined], response: "open" },
+    { name: "an ended response", profiles: ["first"], response: "ended" },
+    { name: "a destroyed response", profiles: ["first"], response: "destroyed" },
+  ] as const)("avoids profile storage for $name", async ({ profiles, response }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      setRuntimeConfigSnapshot({});
+      const profileIds = profiles.map((profile) =>
+        profile ? ensureProfileForEmail(`${profile}-cookie-reader@example.test`).id : undefined,
+      );
+      expect(isUserProfileCatalogReady()).toBe(false);
+      const auth = {
+        mode: "token",
+        token: "synthetic-denial-token",
+        allowTailscale: false,
+      } as const;
+      const generation = resolveControlUiPluginAuthCookieGeneration(
+        resolveSharedGatewaySessionGeneration(auth),
+        getRuntimeConfig(),
+      );
+      const cookie = profileIds
+        .map((profile, index) =>
+          issueCookie(profile, { pluginId: index ? "overlap" : "example", generation }),
+        )
+        .join("; ");
+      const req = { method: "GET", headers: { cookie } } as IncomingMessage;
+      expect(
+        resolveControlUiPluginAuthCookieGrants(req, {
+          requestPath: "/plugins/example/session",
+          generation,
+        }),
+      ).toHaveLength(profiles.length);
+      const { res } = makeMockHttpResponse();
+      if (response !== "open") {
+        res.statusCode = 204;
+        if (response === "ended") {
+          res.end();
+        } else {
+          res.destroy();
+        }
+      }
+      const reads = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
+      const sql = observeHostDataSql();
+      try {
+        await expect(
+          authorizePluginGatewayHttpRequestOrReply({
+            req,
+            res,
+            auth,
+            requestPath: "/plugins/example/session",
+            resolveOperatorScopes: () => [],
+          }),
+        ).resolves.toBeNull();
+        expect(res.statusCode).toBe(response === "open" ? 401 : 204);
+        expect(sql.queries).toEqual([]);
+        expect(reads).not.toHaveBeenCalled();
+      } finally {
+        sql.restore();
+        reads.mockRestore();
+        res.destroy();
+      }
+    });
+  });
+
+  it.each([
     {
       name: "retired generation",
       profiles: ["viewer"],
