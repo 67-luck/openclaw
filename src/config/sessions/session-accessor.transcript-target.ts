@@ -3,11 +3,15 @@ import { isIncognitoSessionKey, resolveAgentIdFromSessionKey } from "../../routi
 import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
+  type OpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveConcreteSessionStorePath } from "./paths.js";
 import { resolveSessionEntrySelection } from "./session-accessor.entry.js";
-import { resolveSessionKeyBySessionId } from "./session-accessor.sqlite-entry.js";
+import {
+  readSessionKeyBySessionIdInDatabase,
+  resolveSessionKeyBySessionId,
+} from "./session-accessor.sqlite-entry.js";
 import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
@@ -96,14 +100,17 @@ export function readSessionTranscriptRuntimeTarget(
     databaseAgentId?: string;
     continuation?: CanonicalSessionReaderContinuation;
   } = {},
+  database?: Pick<OpenClawAgentDatabase, "db">,
 ): Awaited<ReturnType<typeof resolveSessionTranscriptRuntimeTarget>> {
   const { agentId, storePath } = scope;
-  const persistedSessionKey = resolveSessionKeyBySessionId({
-    agentId: options.databaseAgentId ?? agentId,
-    ...(scope.env ? { env: scope.env } : {}),
-    sessionId: scope.sessionId,
-    storePath,
-  });
+  const persistedSessionKey = database
+    ? readSessionKeyBySessionIdInDatabase(database, scope.sessionId)
+    : resolveSessionKeyBySessionId({
+        agentId: options.databaseAgentId ?? agentId,
+        ...(scope.env ? { env: scope.env } : {}),
+        sessionId: scope.sessionId,
+        storePath,
+      });
   const selected =
     persistedSessionKey && !options.keyFormat
       ? undefined

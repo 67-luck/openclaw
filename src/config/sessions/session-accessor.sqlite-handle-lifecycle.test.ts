@@ -190,6 +190,7 @@ describe("SQLite session handle lifecycle", () => {
     ["dirty projection", "UPDATE session_transcript_index_state SET needs_rebuild = 1"],
     ["missing projection", "DELETE FROM session_transcript_index_state"],
     ["behind projection", "UPDATE session_transcript_index_state SET indexed_seq = -1"],
+    ["ahead projection", "UPDATE session_transcript_index_state SET indexed_seq = 100"],
     [
       "unclassified projection",
       "UPDATE session_transcript_active_events SET context_eligible = NULL",

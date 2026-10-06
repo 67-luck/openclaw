@@ -1,6 +1,10 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
+import {
+  assertDatabasePathIdentity,
+  readDatabasePathIdentitySync,
+} from "../../infra/sqlite-worker-identity.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import type {
   SessionTranscriptWriteScope,
   TranscriptMessageAppendResult,
@@ -8,7 +12,6 @@ import type {
 import { publishTranscriptUpdate } from "./session-accessor.sqlite-events.js";
 import { captureSessionPendingInputWorkerCustody } from "./session-accessor.sqlite-pending-inputs.js";
 import type { SqliteTranscriptSnapshotState } from "./session-accessor.sqlite-read.js";
-import { withSessionEntryWorker } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   toDatabaseOptions,
   type ResolvedTranscriptScope,
@@ -30,15 +33,16 @@ import type { SessionPendingInputAuthorityFacts } from "./session-pending-input-
 import {
   captureExternalSessionCommitGuard,
   prepareSessionSourceAuthority,
+  releaseSessionSourceAuthorities,
   type PreparedSessionSourceAuthority,
   type SessionSourcePredicateFacts,
 } from "./session-source-authority.js";
 import { withTranscriptLockSettlement } from "./session-transcript-lock-settlement.js";
-import { withSessionTranscriptReadSource } from "./session-transcript-read-source.js";
 import { startSessionTranscriptIndexReconcile } from "./session-transcript-reconcile.js";
+import { captureSessionTranscriptStorageEnvironment } from "./transcript-target-binding.js";
 import { captureOwnedTranscriptWriteAssertion } from "./transcript-write-context.js";
 
-/** One callback retains the physical reader and canonical writer through accepted settlement. */
+/** One callback retains its canonical writer through reads and accepted settlement. */
 export async function withWorkerTranscriptWriteLock<T>(
   scope: SessionTranscriptWriteScope &
     ResolvedTranscriptScope & { env: NodeJS.ProcessEnv; path: string; storePath: string },
@@ -53,350 +57,346 @@ export async function withWorkerTranscriptWriteLock<T>(
 ): Promise<T> {
   const assertOwned = captureOwnedTranscriptWriteAssertion(scope);
   const custody = captureSessionPendingInputWorkerCustody();
-  const initialDatabase = { ...toDatabaseOptions(scope), path: scope.path };
+  const database = { ...toDatabaseOptions(scope), path: scope.path };
   const identity = readDatabasePathIdentitySync(scope.path);
-  const execution = identity.key.startsWith("file:")
-    ? undefined
-    : captureOpenClawAgentDatabaseExecution(initialDatabase, {
-        expectedCreationIdentity: identity,
-      });
-  const read = () =>
-    withSessionTranscriptReadSource(
-      scope,
-      () => {
-        throw new Error("Worker transcript lock requires a durable target");
-      },
-      async (source) => {
-        const resolved = {
-          ...source.resolved,
-          sessionKey: source.resolved.sessionKey ?? scope.sessionKey,
-        };
-        const database = { ...toDatabaseOptions(resolved), path: source.scope.storePath };
-        const fenced = { ...scope, ...source.scope, sessionId: resolved.sessionId };
-        const owned = await prepareSessionSourceAuthority(assertOwned);
-        if (owned.nativeSource) {
-          // Released synchronous authority callbacks reread the database; revisit at the next SDK major.
-          try {
-            source.assertCurrent();
-            return await native(fenced, run);
-          } finally {
-            await owned.release?.();
-          }
+  const execution = captureOpenClawAgentDatabaseExecution(
+    database,
+    identity.key.startsWith("file:")
+      ? {
+          expectedIdentity: {
+            kind: "file",
+            physicalIdentity: identity.key.slice("file:".length),
+            nativeLocation: identity.canonicalPath,
+            birthtime: identity.birthtime,
+          },
         }
-        let freshSource: PreparedSessionSourceAuthority | undefined;
-        let fresh = false;
-        let custodyRequired = false;
-        const assertCurrent = () => {
-          source.assertCurrent();
-          owned.assertCurrent();
-          if (fresh) {
-            freshSource?.assertCurrent();
-          }
-        };
-        const result = await runSessionEntryWorkerOperation<
-          LockedTranscriptCommitted,
-          { value: T } | LockedTranscriptCommitted
-        >({
-          database,
-          agentId: resolved.agentId,
-          assertCurrent,
-          candidateKind: "session-transcript-locked",
-          retainedExecution: execution,
-          releaseSource: () => owned.release?.(),
-          prepareWorker: () => ({
-            async prepare() {
-              const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
-              await restoreSessionColdTranscript(fenced, assertCurrent);
-            },
-            beforeWrite: assertCurrent,
-            async release() {},
-          }),
-          onTransactionFacts(facts) {
-            if (!isRecord(facts)) {
-              return false;
-            }
-            if (facts.kind === "session-transcript-lock-source") {
-              fresh = facts.fresh === true;
-              const authority = fresh ? freshSource : owned;
-              authority?.assertCurrent();
-              if (isRecord(facts.refusedSource) && typeof facts.refusedSource.index === "number") {
-                authority?.checks[facts.refusedSource.index]?.refuse(
-                  // SAFETY: The paired worker reads these facts in the current transaction.
-                  facts.refusedSource.facts as SessionSourcePredicateFacts,
-                );
-                throw new Error("Session source refusal omitted its prepared assertion");
-              }
-              return true;
-            }
-            if (facts.kind === "session-transcript-lock-custody") {
-              if (!custody) {
-                throw new Error("Locked transcript has no pending-input custody");
-              }
-              custodyRequired = true;
-              custody.assertCurrent(
-                // SAFETY: The paired worker supplies current facts when custody has prepared authority.
-                facts.authority as SessionPendingInputAuthorityFacts | undefined,
-                assertCurrent,
-              );
-              return true;
-            }
-            return false;
-          },
-          assertCandidate(candidate) {
-            if (custodyRequired) {
-              custody?.assertCurrent(candidate.authority, assertCurrent);
-            }
-          },
-          onAcknowledged(candidate) {
-            if (candidate.custody) {
-              custody?.publish(candidate.custody);
-            }
-            if (candidate.projectionNeedsReconcile) {
-              startSessionTranscriptIndexReconcile({
-                ...database,
-                preferredSessionId: resolved.sessionId,
-              });
-            }
-          },
-          onCommitted: (candidate) => candidate,
-          async run(worker, commit) {
-            const target = {
-              scope: resolved,
-              fence: {
-                expectedWriterRunId: fenced.expectedWriterRunId,
-                expectedLifecycleRevision: fenced.expectedLifecycleRevision,
-                expectedOwner: fenced.expectedOwner,
-              },
-              sources: owned.checks.map((check) => check.predicate),
-            };
-            let snapshot: SqliteTranscriptSnapshotState | undefined;
-            const value = await withTranscriptLockSettlement((queue) => {
-              const queued = <R>(operation: () => Promise<R>): Promise<R> =>
-                queue(() => {
-                  assertCurrent();
-                  return operation();
-                });
-              const mutate = async (
-                input: SessionMessageRewriteOperations["session.transcript.lock.commit"]["input"],
-              ) => {
-                const receipt = await commit(() =>
-                  executeSessionMessageRewriteOperation(worker, database.agentId, {
-                    type: "session.transcript.lock.commit",
-                    input,
-                  }),
-                );
-                if (!("kind" in receipt)) {
-                  throw new Error("Locked transcript omitted its committed receipt");
-                }
-                // Transport preserves anchor fields but not their frozen state.
-                if (receipt.result?.anchor) {
-                  Object.freeze(receipt.result.anchor);
-                }
-                if (snapshot) {
-                  snapshot = receipt.snapshot;
-                }
-                return receipt;
-              };
-              const append = async <TMessage>(
-                options: LockedTranscriptMessageAppendOptions<TMessage>,
-                sequenced: boolean,
-              ) => {
-                const {
-                  config,
-                  message: originalMessage,
-                  prepareMessageAfterIdempotencyCheck: legacyPrepare,
-                  prepareMessageAfterIdempotencyCheckAsync: prepare,
-                  beforeFreshMessageCommit,
-                  ...serializable
-                } = options;
-                const freshGuard = captureExternalSessionCommitGuard(beforeFreshMessageCommit);
-                const input = {
-                  ...target,
-                  options: {
-                    ...serializable,
-                    // Replay and suppression must not serialize discarded custom JSON values.
-                    message:
-                      originalMessage === undefined
-                        ? undefined
-                        : originalMessage === null
-                          ? null
-                          : {
-                              role:
-                                isRecord(originalMessage) && originalMessage.role === "user"
-                                  ? ("user" as const)
-                                  : undefined,
-                              idempotencyKey:
-                                isRecord(originalMessage) &&
-                                typeof originalMessage.idempotencyKey === "string"
-                                  ? originalMessage.idempotencyKey
-                                  : undefined,
-                            },
-                  },
-                  snapshot,
-                  custody: custody?.facts,
-                  relocation: custody?.relocation,
-                };
-                const expected =
-                  prepare ||
-                  beforeFreshMessageCommit ||
-                  (input.options.message?.role === "user" &&
-                    typeof input.options.message.idempotencyKey === "string")
-                    ? await executeSessionMessageRewriteOperation(worker, database.agentId, {
-                        type: "session.transcript.lock.prepare",
-                        input,
-                      })
-                    : undefined;
-                const authority = await prepareSessionSourceAuthority(
-                  expected?.pending || expected?.existing ? undefined : freshGuard,
-                );
-                if (
-                  freshGuard?.nativeSource ||
-                  authority.nativeSource ||
-                  (legacyPrepare && !prepare)
-                ) {
-                  // Released synchronous authority callbacks reread the database; revisit at the next SDK major.
-                  try {
-                    return await native(
-                      fenced,
-                      async (context) =>
-                        sequenced
-                          ? context.appendMessageWithMessageSequence(options)
-                          : { result: await context.appendMessage(options) },
-                      true,
-                      snapshot,
-                      (next) => {
-                        snapshot = next;
-                      },
-                    );
-                  } finally {
-                    await authority.release?.();
-                  }
-                }
-                fresh = false;
-                freshSource = authority;
-                try {
-                  let message: TMessage | undefined = originalMessage;
-                  if (prepare && expected && !expected.pending && !expected.existing) {
-                    message = await prepare(originalMessage);
-                  }
-                  assertCurrent();
-                  const preparedMessageJson =
-                    expected?.pending || (prepare && expected?.existing)
-                      ? undefined
-                      : isRecord(message)
-                        ? prepareTranscriptMessageAppendForWorker({ message, config }).messageJson
-                        : JSON.stringify(redactTranscriptMessageForStorage(message, { config }));
-                  const receipt = await mutate({
-                    ...input,
-                    kind: "message",
-                    freshSources: authority.checks.map((check) => check.predicate),
-                    freshAuthorityPrepared:
-                      !beforeFreshMessageCommit || (!expected?.pending && !expected?.existing),
-                    sequenced,
-                    preparedMessageJson,
-                    ...(prepare && expected
-                      ? {
-                          preparation: {
-                            prepared: !expected.pending && !expected.existing,
-                            version: expected.version,
-                          },
-                        }
-                      : {}),
-                  });
-                  return {
-                    lifecycleRevision: receipt.lifecycleRevision,
-                    messageSeq: receipt.messageSeq,
-                    // SAFETY: The paired command returns this append's generic message after storage redaction.
-                    result: receipt.result as TranscriptMessageAppendResult<TMessage> | undefined,
-                  };
-                } finally {
-                  fresh = false;
-                  freshSource = undefined;
-                  await authority.release?.();
-                }
-              };
-              return run({
-                publishUpdate: (update) => queued(() => publishTranscriptUpdate(fenced, update)),
-                readEvents: () =>
-                  queued(async () => {
-                    const hydration = await source.owner.readTranscript({
-                      target: { ...resolved, storePath: database.path },
-                      resolvedScope: resolved,
-                      expectedIdentity: source.expectedIdentity,
-                      includeEventJson: true,
-                    });
-                    assertCurrent();
-                    if (hydration.kind !== "full") {
-                      throw new Error("Locked transcript requires complete history");
-                    }
-                    if (!hydration.snapshot.eventJson || !hydration.snapshot.eventSeqs) {
-                      throw new Error("Locked transcript omitted its stored rows");
-                    }
-                    snapshot = {
-                      kind: "current",
-                      rows: hydration.snapshot.eventJson.map((eventJson, index) => ({
-                        eventJson,
-                        seq: hydration.snapshot.eventSeqs![index]!,
-                      })),
-                    };
-                    return hydration.snapshot.events;
-                  }),
-                readMessageFacts: (params) =>
-                  queued(async () => {
-                    const facts = await executeSessionMessageRewriteOperation(
-                      worker,
-                      database.agentId,
-                      { type: "session.transcript.lock.facts", input: { ...target, ...params } },
-                    );
-                    assertCurrent();
-                    for (const anchor of facts.anchorsByIdempotencyKey.values()) {
-                      Object.freeze(anchor);
-                    }
-                    return facts;
-                  }),
-                appendMessage: (options) =>
-                  queued(async () => (await append(options, false)).result),
-                appendMessageWithMessageSequence: (options) => queued(() => append(options, true)),
-                replaceEvents: (events) =>
-                  queued(async () => {
-                    if (snapshot?.kind === "stale") {
-                      throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
-                    }
-                    const receipt = await mutate({
-                      ...target,
-                      kind: "replace",
-                      events,
-                      snapshot,
-                    });
-                    snapshot = receipt.snapshot;
-                  }),
-              });
-            });
-            return { value };
-          },
-        });
-        if (!("value" in result)) {
-          throw new Error("Locked transcript omitted its callback result");
-        }
-        return result.value;
-      },
-    );
-  if (!execution) {
-    return read();
-  }
+      : { expectedCreationIdentity: identity },
+  );
+  const resolved: ResolvedTranscriptScope = {
+    agentId: scope.agentId,
+    databaseAgentId: scope.databaseAgentId,
+    env: captureSessionTranscriptStorageEnvironment(scope.env),
+    path: scope.path,
+    ownerStorePath: scope.ownerStorePath,
+    sessionKey: scope.sessionKey,
+    sessionId: scope.sessionId,
+  };
+  const fenced = scope;
+  let releaseExecution = true;
   try {
-    await withSessionEntryWorker(
-      initialDatabase,
-      undefined,
-      () => execution.assertCurrent(),
-      async (owner, source) => {
-        await owner.prepare(source);
+    const owned = await prepareSessionSourceAuthority(assertOwned);
+    if (owned.nativeSource) {
+      // Released synchronous authority callbacks reread the database; revisit at the next SDK major.
+      try {
+        execution.assertCurrent();
+        releaseExecution = false;
+        await execution.release();
+        assertDatabasePathIdentity(scope.path, identity);
+        return await native(fenced, run);
+      } finally {
+        await owned.release?.();
+      }
+    }
+    let freshSource: PreparedSessionSourceAuthority | undefined;
+    let fresh = false;
+    let custodyRequired = false;
+    const assertCurrent = () => {
+      execution.assertCurrent();
+      owned.assertCurrent();
+      if (fresh) {
+        freshSource?.assertCurrent();
+      }
+    };
+    releaseExecution = false;
+    const result = await runSessionEntryWorkerOperation<
+      LockedTranscriptCommitted,
+      { value: T } | LockedTranscriptCommitted
+    >({
+      database,
+      agentId: resolved.agentId,
+      assertCurrent,
+      candidateKind: "session-transcript-locked",
+      retainedExecution: execution,
+      releaseSource: () =>
+        releaseSessionSourceAuthorities([{ release: () => execution.release() }, owned]),
+      prepareWorker: (writer, source) => ({
+        async prepare() {
+          const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
+          await restoreSessionColdTranscript(fenced, assertCurrent, {
+            target: resolved,
+            readMetadata: async () => {
+              const metadata = await runOpenClawAgentWorkerWrite(database, () =>
+                writer.runExisting(source, (worker) =>
+                  executeSessionMessageRewriteOperation(worker, database.agentId, {
+                    type: "session.transcript.lock.cold",
+                    input: { scope: resolved },
+                  }),
+                ),
+              );
+              if (!metadata) {
+                throw new Error("Locked transcript lost its admitted database");
+              }
+              return metadata.archive;
+            },
+          });
+        },
+        beforeWrite: assertCurrent,
+        async release() {},
+      }),
+      onTransactionFacts(facts) {
+        if (!isRecord(facts)) {
+          return false;
+        }
+        if (facts.kind === "session-transcript-lock-source") {
+          fresh = facts.fresh === true;
+          const authority = fresh ? freshSource : owned;
+          authority?.assertCurrent();
+          if (isRecord(facts.refusedSource) && typeof facts.refusedSource.index === "number") {
+            authority?.checks[facts.refusedSource.index]?.refuse(
+              // SAFETY: The paired worker reads these facts in the current transaction.
+              facts.refusedSource.facts as SessionSourcePredicateFacts,
+            );
+            throw new Error("Session source refusal omitted its prepared assertion");
+          }
+          return true;
+        }
+        if (facts.kind === "session-transcript-lock-custody") {
+          if (!custody) {
+            throw new Error("Locked transcript has no pending-input custody");
+          }
+          custodyRequired = true;
+          custody.assertCurrent(
+            // SAFETY: The paired worker supplies current facts when custody has prepared authority.
+            facts.authority as SessionPendingInputAuthorityFacts | undefined,
+            assertCurrent,
+          );
+          return true;
+        }
+        return false;
       },
-      undefined,
-      execution,
-    );
-    return await read();
+      assertCandidate(candidate) {
+        if (custodyRequired) {
+          custody?.assertCurrent(candidate.authority, assertCurrent);
+        }
+      },
+      onAcknowledged(candidate) {
+        if (candidate.custody) {
+          custody?.publish(candidate.custody);
+        }
+        if (candidate.projectionNeedsReconcile) {
+          startSessionTranscriptIndexReconcile({
+            ...database,
+            preferredSessionId: resolved.sessionId,
+          });
+        }
+      },
+      onCommitted: (candidate) => candidate,
+      async run(worker, commit) {
+        const target = {
+          scope: resolved,
+          fence: {
+            expectedWriterRunId: fenced.expectedWriterRunId,
+            expectedLifecycleRevision: fenced.expectedLifecycleRevision,
+            expectedOwner: fenced.expectedOwner,
+          },
+          sources: owned.checks.map((check) => check.predicate),
+        };
+        let snapshot: SqliteTranscriptSnapshotState | undefined;
+        const value = await withTranscriptLockSettlement((queue) => {
+          const queued = <R>(operation: () => Promise<R>): Promise<R> =>
+            queue(() => {
+              assertCurrent();
+              return operation();
+            });
+          const mutate = async (
+            input: SessionMessageRewriteOperations["session.transcript.lock.commit"]["input"],
+          ) => {
+            const receipt = await commit(() =>
+              executeSessionMessageRewriteOperation(worker, database.agentId, {
+                type: "session.transcript.lock.commit",
+                input,
+              }),
+            );
+            if (!("kind" in receipt)) {
+              throw new Error("Locked transcript omitted its committed receipt");
+            }
+            // Transport preserves anchor fields but not their frozen state.
+            if (receipt.result?.anchor) {
+              Object.freeze(receipt.result.anchor);
+            }
+            if (snapshot) {
+              snapshot = receipt.snapshot;
+            }
+            return receipt;
+          };
+          const append = async <TMessage>(
+            options: LockedTranscriptMessageAppendOptions<TMessage>,
+            sequenced: boolean,
+          ) => {
+            const {
+              config,
+              message: originalMessage,
+              prepareMessageAfterIdempotencyCheck: legacyPrepare,
+              prepareMessageAfterIdempotencyCheckAsync: prepare,
+              beforeFreshMessageCommit,
+              ...serializable
+            } = options;
+            const freshGuard = captureExternalSessionCommitGuard(beforeFreshMessageCommit);
+            const input = {
+              ...target,
+              options: {
+                ...serializable,
+                // Replay and suppression must not serialize discarded custom JSON values.
+                message:
+                  originalMessage === undefined
+                    ? undefined
+                    : originalMessage === null
+                      ? null
+                      : {
+                          role:
+                            isRecord(originalMessage) && originalMessage.role === "user"
+                              ? ("user" as const)
+                              : undefined,
+                          idempotencyKey:
+                            isRecord(originalMessage) &&
+                            typeof originalMessage.idempotencyKey === "string"
+                              ? originalMessage.idempotencyKey
+                              : undefined,
+                        },
+              },
+              snapshot,
+              custody: custody?.facts,
+              relocation: custody?.relocation,
+            };
+            const expected =
+              prepare ||
+              beforeFreshMessageCommit ||
+              (custody &&
+                input.options.message?.role === "user" &&
+                typeof input.options.message.idempotencyKey === "string")
+                ? await executeSessionMessageRewriteOperation(worker, database.agentId, {
+                    type: "session.transcript.lock.prepare",
+                    input,
+                  })
+                : undefined;
+            const authority = await prepareSessionSourceAuthority(
+              expected?.pending || expected?.existing ? undefined : freshGuard,
+            );
+            if (freshGuard?.nativeSource || authority.nativeSource || (legacyPrepare && !prepare)) {
+              // Released synchronous authority callbacks reread the database; revisit at the next SDK major.
+              try {
+                return await native(
+                  fenced,
+                  async (context) =>
+                    sequenced
+                      ? context.appendMessageWithMessageSequence(options)
+                      : { result: await context.appendMessage(options) },
+                  true,
+                  snapshot,
+                  (next) => {
+                    snapshot = next;
+                  },
+                );
+              } finally {
+                await authority.release?.();
+              }
+            }
+            fresh = false;
+            freshSource = authority;
+            try {
+              let message: TMessage | undefined = originalMessage;
+              if (prepare && expected && !expected.pending && !expected.existing) {
+                message = await prepare(originalMessage);
+              }
+              assertCurrent();
+              const preparedMessageJson =
+                expected?.pending || (prepare && expected?.existing)
+                  ? undefined
+                  : isRecord(message)
+                    ? prepareTranscriptMessageAppendForWorker({ message, config }).messageJson
+                    : JSON.stringify(redactTranscriptMessageForStorage(message, { config }));
+              const receipt = await mutate({
+                ...input,
+                kind: "message",
+                freshSources: authority.checks.map((check) => check.predicate),
+                freshAuthorityPrepared:
+                  !beforeFreshMessageCommit || (!expected?.pending && !expected?.existing),
+                sequenced,
+                preparedMessageJson,
+                ...(prepare && expected
+                  ? {
+                      preparation: {
+                        prepared: !expected.pending && !expected.existing,
+                        version: expected.version,
+                      },
+                    }
+                  : {}),
+              });
+              return {
+                lifecycleRevision: receipt.lifecycleRevision,
+                messageSeq: receipt.messageSeq,
+                // SAFETY: The paired command returns this append's generic message after storage redaction.
+                result: receipt.result as TranscriptMessageAppendResult<TMessage> | undefined,
+              };
+            } finally {
+              fresh = false;
+              freshSource = undefined;
+              await authority.release?.();
+            }
+          };
+          return run({
+            publishUpdate: (update) => queued(() => publishTranscriptUpdate(fenced, update)),
+            readEvents: () =>
+              queued(async () => {
+                const read = await executeSessionMessageRewriteOperation(worker, database.agentId, {
+                  type: "session.transcript.lock.read",
+                  input: { scope: resolved },
+                });
+                assertCurrent();
+                snapshot = { kind: "current", rows: read.rows };
+                return read.events;
+              }),
+            readMessageFacts: (params) =>
+              queued(async () => {
+                const facts = await executeSessionMessageRewriteOperation(
+                  worker,
+                  database.agentId,
+                  { type: "session.transcript.lock.facts", input: { ...target, ...params } },
+                );
+                assertCurrent();
+                for (const anchor of facts.anchorsByIdempotencyKey.values()) {
+                  Object.freeze(anchor);
+                }
+                return facts;
+              }),
+            appendMessage: (options) => queued(async () => (await append(options, false)).result),
+            appendMessageWithMessageSequence: (options) => queued(() => append(options, true)),
+            replaceEvents: (events) =>
+              queued(async () => {
+                if (snapshot?.kind === "stale") {
+                  throw new SqliteTranscriptMutationConflictError(resolved.sessionId);
+                }
+                const receipt = await mutate({
+                  ...target,
+                  kind: "replace",
+                  events,
+                  snapshot,
+                });
+                snapshot = receipt.snapshot;
+              }),
+          });
+        });
+        execution.assertCurrent();
+        return { value };
+      },
+    });
+    if (!("value" in result)) {
+      throw new Error("Locked transcript omitted its callback result");
+    }
+    return result.value;
   } finally {
-    await execution.release();
+    if (releaseExecution) {
+      await execution.release();
+    }
   }
 }

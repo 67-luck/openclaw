@@ -20,6 +20,7 @@ import { certifyCanonicalSessionValidationRow } from "./session-canonical-valida
 import {
   assertSessionTranscriptHot,
   readSessionColdTranscript,
+  SessionTranscriptColdError,
 } from "./session-cold-storage-state.js";
 import {
   foldedSessionKeyAliasCandidates,
@@ -257,15 +258,27 @@ export function ensureTranscriptSessionRoot(
 }
 
 export function readNextTranscriptSeq(database: OpenClawAgentDatabase, sessionId: string): number {
-  assertSessionTranscriptHot(database.db, sessionId);
   const db = getSessionKysely(database.db);
   const row = executeSqliteQueryTakeFirstSync(
     database.db,
     db
       .selectFrom("transcript_events")
-      .select((eb) => eb.fn.max<number | bigint>("seq").as("max_seq"))
+      .select((eb) => [
+        eb.fn.max<number | bigint>("seq").as("max_seq"),
+        eb
+          .exists(
+            eb
+              .selectFrom("session_transcript_cold_archives")
+              .select("session_id")
+              .where("session_id", "=", sessionId),
+          )
+          .as("cold"),
+      ])
       .where("session_id", "=", sessionId),
   );
+  if (row?.cold) {
+    throw new SessionTranscriptColdError(sessionId);
+  }
   const maxSeq =
     row?.max_seq === null || row?.max_seq === undefined ? -1 : sqliteNumber(row.max_seq);
   return maxSeq + 1;

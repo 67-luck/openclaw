@@ -112,22 +112,38 @@ export function shouldRebuildSessionTranscriptIndexSynchronously(
   return true;
 }
 
+function selectSessionTranscriptProjectionState(db: DatabaseSync, sessionId: string) {
+  return getIndexKysely(db)
+    .selectFrom("session_transcript_index_state")
+    .select([
+      "active_event_count",
+      "active_message_count",
+      "indexed_seq",
+      "leaf_event_id",
+      "needs_rebuild",
+    ])
+    .select((eb) =>
+      eb
+        .exists(
+          eb
+            .selectFrom("session_transcript_active_events")
+            .select("session_id")
+            .where("session_id", "=", sessionId)
+            .where("context_eligible", "is", null)
+            .limit(1),
+        )
+        .as("has_unclassified"),
+    )
+    .where("session_id", "=", sessionId);
+}
+
 function readSessionTranscriptProjectionState(
   db: DatabaseSync,
   sessionId: string,
-): SessionTranscriptProjectionState | undefined {
+): (SessionTranscriptProjectionState & { hasUnclassifiedEvents: boolean }) | undefined {
   const row = executeSqliteQueryTakeFirstSync(
     db,
-    getIndexKysely(db)
-      .selectFrom("session_transcript_index_state")
-      .select([
-        "active_event_count",
-        "active_message_count",
-        "indexed_seq",
-        "leaf_event_id",
-        "needs_rebuild",
-      ])
-      .where("session_id", "=", sessionId),
+    selectSessionTranscriptProjectionState(db, sessionId),
   );
   if (!row) {
     return undefined;
@@ -138,6 +154,7 @@ function readSessionTranscriptProjectionState(
     indexedSeq: row.indexed_seq,
     leafEventId: row.leaf_event_id,
     needsRebuild: row.needs_rebuild !== 0,
+    hasUnclassifiedEvents: Boolean(row.has_unclassified),
   };
 }
 
@@ -154,9 +171,32 @@ function readLatestTranscriptSequence(db: DatabaseSync, sessionId: string): numb
 }
 
 export function sessionTranscriptIndexNeedsReconcile(db: DatabaseSync, sessionId: string): boolean {
-  const latestSeq = readLatestTranscriptSequence(db, sessionId);
+  const kysely = getIndexKysely(db);
+  const row = executeSqliteQueryTakeFirstSync(
+    db,
+    kysely
+      .selectFrom(
+        kysely
+          .selectFrom("transcript_events")
+          .select("seq")
+          .where("session_id", "=", sessionId)
+          .orderBy("seq", "desc")
+          .limit(1)
+          .as("latest"),
+      )
+      .leftJoin(selectSessionTranscriptProjectionState(db, sessionId).as("state"), (join) =>
+        join.onTrue(),
+      )
+      .select([
+        "latest.seq as latest_seq",
+        "state.indexed_seq",
+        "state.needs_rebuild",
+        "state.has_unclassified",
+      ]),
+  );
   return (
-    latestSeq !== undefined && sessionTranscriptProjectionNeedsReconcile(db, sessionId, latestSeq)
+    row !== undefined &&
+    (row.needs_rebuild !== 0 || row.indexed_seq !== row.latest_seq || Boolean(row.has_unclassified))
   );
 }
 
@@ -167,10 +207,7 @@ function sessionTranscriptProjectionNeedsReconcile(
 ): boolean {
   const state = readSessionTranscriptProjectionState(db, sessionId);
   return (
-    !state ||
-    state.needsRebuild ||
-    state.indexedSeq !== latestSeq ||
-    hasUnclassifiedSessionTranscriptEvents(db, sessionId)
+    !state || state.needsRebuild || state.indexedSeq !== latestSeq || state.hasUnclassifiedEvents
   );
 }
 
@@ -236,8 +273,9 @@ export function createTranscriptIndexAppenderInTransaction(
   db: DatabaseSync,
   sessionId: string,
 ): (params: TranscriptIndexAppend) => boolean {
-  let watermark = readSessionTranscriptProjectionState(db, sessionId);
-  let hasUnclassifiedEvents: boolean | undefined;
+  const initial = readSessionTranscriptProjectionState(db, sessionId);
+  let watermark: SessionTranscriptProjectionState | undefined = initial;
+  let hasUnclassifiedEvents = initial?.hasUnclassifiedEvents;
   let insertActiveEvent: ReturnType<typeof createActiveEventInserter> | undefined;
   let insertFts: ReturnType<typeof createSessionTranscriptFtsInserter> | undefined;
   let updateWatermark: ReturnType<typeof createWatermarkWriter> | undefined;

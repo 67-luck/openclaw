@@ -154,19 +154,28 @@ export function resolveSessionKeyBySessionId(
   scope: Pick<SessionTranscriptReadScope, "agentId" | "env" | "sessionId" | "storePath">,
 ): string | undefined {
   const resolved = resolveSqliteTranscriptReadScope(scope);
+  const result = withOpenClawAgentDatabaseReadOnly(
+    (database) => readSessionKeyBySessionIdInDatabase(database, resolved.sessionId),
+    toDatabaseOptions(resolved),
+  );
+  return result.found ? result.value : undefined;
+}
+
+/** Reuse the caller's admitted connection without reopening its read scope. */
+export function readSessionKeyBySessionIdInDatabase(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+): string | undefined {
   // session_windows.session_id is the primary key; the indexed lookup cannot be ambiguous.
-  const result = withOpenClawAgentDatabaseReadOnly((database) => {
-    const db = getSessionKysely(database.db);
-    return executeSqliteQueryTakeFirstSync(
-      database.db,
-      db
-        .selectFrom("session_windows")
-        .select("session_key")
-        .where("session_id", "=", resolved.sessionId)
-        .limit(1),
-    );
-  }, toDatabaseOptions(resolved));
-  return result.found ? result.value?.session_key : undefined;
+  const db = getSessionKysely(database.db);
+  return executeSqliteQueryTakeFirstSync(
+    database.db,
+    db
+      .selectFrom("session_windows")
+      .select("session_key")
+      .where("session_id", "=", sessionId)
+      .limit(1),
+  )?.session_key;
 }
 
 /** Lists session entries from the additive SQLite session store. */

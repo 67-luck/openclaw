@@ -33,6 +33,7 @@ import {
   findTranscriptEventInDatabase,
   readTranscriptIdentityByEventId,
   readTranscriptEventRows,
+  readTranscriptSnapshot,
   type SqliteTranscriptSnapshotState,
 } from "./session-accessor.sqlite-read.js";
 import {
@@ -65,7 +66,10 @@ import type {
   LockedTranscriptMessageAppendOptions,
   TranscriptMessageAppendResult,
 } from "./session-accessor.types.js";
-import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
+import {
+  assertSessionTranscriptHot,
+  readSessionColdTranscript,
+} from "./session-cold-storage-state.js";
 import {
   readRefusedSessionSource,
   transferSessionEntryWorkerCandidate,
@@ -101,6 +105,14 @@ export type SessionMessageRewriteCommitted = {
 };
 
 export type SessionMessageRewriteOperations = {
+  "session.transcript.lock.cold": {
+    input: { scope: ResolvedTranscriptScope };
+    output: { archive: ReturnType<typeof readSessionColdTranscript> };
+  };
+  "session.transcript.lock.read": {
+    input: { scope: ResolvedTranscriptScope };
+    output: ReturnType<typeof readTranscriptSnapshot>;
+  };
   "session.transcript.lock.prepare": {
     input: LockedTranscriptTarget & { options: LockedMessageOptions };
     output: ReturnType<typeof prepareLockedTranscriptAppend>;
@@ -183,6 +195,10 @@ export function bindSqliteWorkerBackend(
   return {
     execute(command) {
       switch (command.type) {
+        case "session.transcript.lock.cold":
+          return { archive: readSessionColdTranscript(database.db, command.input.scope.sessionId) };
+        case "session.transcript.lock.read":
+          return readTranscriptSnapshot(database, command.input.scope.sessionId);
         case "session.transcript.lock.prepare":
           return withLockedCustody(command.input, context, () =>
             prepareLockedTranscriptAppend(command.input, database),

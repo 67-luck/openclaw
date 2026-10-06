@@ -566,8 +566,11 @@ async function runNativeTranscriptWriteLock<T>(
 ): Promise<T> {
   const fencedScope = withOwnedSessionTranscriptWriterFence(scope);
   const resolved = resolveSqliteTranscriptScope(fencedScope);
-  const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
-  await restoreSessionColdTranscript({ ...fencedScope, sessionId: resolved.sessionId });
+  // Nested compatibility appends share the worker callback's initial cold restoration.
+  if (!alreadyLocked) {
+    const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
+    await restoreSessionColdTranscript({ ...fencedScope, sessionId: resolved.sessionId });
+  }
   const databaseOptions = toDatabaseOptions(resolved);
   const acquire: typeof runExclusiveSqliteSessionWrite = alreadyLocked
     ? async (_scope, operation) => operation()

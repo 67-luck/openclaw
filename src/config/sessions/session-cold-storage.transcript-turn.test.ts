@@ -1,6 +1,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { withSessionTranscriptWriteLock } from "../../plugin-sdk/session-transcript-runtime.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { persistSessionTranscriptTurn, replaceSessionEntrySync } from "./session-accessor.js";
@@ -61,21 +62,46 @@ describe("selected transcript turn cold restoration", () => {
     return { ...fixture, append, descriptor, replaceRevision };
   }
 
-  it("restores raw-key history and appends through the qualified identity", async () => {
-    const fixture = await createFixture();
-    await expect(fixture.append()).resolves.toMatchObject({ appendedCount: 1 });
-    expect(readSessionColdTranscript(fixture.database(), historicalId)).toBeUndefined();
-    const events = loadTranscriptEventsSync(fixture.scope);
-    expect(events).toContainEqual(expect.objectContaining({ id: "history-user" }));
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        message: expect.objectContaining({ role: "user", content: "Resume selected history" }),
-      }),
-    );
-    expect(fixture.database().prepare("SELECT session_key FROM session_nodes").all()).toEqual([
-      { session_key: "global" },
-    ]);
-  });
+  it.each(["turn", "locked SDK worker", "locked SDK released-sync"])(
+    "restores raw-key history and appends through the qualified identity (%s)",
+    async (mode) => {
+      const fixture = await createFixture();
+      if (mode === "turn") {
+        await expect(fixture.append()).resolves.toMatchObject({ appendedCount: 1 });
+      } else {
+        const message = { role: "user", content: "Resume selected history" };
+        const prepare = vi.fn((value: typeof message) => value);
+        await withSessionTranscriptWriteLock(
+          { ...fixture.scope, sessionKey: "agent:main:global" },
+          async (locked) => {
+            expect(await locked.readEvents()).toContainEqual(
+              expect.objectContaining({ id: "history-user" }),
+            );
+            await expect(
+              locked.appendMessage({
+                message,
+                ...(mode === "locked SDK released-sync"
+                  ? { prepareMessageAfterIdempotencyCheck: prepare }
+                  : {}),
+              }),
+            ).resolves.toMatchObject({ appended: true });
+          },
+        );
+        expect(prepare).toHaveBeenCalledTimes(mode === "locked SDK released-sync" ? 1 : 0);
+      }
+      expect(readSessionColdTranscript(fixture.database(), historicalId)).toBeUndefined();
+      const events = loadTranscriptEventsSync(fixture.scope);
+      expect(events).toContainEqual(expect.objectContaining({ id: "history-user" }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          message: expect.objectContaining({ role: "user", content: "Resume selected history" }),
+        }),
+      );
+      expect(fixture.database().prepare("SELECT session_key FROM session_nodes").all()).toEqual([
+        { session_key: "global" },
+      ]);
+    },
+  );
 
   it.each(["before restoration", "at worker admission"])(
     "keeps the archive cold when the captured revision changes %s",

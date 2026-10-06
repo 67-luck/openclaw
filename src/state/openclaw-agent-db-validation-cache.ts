@@ -7,6 +7,7 @@ import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import {
   adoptSqliteSchemaFacts,
   getAdmittedSqliteSchemaFacts,
+  getSqliteReadOperationRevision,
   registerSqliteSchemaMutationListener,
   type SqliteSchemaFacts,
 } from "../infra/sqlite-schema-facts.js";
@@ -118,11 +119,18 @@ export function adoptOpenClawAgentDatabaseSchema(
 ): boolean {
   const validation = getOpenClawAgentDatabaseValidation(database);
   const schema = validation?.schema;
+  // Shared table facts are reusable only within the caller's current read admission.
+  const admitted =
+    reuseIntegrity && schema ? getSqliteReadOperationRevision(database.db)?.schema : undefined;
   const adopted = Boolean(
     reuseIntegrity &&
     schema &&
     Atomics.load(new Int32Array(schema.valid), 0) === 1 &&
-    adoptSqliteSchemaFacts(database.db, schema.facts) &&
+    ((admitted?.tables === schema.facts.tables &&
+      admitted.tableSql === schema.facts.tableSql &&
+      admitted.schemaVersion === schema.facts.schemaVersion &&
+      admitted.userVersion === schema.facts.userVersion) ||
+      adoptSqliteSchemaFacts(database.db, schema.facts)) &&
     Atomics.load(new Int32Array(schema.valid), 0) === 1,
   );
   if (required && !adopted) {

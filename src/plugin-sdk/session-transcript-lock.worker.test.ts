@@ -30,7 +30,10 @@ import {
 import { createGatewayMetadataCloseFixture } from "../gateway/server-close.metadata.test-support.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import { onInternalSessionTranscriptUpdate } from "../sessions/transcript-events.js";
-import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { withCodexSessionTranscriptMirrorWriteLock } from "./codex-session-transcript-runtime.js";
 import {
@@ -305,6 +308,42 @@ it.each([
     });
   },
 );
+
+it("refuses a read-only locked result after its database owner is revoked", async ({ signal }) => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const scope = await seed(env);
+    await appendSessionTranscriptMessageByIdentity({
+      ...scope,
+      eventId: "before-close",
+      message: { role: "assistant", content: "Read before owner revocation" },
+    });
+    const entered = createDeferred();
+    const release = createDeferred();
+    let closing: Promise<boolean> | undefined;
+    const reading = withSessionTranscriptWriteLock(scope, async (locked) => {
+      const events = await locked.readEvents();
+      expect(events).toContainEqual(expect.objectContaining({ id: "before-close" }));
+      entered.resolve();
+      await release.promise;
+      return events;
+    });
+    try {
+      await withinTest(
+        awaitGateBeforeSettlement(entered.promise, reading, "Locked reader did not reach its gate"),
+        signal,
+      );
+      closing = closeOpenClawAgentDatabaseByPathAsync(scope.storePath);
+      release.resolve();
+      await expect(withinTest(reading, signal)).rejects.toThrow(
+        "Agent database execution admission is closed",
+      );
+      await withinTest(closing, signal);
+    } finally {
+      release.resolve();
+      await Promise.allSettled([reading, closing]);
+    }
+  });
+});
 
 it("joins accepted appends in FIFO order before admitting feedback after the callback returns", async ({
   signal,
