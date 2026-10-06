@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import packageJson from "../../package.json" with { type: "json" };
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
+import { SQLITE_STAGING_TOKEN_FILES } from "../infra/sqlite-staging-token.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
 import { OpenClawAgentDatabaseMediaMigrationRequiredError } from "./openclaw-agent-db-migration-required.js";
 import {
@@ -79,6 +80,75 @@ describe("OpenClaw database schema preflight", () => {
     await expect(
       assertOpenClawDatabasesReady({ env, operation: "gateway-restart" }),
     ).resolves.toBeUndefined();
+  });
+
+  it("keeps restart discovery off the caller thread and observes changed retained-deletion facts", async () => {
+    const { env, statePath } = createState();
+    const agent = openOpenClawAgentDatabase({ agentId: "retained", env });
+    closeDatabases();
+    withDatabase(agent.path, (database) => {
+      database.exec(`PRAGMA user_version = ${OPENCLAW_AGENT_SCHEMA_VERSION + 1};`);
+    });
+    withDatabase(statePath, (database) => {
+      database
+        .prepare(`INSERT INTO agent_deletion_journal
+        (agent_id, agent_dir, workspace_dir, sessions_dir, database_paths_json,
+          created_at, cleanup_completed, delete_files)
+        VALUES ('retained', ?, '', '', ?, 1, 1, 0)`)
+        .run(path.dirname(agent.path), JSON.stringify([agent.path]));
+    });
+    const { DatabaseSync } = requireNodeSqlite();
+    for (const retained of [true, false]) {
+      if (!retained) {
+        withDatabase(statePath, (database) => {
+          database.exec("DELETE FROM agent_deletion_journal WHERE agent_id = 'retained';");
+        });
+      }
+      const callerSql: string[] = [];
+      const recordSql = (database: DatabaseSync, sql: string) => {
+        // Snapshot staging locks retain their native owner; payload inspection must move.
+        if (path.basename(database.location() ?? "") !== SQLITE_STAGING_TOKEN_FILES[0]) {
+          callerSql.push(sql);
+        }
+      };
+      const nativePrepare = DatabaseSync.prototype.prepare;
+      const nativeExec = DatabaseSync.prototype.exec;
+      const prepare = vi.spyOn(DatabaseSync.prototype, "prepare").mockImplementation(function (
+        this: DatabaseSync,
+        ...args: Parameters<DatabaseSync["prepare"]>
+      ) {
+        recordSql(this, args[0]);
+        return nativePrepare.apply(this, args);
+      });
+      const exec = vi.spyOn(DatabaseSync.prototype, "exec").mockImplementation(function (
+        this: DatabaseSync,
+        sql: string,
+      ) {
+        recordSql(this, sql);
+        nativeExec.call(this, sql);
+      });
+      try {
+        const readiness = assertOpenClawDatabasesReady({ env, operation: "gateway-restart" });
+        if (retained) {
+          await expect(readiness).resolves.toBeUndefined();
+        } else {
+          await expect(readiness).rejects.toMatchObject({
+            incompatibleDatabases: [
+              {
+                kind: "agent",
+                agentId: "retained",
+                path: agent.path,
+                foundVersion: OPENCLAW_AGENT_SCHEMA_VERSION + 1,
+              },
+            ],
+          });
+        }
+        expect(callerSql).toEqual([]);
+      } finally {
+        prepare.mockRestore();
+        exec.mockRestore();
+      }
+    }
   });
 
   function createReleasedStateDatabase() {

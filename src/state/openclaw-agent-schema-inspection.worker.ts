@@ -15,6 +15,10 @@ import {
   readOpenClawAgentIntegrityVerification,
 } from "./openclaw-quarantine-store.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "./openclaw-state-db-contract.js";
+import {
+  inspectStateDatabaseSchema,
+  type StateSchemaInspectionInput,
+} from "./openclaw-state-schema-preflight.js";
 
 if (!process.send || !process.disconnect) {
   throw new Error("Agent schema inspection requires parent IPC.");
@@ -32,14 +36,45 @@ process.on(
           requestId: number;
           input: AgentSchemaInspectionInput;
           snapshot?: AgentSchemaInspectionSnapshot;
+        }
+      | {
+          type: "inspect-state";
+          requestId: number;
+          input: StateSchemaInspectionInput;
+          snapshot: AgentSchemaInspectionSnapshot;
         },
   ) => {
     if (request.type === "close") {
       disconnect();
       return;
     }
-    const { requestId, input, snapshot } = request;
+    const { requestId } = request;
     try {
+      if (request.type === "inspect-state") {
+        const { input, snapshot } = request;
+        readSqliteIntegrityFileIdentity(snapshot.pathname, snapshot.identity);
+        const inspection = withSqliteSourceReadDatabase(
+          snapshot.pathname,
+          "snapshot",
+          (database) => {
+            readSqliteIntegrityFileIdentity(snapshot.pathname, snapshot.identity);
+            setSqliteBusyTimeout(database, OPENCLAW_SQLITE_BUSY_TIMEOUT_MS);
+            return inspectStateDatabaseSchema(database, input);
+          },
+        );
+        readSqliteIntegrityFileIdentity(snapshot.pathname, snapshot.identity);
+        send({
+          requestId,
+          ok: true,
+          inspection: null,
+          stateInspection: {
+            ...inspection,
+            inspectionErrors: inspection.inspectionErrors.map(serializeAgentSchemaInspectionError),
+          },
+        });
+        return;
+      }
+      const { input, snapshot } = request;
       const readVerification = () =>
         !snapshot && input.startupIntegrityStateDir
           ? readOpenClawAgentIntegrityVerification(input.pathname, {
