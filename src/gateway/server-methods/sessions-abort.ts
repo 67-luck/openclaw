@@ -641,7 +641,8 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             const workerOnly = Boolean(workerRunTarget && !activeRun);
             if (firstAbortedRunId && !workerOnly) {
               const endedAt = Date.now();
-              const runKind = preAbortRuns.get(firstAbortedRunId)?.kind;
+              const capturedRun = preAbortRuns.get(firstAbortedRunId);
+              const runKind = capturedRun?.kind;
               const dedupePrefix = runKind === "agent" ? "agent" : "chat";
               const dedupeKey = `${dedupePrefix}:${firstAbortedRunId}`;
               // Nested cancellation can yield after the old controller ends. A new
@@ -657,7 +658,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
                   ts: endedAt,
                   ok: true,
                   payload:
-                    runKind === "agent"
+                    runKind === "agent" && capturedRun.executionStarted === false
                       ? {
                           ...buildAbortedAgentPayload(firstAbortedRunId, "rpc", {
                             agentId: targetAgentId,
