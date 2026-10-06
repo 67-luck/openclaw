@@ -251,7 +251,8 @@ describe("readCodexMirroredSessionHistoryMessages", () => {
       const warn = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => {});
       const readFinished = createDeferred<void>();
       const acceptResult = createDeferred<void>();
-      const runWorker = WorkerTaskPool.prototype.run;
+      const runWorker = vi.spyOn(WorkerTaskPool.prototype, "run");
+      runWorker.mockRestore();
       const spy = vi.spyOn(WorkerTaskPool.prototype, "run").mockImplementation(async function (
         this: WorkerTaskPool<unknown, unknown>,
         ...args
