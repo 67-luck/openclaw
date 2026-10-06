@@ -816,4 +816,3 @@ export type SkillsUploadChunkParams = Static<typeof SkillsUploadChunkParamsSchem
 export type SkillsUploadCommitParams = Static<typeof SkillsUploadCommitParamsSchema>;
 export type SkillsInstallParams = Static<typeof SkillsInstallParamsSchema>;
 export type SkillsUpdateParams = Static<typeof SkillsUpdateParamsSchema>;
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
