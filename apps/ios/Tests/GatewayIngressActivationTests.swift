@@ -1218,8 +1218,12 @@ extension GatewayIngressControllerTests {
         defer { model.disconnectGateway() }
         let delayGate = IngressTestGate()
         var delays: [Duration] = []
+        // Begin with stopped discovery so setScenePhase does not queue a status-only
+        // reconciliation that replaces the task this test is awaiting.
+        let discovery = GatewayDiscoveryModel()
+        discovery.stop()
         let controller = GatewayConnectionController(
-            appModel: model, startDiscovery: false,
+            appModel: model, startDiscovery: false, discovery: discovery,
             autoConnectRetryDelay: { duration in
                 delays.append(duration)
                 await delayGate.wait()

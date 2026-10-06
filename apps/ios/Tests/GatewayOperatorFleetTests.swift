@@ -166,11 +166,14 @@ struct GatewayOperatorFleetTests {
         }
     }
 
-    private func waitUntil(_ condition: () -> Bool) async throws {
+    private func waitUntil(
+        sourceLocation: SourceLocation = #_sourceLocation,
+        _ condition: () -> Bool) async throws
+    {
         let deadline = ContinuousClock.now + .seconds(5)
         while !condition(), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        try #require(condition())
+        try #require(condition(), sourceLocation: sourceLocation)
     }
 }
