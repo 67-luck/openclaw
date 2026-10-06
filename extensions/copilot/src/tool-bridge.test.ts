@@ -2242,7 +2242,11 @@ describe("createCopilotToolBridge tool conversion", () => {
     );
     try {
       // The pooled SDK connection was opened during turn 1 and dispatches from there.
-      await turn.run("turn-1", () => runSdkTool(sdkToolNamed(bridge, "probe"), {}));
+      const probe = expectDefined(
+        bridge.promptToolPolicy.apply().tools.find((tool) => tool.name === "probe"),
+        "probe tool",
+      );
+      await turn.run("turn-1", () => runSdkTool(probe, {}));
       expect(seen).toBe("turn-2");
     } finally {
       bridge.cleanup?.();
