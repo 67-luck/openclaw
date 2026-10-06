@@ -323,13 +323,13 @@ export async function createGatewaySession(
   }
 
   const targetSessionKey = explicitTargetKey ?? buildDashboardSessionKey(agentId, { incognito });
-  const target = await resolveGatewaySessionStoreTargetInWorker({
+  const creationTarget = await resolveGatewaySessionStoreTargetInWorker({
     cfg: params.cfg,
     key: targetSessionKey,
     agentId,
     assertActive: commitGuard,
   });
-  if (explicitTargetKey && target.canonicalKey === canonicalParentSessionKey) {
+  if (explicitTargetKey && creationTarget.canonicalKey === canonicalParentSessionKey) {
     return invalidSessionRequest("sessions.create key must differ from parentSessionKey");
   }
   if (explicitTargetKey && !params.initialEntry) {
@@ -340,7 +340,7 @@ export async function createGatewaySession(
         ok: false,
         error: errorShape(
           ErrorCodes.UNAVAILABLE,
-          `Session ${target.canonicalKey} is still initializing; retry creation later.`,
+          `Session ${creationTarget.canonicalKey} is still initializing; retry creation later.`,
         ),
       };
     }
@@ -361,7 +361,7 @@ export async function createGatewaySession(
 
   const authorityTargets = params.operatorAuthority
     ? [
-        { target, entry: initialTargetEntry },
+        { target: creationTarget, entry: initialTargetEntry },
         ...(parentSessionTarget
           ? [{ target: parentSessionTarget, entry: parentSessionEntry }]
           : []),
@@ -585,13 +585,13 @@ export async function createGatewaySession(
       creation: params.creation,
       parent: currentParentSessionEntry,
     });
-    const targetRead = await readSessionCreateTarget(
-      { ...params, commitGuard },
+    const target = creationTarget;
+    const targetRead = readSessionCreateTarget(
+      params,
       target,
       initialTargetEntry?.sessionId,
       targetLifecycleIdentities,
     );
-    commitGuard?.();
     if (!targetRead.ok) {
       return targetRead;
     }
@@ -1224,14 +1224,14 @@ export async function createGatewaySession(
   };
 
   const targetLifecycleIdentities = [
-    target.canonicalKey,
-    ...target.storeKeys,
+    creationTarget.canonicalKey,
+    ...creationTarget.storeKeys,
     ...(requestedKey ? [requestedKey] : []),
     ...(initialTargetEntry?.sessionId ? [initialTargetEntry.sessionId] : []),
   ];
   const lifecycleTargets = [
     {
-      scope: target.storePath,
+      scope: creationTarget.storePath,
       identities: targetLifecycleIdentities,
     },
   ];
