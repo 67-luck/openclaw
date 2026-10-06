@@ -57,6 +57,7 @@ import {
   embeddedRunCleanupAttachment,
   getControllerEmbeddedAttachment,
   getEmbeddedRunAttachment,
+  waitForEmbeddedRunOwnerSettlement,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
