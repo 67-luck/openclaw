@@ -6,6 +6,8 @@ import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { canonicalizePath } from "../../agents/utils/paths.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { loadCronJobsStore } from "../../cron/store.js";
+import { resolveCronJobsStorePathFromConfig } from "../../cron/store/paths.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { WorkshopChange } from "./changes.kernel.js";
@@ -26,11 +28,22 @@ const UNUSED_ARCHIVE_REASON = "unused for 30 days";
 // listWorkshopChanges caps at the feed's per-agent retention.
 const CHANGE_FEED_LIMIT = 500;
 
+/** Every scheduled job's payload text, including paused jobs; a job may run less than monthly. */
+async function readCronPayloadText(config: OpenClawConfig): Promise<string> {
+  const store = await loadCronJobsStore(resolveCronJobsStorePathFromConfig(config));
+  return store.jobs.map((job) => JSON.stringify(job.payload ?? {})).join("\n");
+}
+
+function mentionsSkill(text: string, name: string): boolean {
+  return new RegExp(`(?<![a-z0-9-])${name}(?![a-z0-9-])`).test(text);
+}
+
 /**
  * Archives an agent's learned skills with no activity for 30 days. Activity is the latest of:
  * recorded use (a file read or a foreground skill_workshop view, via skill_usage), the skill's
  * last change row, and its files' mtime/ctime. ctime never predates the file, so a skill copied
- * in with old mtimes still counts as young. Archive is the normal versioned, undoable archive.
+ * in with old mtimes still counts as young. A skill named in any cron job is kept: scheduled
+ * work can run less often than the cutoff. Archive is the normal versioned, undoable archive.
  */
 export async function archiveUnusedWorkshopSkills(
   config: OpenClawConfig,
@@ -68,12 +81,13 @@ export async function archiveUnusedWorkshopSkills(
     skill,
     skillFile: canonicalizePath(path.join(root, skill.name, "SKILL.md")),
   }));
-  const [usage, changes] = await Promise.all([
+  const [usage, changes, cronText] = await Promise.all([
     readSkillUsage(
       {},
       entries.map((entry) => entry.skillFile),
     ),
     listWorkshopChanges(agentId, { limit: CHANGE_FEED_LIMIT }),
+    readCronPayloadText(config),
   ]);
   // The feed is newest first, so the first row per skill is its last change.
   const lastChangeMs = new Map<string, number>();
@@ -100,7 +114,7 @@ export async function archiveUnusedWorkshopSkills(
       lastChangeMs.get(skill.name) ?? 0,
       usage.get(skillFile)?.lastUsedAtMs ?? 0,
     );
-    if (lastActivityMs > cutoffMs) {
+    if (lastActivityMs > cutoffMs || mentionsSkill(cronText, skill.name)) {
       continue;
     }
     if (!learningOn()) {

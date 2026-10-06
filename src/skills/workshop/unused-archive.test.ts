@@ -6,6 +6,8 @@ import {
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { makeCronJob } from "../../cron/delivery.test-helpers.js";
+import { resolveCronJobsStorePath, saveCronJobsStore } from "../../cron/store.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import {
@@ -102,6 +104,27 @@ describe("archiveUnusedWorkshopSkills", () => {
       "stale",
       "used",
     ]);
+  });
+
+  it("keeps a skill that a cron job names, even a paused one", async () => {
+    await createSkill("quarterly-taxes");
+    await createSkill("quarterly-taxes-old");
+    await saveCronJobsStore(resolveCronJobsStorePath(), {
+      version: 1,
+      jobs: [
+        makeCronJob({
+          enabled: false,
+          payload: { kind: "agentTurn", message: "Use the quarterly-taxes skill to file." },
+        }),
+      ],
+    });
+
+    const archived = await archiveUnusedWorkshopSkills(
+      openclawAgent,
+      "main",
+      Date.now() + 31 * DAY_MS,
+    );
+    expect(archived.map((change) => change.skillName)).toEqual(["quarterly-taxes-old"]);
   });
 
   it("fails closed when the agent's default runtime cannot report skill reads", async () => {
