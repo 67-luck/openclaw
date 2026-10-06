@@ -216,14 +216,6 @@ function finishCommandTurn(params: {
   return reply;
 }
 
-function collectStagedAttachmentPaths(ctx: MsgContext): ReadonlyMap<number, string> {
-  return new Map(
-    normalizeMediaFacts(ctx.media).flatMap((fact, index) =>
-      fact.path ? [[index, fact.path] as const] : [],
-    ),
-  );
-}
-
 export async function getReplyFromConfig(
   ctx: MsgContext,
   options?: GetReplyOptions,
@@ -1104,8 +1096,12 @@ export async function getReplyFromConfig(
   }
   const { resolvedThinkLevel, resolvedReasoningLevel } = await resolveRunModelLevels();
 
-  let stagedAttachmentPaths = hasStagedMediaFacts(finalized.media)
-    ? collectStagedAttachmentPaths(finalized)
+  let stagedAttachmentPaths: ReadonlyMap<number, string> = hasStagedMediaFacts(finalized.media)
+    ? new Map(
+        normalizeMediaFacts(finalized.media).flatMap((fact, index) =>
+          fact.path ? [[index, fact.path] as const] : [],
+        ),
+      )
     : new Map<number, string>();
   // Already-staged facts or SDK projections must remain a single-stage contract.
   if (
