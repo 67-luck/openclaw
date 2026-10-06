@@ -72,6 +72,7 @@ const publications: Record<string, string | symbol> = {
   "src/media/playback-transcode.ts": Symbol.for("openclaw.playbackTranscodeTestApi"),
   "src/node-host/plugin-node-host.ts": Symbol.for("openclaw.nodeHostPluginTestApi"),
   "src/plugins/memory-runtime.ts": Symbol.for("openclaw.memoryRuntimeTestApi"),
+  "src/sessions/session-controller.stop.ts": Symbol.for("openclaw.replyRunRegistryTestApi"),
   "src/sessions/session-controller.storage.ts": Symbol.for("openclaw.replyRunRegistryTestApi"),
   "src/sessions/session-upstream-monitor.ts": Symbol.for("openclaw.sessionUpstreamMonitorTestApi"),
   "src/sessions/user-turn-transcript.ts": Symbol.for("openclaw.userTurnTranscriptTestApi"),

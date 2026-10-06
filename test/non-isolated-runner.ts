@@ -75,7 +75,6 @@ const SHARED_TEST_SETUP = Symbol.for("openclaw.sharedTestSetup");
 const RETIRED_TEST_API_EXECUTIONS = Symbol.for("openclaw.retiredTestApiExecutions");
 const EMBEDDED_RUNS_TEST_API = Symbol.for("openclaw.embeddedRunsTestApi");
 const REPLY_RUN_REGISTRY_TEST_API = Symbol.for("openclaw.replyRunRegistryTestApi");
-const SESSION_CONTROLLER_STOP_TEST_API = Symbol.for("openclaw.sessionControllerStopTestApi");
 const DIAGNOSTIC_EVENTS_STATE = Symbol.for("openclaw.diagnosticEvents.state.v1");
 const DIAGNOSTIC_EVENT_LISTENER_PRESENCE = Symbol.for(
   "openclaw.diagnosticEventListenerPresence.v1",
@@ -267,11 +266,8 @@ type EmbeddedRunsTestApi = {
 };
 
 type ReplyRunRegistryTestApi = {
+  drainReplyRunRegistry?: () => Promise<void>;
   resetReplyRunRegistry?: () => void;
-};
-
-type SessionControllerStopTestApi = {
-  drainSessionControllerOwners?: () => Promise<void>;
 };
 
 type DiagnosticEventsStateForTest = {
@@ -305,22 +301,22 @@ async function resetOpenClawGlobalRunState(): Promise<void> {
   const cleanupActions: CleanupAction[] = [];
   const globalStore = globalThis as Record<PropertyKey, unknown>;
   const embeddedRuns = globalStore[EMBEDDED_RUNS_TEST_API] as EmbeddedRunsTestApi | undefined;
+  const replyRunRegistry = globalStore[REPLY_RUN_REGISTRY_TEST_API] as
+    | ReplyRunRegistryTestApi
+    | undefined;
   const resetActiveEmbeddedRuns = embeddedRuns?.resetActiveEmbeddedRuns;
   if (resetActiveEmbeddedRuns) {
     cleanupActions.push(resetActiveEmbeddedRuns);
   }
 
-  const resetReplyRunRegistry = (
-    globalStore[REPLY_RUN_REGISTRY_TEST_API] as ReplyRunRegistryTestApi | undefined
-  )?.resetReplyRunRegistry;
+  const resetReplyRunRegistry = replyRunRegistry?.resetReplyRunRegistry;
   if (resetReplyRunRegistry) {
     cleanupActions.push(resetReplyRunRegistry);
   }
 
   const drainActions = [
     embeddedRuns?.drainActiveEmbeddedRuns,
-    (globalStore[SESSION_CONTROLLER_STOP_TEST_API] as SessionControllerStopTestApi | undefined)
-      ?.drainSessionControllerOwners,
+    replyRunRegistry?.drainReplyRunRegistry,
   ].filter((action): action is () => Promise<void> => action !== undefined);
   const drainResults = await Promise.allSettled(drainActions.map((action) => action()));
   const drainFailures = drainResults.flatMap((result) =>

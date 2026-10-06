@@ -36,10 +36,6 @@ import {
   type ReplyOperation,
   waitForReplyOperationOwnerSettlement,
 } from "../../sessions/session-controller.js";
-import {
-  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-  waitForSessionControllerSettlement,
-} from "../../sessions/session-controller.lifecycle.js";
 import { waitForSessionNativeAttemptEnd } from "../../sessions/session-controller.native-runtime.js";
 import {
   assertSessionControllerOperation,
@@ -61,8 +57,6 @@ import {
   embeddedRunCleanupAttachment,
   getControllerEmbeddedAttachment,
   getEmbeddedRunAttachment,
-  captureEmbeddedRunCleanupOwners,
-  waitForEmbeddedRunOwnerSettlement,
   ACTIVE_EMBEDDED_RUNS_BY_RUN_ID,
   ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE,
   ACTIVE_EMBEDDED_RUN_SNAPSHOTS,
@@ -87,6 +81,7 @@ import {
   isEmbeddedRunHandleAbortable,
   isEmbeddedRunHandleSupersedable,
 } from "./runs.probes.js";
+import { createEmbeddedRunsTestApi } from "./runs.test-cleanup.js";
 
 export type {
   EmbeddedAgentQueueHandle,
@@ -1458,78 +1453,7 @@ export function clearActiveEmbeddedRun(
   registration.settlement.resolve();
 }
 
-const testing = {
-  async drainActiveEmbeddedRuns(): Promise<void> {
-    const attempts = [...activeNativeAttempts()].map(([sessionId, handle]) => {
-      const attachment = getEmbeddedRunAttachment(handle);
-      if (!attachment) {
-        throw new Error(`Active native attempt lost its attachment: ${sessionId}`);
-      }
-      return { sessionId, handle, attachment };
-    });
-    const cleanupOwners = captureEmbeddedRunCleanupOwners();
-    const failures: unknown[] = [];
-
-    // Controller Stop owns attached attempts; only detached attempts need a direct abort.
-    for (const { handle, attachment } of attempts) {
-      if (attachment.operation) {
-        continue;
-      }
-      try {
-        if (handle.isAbortable?.() !== false) {
-          handle.abort("restart");
-        }
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    const settlements = [
-      ...attempts.map(({ attachment }) => waitForEmbeddedRunOwnerSettlement(attachment)),
-      ...cleanupOwners.map((owner) => owner.settlement),
-    ].map((settlement) =>
-      settlement.catch((error: unknown) => {
-        failures.push(error);
-      }),
-    );
-    if (
-      !(await waitForSessionControllerSettlement(
-        Promise.all(settlements).then(() => undefined),
-        SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
-      ))
-    ) {
-      failures.push(
-        new Error(
-          `Native run cleanup remains pending after ${SESSION_CONTROLLER_DRAIN_TIMEOUT_MS}ms`,
-        ),
-      );
-    }
-    for (const owner of cleanupOwners) {
-      owner.acknowledge();
-    }
-    if (failures.length > 0) {
-      throw new AggregateError(failures, "Native run cleanup failed");
-    }
-  },
-  resetActiveEmbeddedRuns() {
-    const attempts = [...activeNativeAttempts()];
-    for (const [, handle] of attempts) {
-      EMBEDDED_RUN_FORCED_TERMINAL_SETTLEMENTS.delete(handle);
-    }
-    for (const [sessionId, handle] of attempts) {
-      clearActiveEmbeddedRun(sessionId, handle);
-    }
-    ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.clear();
-    for (const claim of EMBEDDED_RUN_COMPLETION_CLAIMS.values()) {
-      claim.settleRegistration(undefined);
-    }
-    EMBEDDED_RUN_COMPLETION_CLAIMS.clear();
-    ACTIVE_EMBEDDED_RUN_SNAPSHOTS.clear();
-    ACTIVE_EMBEDDED_RUN_SESSION_IDS_BY_FILE.clear();
-    ABANDONED_EMBEDDED_RUNS_BY_SESSION_ID.clear();
-    ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_KEY.clear();
-    ABANDONED_EMBEDDED_RUN_SESSION_IDS_BY_FILE.clear();
-  },
-};
+const testing = createEmbeddedRunsTestApi(clearActiveEmbeddedRun);
 
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
   (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.embeddedRunsTestApi")] =

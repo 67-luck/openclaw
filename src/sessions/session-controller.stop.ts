@@ -726,8 +726,17 @@ async function drainSessionControllerOwnersForTest(): Promise<void> {
   }
 }
 
+type ReplyRunRegistryTestApi = {
+  drainReplyRunRegistry?: () => Promise<void>;
+};
+
 if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[
-    Symbol.for("openclaw.sessionControllerStopTestApi")
-  ] = { drainSessionControllerOwners: drainSessionControllerOwnersForTest };
+  // SAFETY: globalThis hosts the symbol-keyed internal test API publications.
+  const publications = globalThis as Record<PropertyKey, unknown>;
+  const registryKey = Symbol.for("openclaw.replyRunRegistryTestApi");
+  // SAFETY: Storage publishes this mutable registry API before Stop can load.
+  const api = publications[registryKey] as ReplyRunRegistryTestApi | undefined;
+  if (api) {
+    api.drainReplyRunRegistry = drainSessionControllerOwnersForTest;
+  }
 }
