@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import { registerAgentSessionLoopTestLifecycle } from "../../agents/sessions/agent-session-loop-correctness.test-support.js";
-import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
+import type { dispatchInboundMessageInternal } from "../../auto-reply/dispatch.js";
 import { loadTranscriptEventsSync } from "../../config/sessions/session-accessor.sqlite-read.js";
 import * as skillSelection from "../../skills/library/selection.js";
 import * as skillService from "../../skills/library/service.js";
@@ -108,7 +108,7 @@ it.for([
         await withinTest(fixture.dispatchedRecorder, signal);
         expect(dispatchInboundMessageMock).toHaveBeenCalledOnce();
         const dispatch = dispatchInboundMessageMock.mock.calls[0]?.[0] as Parameters<
-          typeof dispatchInboundMessage
+          typeof dispatchInboundMessageInternal
         >[0];
         expect(dispatch.ctx).toMatchObject({
           Body: fixture.params.message,
