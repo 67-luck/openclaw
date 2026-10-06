@@ -509,6 +509,8 @@ function selectAuthoritativeActiveEventOwners(db: DatabaseSync, compact: boolean
     .where("storage.phase", "=", compact ? "compact" : "legacy");
 }
 
+// Native synchronous SDK callbacks and operator maintenance retain their owning connection.
+// Runtime disk reconciliation consumes the publication worker's maintained facts.
 function selectSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync) {
   const kysely = getIndexKysely(db);
   const pendingOwners = [false, true].map((compact) =>
@@ -557,16 +559,6 @@ function selectSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync) {
       // Ordering keeps the session-window scan and one latest-row index seek per session.
       // Without it, SQLite can scan every transcript row even for an existence check.
       .orderBy("session_windows.session_id")
-  );
-}
-
-/** Search needs only one pending session; the reconcile owner selects its complete work list. */
-export function hasSessionsNeedingTranscriptIndexReconcile(db: DatabaseSync): boolean {
-  return (
-    executeSqliteQueryTakeFirstSync(
-      db,
-      selectSessionsNeedingTranscriptIndexReconcile(db).limit(1),
-    ) !== undefined
   );
 }
 
@@ -628,19 +620,6 @@ function selectOrphanedTranscriptOwners(
       // Older SQLite needs ordering to merge owner sets and skip duplicate keys.
       .orderBy("session_id")
   );
-}
-
-/** Orphan-only cleanup is independent of live sessions' projection watermarks. */
-export function hasOrphanedTranscriptIndexRows(db: DatabaseSync): boolean {
-  return transcriptIndexTables.some((table) => {
-    const owners = selectOrphanedTranscriptOwners(db, table).as("orphan");
-    return (
-      executeSqliteQueryTakeFirstSync(
-        db,
-        getIndexKysely(db).selectFrom(owners).select("session_id").limit(1),
-      ) !== undefined
-    );
-  });
 }
 
 /** Drops index rows for sessions whose transcript rows are gone. */

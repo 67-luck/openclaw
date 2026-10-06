@@ -1,6 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { SqliteWalMaintenance } from "../infra/sqlite-wal.js";
-import type { DatabaseFileIdentity } from "../infra/sqlite-worker-identity.js";
+import type {
+  DatabaseFileIdentity,
+  DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
 
 // v25 combines compact metadata and merged session-node validity triggers.
@@ -77,6 +80,13 @@ export type OpenClawAgentDatabaseRegistrationCommit = Readonly<{
   stateDatabasePath: string;
   stateDatabaseIdentity: string;
 }>;
+
+export type AgentDatabaseRegistryWorkerOperations = {
+  "agentDatabaseRegistry.remove": {
+    input: { agentId: string; agentPath: string; identity: DatabasePathIdentity };
+    output: OpenClawAgentDatabaseRegistrationCommit;
+  };
+};
 
 export type OpenClawAgentDatabaseRegistrationObserver = {
   starting?: () => void;

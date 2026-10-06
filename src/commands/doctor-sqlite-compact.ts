@@ -9,13 +9,7 @@ import { SqliteWalCheckpointBusyError, truncateSqliteWal } from "../infra/sqlite
 import { DoctorMaintenanceRefusalError } from "../infra/update-doctor-result.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db.js";
 
-export type DoctorSqliteCompactSnapshot = {
-  autoVacuum: number;
-  dbSizeBytes: number;
-  freelistPages: number;
-  pageSizeBytes: number;
-  walSizeBytes: number;
-};
+type DoctorSqliteCompactSnapshot = ReturnType<typeof readCompactSnapshot>;
 
 type DoctorSqliteCompactResult = {
   after: DoctorSqliteCompactSnapshot;
@@ -181,10 +175,7 @@ export function compactDoctorSqliteFile(
   return result;
 }
 
-function readCompactSnapshot(
-  database: DatabaseSync,
-  sqlitePath: string,
-): DoctorSqliteCompactSnapshot {
+function readCompactSnapshot(database: DatabaseSync, sqlitePath: string) {
   return {
     autoVacuum: readPragmaNumber(database, "auto_vacuum"),
     dbSizeBytes: fileSize(sqlitePath),
