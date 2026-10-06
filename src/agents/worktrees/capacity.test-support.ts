@@ -33,7 +33,11 @@ export function useInProcessWorktreeCapacityTransport() {
         try {
           return reserveWorktreeCapacityInWorker(
             { ...params.request, leases: authority.identities, predicates: params.predicates },
-            { open: () => database, stateOptions: () => options },
+            {
+              open: () => database,
+              stateOptions: () => options,
+              writeTransaction: (operation) => runOpenClawStateWriteTransaction(operation, options),
+            },
           );
         } finally {
           admission.mockRestore();

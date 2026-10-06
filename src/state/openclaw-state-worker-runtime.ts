@@ -72,6 +72,7 @@ export function executeSharedStateCommand(
   context: { databasePath: string },
   open: () => OpenClawStateDatabase,
   updateRunWriter: () => ExistingOpenClawStateWriter,
+  writeTransaction: <T>(operation: (database: OpenClawStateDatabase) => T) => T,
 ): ReturnType<OpenClawStateWorkerBackend["execute"]> {
   // Dispatch preparation has loaded this module; do not open or observe token state.
   if (command.type === "deviceAuth.prepare") {
@@ -82,7 +83,7 @@ export function executeSharedStateCommand(
     env: getSqliteWorkerStateContext().environment,
   });
   if (stateWorkerRegistry.has(command)) {
-    return stateWorkerRegistry.execute(command, { open, stateOptions });
+    return stateWorkerRegistry.execute(command, { open, stateOptions, writeTransaction });
   }
   if (command.type === "updateRuns.recordStep" || command.type === "updateRuns.recordPhase") {
     return recordUpdateRunMutationInWorker(

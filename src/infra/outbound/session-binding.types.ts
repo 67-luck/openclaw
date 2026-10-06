@@ -48,6 +48,10 @@ export type SessionBindingRecord = {
   metadata?: Record<string, unknown>;
 };
 
+export type SessionBindingInspection =
+  | { status: "available"; binding: SessionBindingRecord | null }
+  | { status: "unavailable" };
+
 /**
  * Request to create or refresh a session binding for a conversation.
  */

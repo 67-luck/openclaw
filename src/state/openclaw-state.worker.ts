@@ -5,6 +5,7 @@ import {
 } from "../infra/device-identity.js";
 import { refreshSqlitePlannerStatistics } from "../infra/sqlite-planner-statistics.js";
 import { assertNoActiveSqliteReaders } from "../infra/sqlite-reader-lifecycle.js";
+import { runSqliteReadOperationSync } from "../infra/sqlite-schema-facts.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import { SQLITE_WORKER_PREPARE_COMMAND } from "../infra/sqlite-worker-contract.js";
 import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
@@ -118,7 +119,7 @@ function createSharedStateWorkerBackend(
   let borrow = nativeDatabase ? retainOpenClawStateDatabase(nativeDatabase) : undefined;
   let closed = false;
   let secretSchemaAdmitted = false;
-  const open = (): OpenClawStateDatabase => {
+  const retainDatabase = (): OpenClawStateDatabase => {
     if (!nativeDatabase) {
       const opened = openOpenClawStateDatabase({
         path: context.databasePath,
@@ -128,17 +129,34 @@ function createSharedStateWorkerBackend(
       borrow = retainOpenClawStateDatabase(opened);
       nativeDatabase = opened;
     }
+    return nativeDatabase;
+  };
+  const assertRetainedDatabase = (database: OpenClawStateDatabase) => {
     if (
-      !nativeDatabase.db.isOpen ||
-      openClawStateDatabaseCache.getCachedOpenClawStateDatabase(nativeDatabase.path) !==
-        nativeDatabase
+      !database.db.isOpen ||
+      openClawStateDatabaseCache.getCachedOpenClawStateDatabase(database.path) !== database
     ) {
       throw new Error("Shared-state worker lost its retained native database");
     }
+  };
+  const open = (): OpenClawStateDatabase => {
+    const database = retainDatabase();
+    assertRetainedDatabase(database);
     return openOpenClawStateDatabase({
-      database: nativeDatabase,
+      database,
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
+    });
+  };
+  const writeTransaction = <T>(operation: (database: OpenClawStateDatabase) => T): T => {
+    const database = retainDatabase();
+    // Share the pre-BEGIN cache probe; the transaction still refreshes after acquiring its lock.
+    return runSqliteReadOperationSync(database.db, () => {
+      assertRetainedDatabase(database);
+      return runOpenClawStateWriteTransaction(operation, {
+        path: context.databasePath,
+        env: getSqliteWorkerStateContext().environment,
+      });
     });
   };
   return {
@@ -201,6 +219,7 @@ function createSharedStateWorkerBackend(
       if (provisionRegistry.has(command)) {
         return provisionRegistry.execute(command, {
           open,
+          writeTransaction,
           stateOptions: () => ({
             path: context.databasePath,
             env: getSqliteWorkerStateContext().environment,
@@ -354,6 +373,7 @@ function createSharedStateWorkerBackend(
             path: context.databasePath,
             env: getSqliteWorkerStateContext().environment,
           })),
+        writeTransaction,
       );
     },
     assertSettled() {

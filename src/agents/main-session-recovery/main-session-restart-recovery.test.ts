@@ -36,9 +36,11 @@ import {
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { registerAgentRunContext } from "../../infra/agent-run-registry.js";
-import { loadDeliveryQueueEntry } from "../../infra/delivery-queue-sqlite.js";
 import { completeDeliveryQueueEntryInDatabase } from "../../infra/delivery-queue-sqlite.kernel.js";
-import { seedDeliveryQueueEntry } from "../../infra/delivery-queue-sqlite.test-support.js";
+import {
+  loadDeliveryQueueEntry,
+  seedDeliveryQueueEntry,
+} from "../../infra/delivery-queue-sqlite.test-support.js";
 import { OUTBOUND_DELIVERY_QUEUE_NAME } from "../../infra/outbound/delivery-queue-media-staging.js";
 import type { QueuedDelivery } from "../../infra/outbound/delivery-queue-types.js";
 import { createUnmodifiedPreparedOutboundBatch } from "../../infra/outbound/prepared-batch.js";
@@ -116,7 +118,11 @@ import {
 } from "./main-session-recovery-store.js";
 import { dispatchRestartRecoveryUntilStarted } from "./main-session-restart-dispatch-start.js";
 import { readStartupRecoveryWarning } from "./main-session-restart-recovery-diagnostics.js";
-import { createRestartRecoveryTranscriptFixture } from "./main-session-restart-recovery-fixture.test-support.js";
+import {
+  createRestartRecoveryTranscriptFixture,
+  mainSessionEntry,
+  runningSessionEntry,
+} from "./main-session-restart-recovery-fixture.test-support.js";
 import { discoverRestartRecoveryStoreTargets } from "./main-session-restart-recovery-shared.js";
 import { recoverStore } from "./main-session-restart-recovery-store.js";
 import {
@@ -269,26 +275,6 @@ async function writeStore(
   store: Record<string, SessionEntryFixture>,
 ): Promise<void> {
   await writeStorePath(path.join(sessionsDir, "sessions.json"), store);
-}
-
-function mainSessionEntry(overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId: "main-session",
-    permissionMode: "guarded",
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    abortedLastRun: true,
-    ...overrides,
-  });
-}
-
-function runningSessionEntry(sessionId: string, overrides: SessionEntryFixture = {}): SessionEntry {
-  return createSessionEntry({
-    sessionId,
-    updatedAt: Date.now() - 10_000,
-    status: "running",
-    ...overrides,
-  });
 }
 
 function activeRestartRun(

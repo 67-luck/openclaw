@@ -4,6 +4,7 @@ import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
+  runOpenClawStateWriteTransaction,
 } from "../state/openclaw-state-db.js";
 import { ensureUserProfilesSchema } from "../state/user-profiles-schema.js";
 import {
@@ -68,6 +69,8 @@ it("resolves repeated Web Push profile references once per mutation and rereads 
           },
           {
             open: () => database,
+            writeTransaction: (operation) =>
+              runOpenClawStateWriteTransaction(operation, { database }),
             stateOptions: () => ({ path: database.path, env: { OPENCLAW_STATE_DIR: stateDir } }),
           },
         ),

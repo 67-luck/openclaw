@@ -106,6 +106,27 @@ Reply options accept `onVisibleWorkSessions(sessions)` to receive accepted visib
 Import routing and service helpers from
 `openclaw/plugin-sdk/conversation-binding-runtime`.
 
+Await `service.bind(input)` and `service.unbind(input)` before publishing a binding
+change. Current-conversation persistence uses the existing worker owner and
+rechecks the selected adapter before committing. A failed or uncertain write
+does not authorize replay. Released synchronous selectors retain their current
+contract; bundled session listings await the internal owner.
+
+For synchronous directory ownership checks, a channel may implement
+`messaging.prepareConversationRouteOwners(inputs, inspectBindings)`. It prepares binding reads
+once and returns exactly one synchronous resolver per input, in the same order.
+Core invokes these resolvers immediately and preserves the scalar resolver's
+error and fallback handling. Existing plugins keep `resolveConversationRouteOwner`.
+Prepared facts must not survive a wait or be reused for a later authority check.
+
+Call the supplied `inspectBindings(refs)` once for the batch. It performs one
+current native selection across generic and account-owned bindings while
+preserving external adapter ownership. It is valid only during synchronous
+preparation and rejects later use. Each later check receives a fresh inspector.
+
+Slack retains its declared OpenClaw 2026.9.8 host support through its unchanged
+scalar resolver. Older hosts do not invoke the optional preparation hook.
+
 Await `getSessionBindingService().touchAsync(bindingId, at, scope)` when recording
 binding activity. Adapters implement `touchAsync` to return a Promise that settles
 their accepted mutation. Async dispatch prefers that method and propagates its

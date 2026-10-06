@@ -126,6 +126,9 @@ describe("multi-account people", () => {
           { limit: 2 },
           {
             open: () => database,
+            writeTransaction: () => {
+              throw new Error("The directory reader must not write to the database");
+            },
             stateOptions: () => ({ ...options, env: process.env }),
           },
         ),

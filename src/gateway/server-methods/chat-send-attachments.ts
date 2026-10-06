@@ -27,10 +27,7 @@ import { resolveOperatorSessionCreation } from "../session-creation-provenance.j
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveGatewayModelSupportsImages } from "../session-utils.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
-import {
-  explicitOriginTargetsAcpSession,
-  explicitOriginTargetsPluginBinding,
-} from "./chat-origin-routing.js";
+import { resolveExplicitOriginBindingTargets } from "./chat-origin-routing.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
@@ -249,7 +246,9 @@ export async function prepareChatSendAttachments(params: {
   let imageOrder: Awaited<ReturnType<typeof parseMessageWithAttachments>>["imageOrder"] = [];
   let offloadedRefs: OffloadedRef[] = [];
   let mediaPathOffloads: MediaFact[] = [];
-  const explicitOriginTargetsPlugin = explicitOriginTargetsPluginBinding(explicitOrigin);
+  const explicitOriginTargets = await resolveExplicitOriginBindingTargets(explicitOrigin);
+  assertInputCurrent();
+  const explicitOriginTargetsPlugin = explicitOriginTargets.plugin;
   let prepareAttachmentsMs: number | undefined;
 
   if (normalizedAttachments.length > 0) {
@@ -259,10 +258,7 @@ export async function prepareChatSendAttachments(params: {
         "gateway.chat_send.prepare_attachments",
         async () => {
           const imageSupport: { value: boolean | undefined } = {
-            value:
-              explicitOriginTargetsAcpSession(explicitOrigin) || explicitOriginTargetsPlugin
-                ? true
-                : undefined,
+            value: explicitOriginTargets.acp || explicitOriginTargetsPlugin ? true : undefined,
           };
           const resolveSupportsImages = async (): Promise<boolean> => {
             imageSupport.value ??= await resolveGatewayModelSupportsImages({

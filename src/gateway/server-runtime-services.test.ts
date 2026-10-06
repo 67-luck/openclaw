@@ -559,7 +559,9 @@ describe("server-runtime-services", () => {
       const log = createLog();
       const recoveryLog = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
       log.child.mockReturnValue(recoveryLog);
-      hoisted.countPendingDeliveryQueueEntries.mockReturnValue(condition === "legacy rows" ? 2 : 0);
+      hoisted.countPendingDeliveryQueueEntries.mockResolvedValue(
+        condition === "legacy rows" ? 2 : 0,
+      );
       const { services } = activateScheduledServicesForTest({ log });
       await vi.dynamicImportSettled();
       expect(hoisted.recoverPendingDeliveries).toHaveBeenCalledOnce();
@@ -630,11 +632,11 @@ describe("server-runtime-services", () => {
       throw new Error("Expected outbound recovery to start");
     }
     hoisted.deliverOutboundPayloads.mockImplementationOnce(async (params) => {
-      await params.onDeliveryAttempt?.();
+      await params.withDirectAdapterHandoff?.(async () => []);
       return [];
     });
     const denial = new Error("conversation route reassigned");
-    hoisted.assertQueuedConversationDeliveryAttemptAuthorized.mockImplementationOnce(() => {
+    hoisted.withAuthorizedQueuedConversationDelivery.mockImplementationOnce(() => {
       throw denial;
     });
 
@@ -653,13 +655,14 @@ describe("server-runtime-services", () => {
       }),
     ).rejects.toBe(denial);
 
-    expect(hoisted.assertQueuedConversationDeliveryAttemptAuthorized).toHaveBeenCalledWith(
+    expect(hoisted.withAuthorizedQueuedConversationDelivery).toHaveBeenCalledWith(
       expect.objectContaining({
         readCurrentConfig: expect.any(Function),
         operationId: "operation-recovery",
         routeFingerprint: "route-recovery",
       }),
       expect.objectContaining({ agentId: "main", storePath: "/tmp/agent.sqlite" }),
+      expect.any(Function),
     );
     services.heartbeatRunner.stop();
   });

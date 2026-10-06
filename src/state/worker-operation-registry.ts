@@ -7,6 +7,7 @@ import type { OpenClawStateDatabase } from "./openclaw-state-db-contract.js";
 
 export type WorkerOperationContext = {
   open: () => OpenClawStateDatabase;
+  writeTransaction: <T>(operation: (database: OpenClawStateDatabase) => T) => T;
   stateOptions: () => { path: string; env: NodeJS.ProcessEnv };
 };
 

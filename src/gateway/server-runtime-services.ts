@@ -28,7 +28,7 @@ import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { assertQueuedConversationDeliveryAttemptAuthorized } from "./conversation-route-ownership.js";
+import { withAuthorizedQueuedConversationDelivery } from "./conversation-route-ownership.js";
 import {
   createScheduledGatewayRunner,
   fenceScheduledGatewayContextResolver,
@@ -269,16 +269,12 @@ function startPendingOutboundDeliveryRecovery(params: {
         return await deliverOutboundPayloadsInternal(
           {
             ...deliveryParams,
-            onDeliveryAttempt: async () => {
-              await deliveryParams.onDeliveryAttempt?.();
-              if (!attemptAuthority.routeFingerprint) {
-                return;
-              }
-              await assertQueuedConversationDeliveryAttemptAuthorized(
+            withDirectAdapterHandoff: (initiate) =>
+              withAuthorizedQueuedConversationDelivery(
                 {
                   readCurrentConfig: getRuntimeConfig,
                   operationId: attemptAuthority.operationId,
-                  routeFingerprint: attemptAuthority.routeFingerprint,
+                  routeFingerprint: attemptAuthority.routeFingerprint ?? "",
                 },
                 {
                   agentId: attemptAuthority.agentId,
@@ -288,8 +284,8 @@ function startPendingOutboundDeliveryRecovery(params: {
                     stateContext,
                   ),
                 },
-              );
-            },
+                initiate,
+              ),
           },
           stateContext,
         );
@@ -305,7 +301,7 @@ function startPendingOutboundDeliveryRecovery(params: {
           OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
           OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
         } = await import("../infra/outbound/delivery-queue-namespaces.js");
-        const remaining = countPendingDeliveryQueueEntries(
+        const remaining = await countPendingDeliveryQueueEntries(
           [
             LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
             OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
@@ -314,6 +310,9 @@ function startPendingOutboundDeliveryRecovery(params: {
           undefined,
           recoveryContext,
         );
+        if (signal.aborted) {
+          return;
+        }
         if (remaining > 0) {
           logRecovery.warn(
             `${remaining} legacy outbound deliveries need repair. Stop the Gateway and run openclaw doctor --fix.`,
