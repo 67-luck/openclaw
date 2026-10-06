@@ -95,6 +95,7 @@ export async function withSessionEntryReadOnlyInWorker<T>(
     read: Result<SessionEntry | undefined, unknown>,
     owner: SessionEntryReadWorkerOwner,
   ) => Promise<T>,
+  prepareSource?: SessionEntryReadSourcePreparation,
 ): Promise<T> {
   const { scope, agentId } = captureSessionEntryReadScope(input);
   assertCallerCurrent();
@@ -148,7 +149,12 @@ export async function withSessionEntryReadOnlyInWorker<T>(
       owner.assertCurrent();
       return value;
     },
-    { backing: true, dataOnly: true, logical: { assertCurrent: assertCallerCurrent, onReadError } },
+    {
+      backing: true,
+      dataOnly: true,
+      logical: { assertCurrent: assertCallerCurrent, onReadError },
+      prepareSource,
+    },
   );
 }
 
