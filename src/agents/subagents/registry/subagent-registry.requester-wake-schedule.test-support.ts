@@ -89,7 +89,12 @@ export function createRequesterTurnSettlement(params: {
         if (
           entry &&
           input?.protocolRunId ===
-            buildAnnounceIdempotencyKey(buildAnnounceIdFromChildRun(entry.runId, entry.generation))
+            buildAnnounceIdempotencyKey(
+              buildAnnounceIdFromChildRun({
+                childSessionKey: entry.childSessionKey,
+                childRunId: entry.runId,
+              }),
+            )
         ) {
           expect(input.custody.rpcAdopted).toBe(true);
           expect(input.phase).toBe("waiting");
