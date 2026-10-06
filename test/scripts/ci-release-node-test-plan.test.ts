@@ -43,7 +43,7 @@ it("splits measured full-release hosted rows without losing their execution cont
       parentShardName: parentKey,
       stripes: [historicalFiles],
     });
-    measurements[historicalGeneration.timingKeys[0]!] = 1800;
+    measurements[historicalGeneration.timingKeys[0]!] = 3600;
     const changedSelector = releaseRows();
     expect(changedSelector.length).toBeGreaterThan(1);
     expect(changedSelector.every((row) => row.predictedSeconds! <= 720)).toBe(true);
