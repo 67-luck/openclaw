@@ -255,7 +255,7 @@ function artifactFor(run, workflow, tooling, name) {
   };
 }
 
-async function waitForRun(runId, attempt, workflow, tooling) {
+async function waitForRun(runId, attempt, workflow, tooling, { allowFailure = false } = {}) {
   const deadline = Date.now() + 110 * 60_000;
   while (Date.now() < deadline) {
     const run = api(`actions/runs/${runId}`);
@@ -266,7 +266,7 @@ async function waitForRun(runId, attempt, workflow, tooling) {
     );
     if (run.status === "completed") {
       requireValue(
-        run.conclusion === "success",
+        run.conclusion === "success" || (allowFailure && run.conclusion === "failure"),
         `${workflow} run ${runId}/${attempt} ended ${run.conclusion}; ${
           workflow === PUBLISH_WORKFLOW
             ? "inspect child outcomes for owner recovery, then start a new button run with the same readiness receipt and openclaw_npm_resume_run_id when core npm succeeded. A published core version without a successful child requires core-owner reconciliation. This button remains bound to its original parent attempt."
@@ -811,9 +811,19 @@ async function main() {
       requireValue(
         isDeepStrictEqual(observed, request.producer) &&
           run.status === "completed" &&
-          run.conclusion === "success",
-        "Publication request no longer identifies a successful exact publisher.",
+          ["success", "failure"].includes(run.conclusion),
+        "Publication request no longer identifies an allowed terminal exact publisher.",
       );
+      if (run.conclusion === "failure") {
+        const { verifyClawHubPostpublish } = await import("./clawhub-postpublish.mjs");
+        await verifyClawHubPostpublish({
+          event: { workflow_run: run },
+          parentStatePolicy: "sealed-producer",
+          verifierSha: tooling.sha,
+          token,
+          outputDir: join(directory, "clawhub-public-verification"),
+        });
+      }
       return;
     }
     const run = await waitForRun(
@@ -821,10 +831,12 @@ async function main() {
       request.releaseRunAttempt,
       PUBLISH_WORKFLOW,
       tooling,
+      { allowFailure: true },
     );
     const { verifyClawHubPostpublish } = await import("./clawhub-postpublish.mjs");
     await verifyClawHubPostpublish({
       event: { workflow_run: run },
+      parentStatePolicy: "sealed-producer",
       verifierSha: tooling.sha,
       token,
       outputDir: join(directory, "clawhub-public-verification"),

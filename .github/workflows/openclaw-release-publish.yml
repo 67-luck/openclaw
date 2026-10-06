@@ -107,7 +107,7 @@ on:
           - stable
           - full
       wait_for_clawhub:
-        description: Wait for and auto-approve ClawHub staging; public verification follows the sealed release milestone
+        description: Wait for and auto-approve ClawHub staging; public verification follows terminal parent success
         required: true
         default: false
         type: boolean
@@ -2286,66 +2286,14 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag }}
         run: echo "Approved GitHub release activation for $RELEASE_TAG"
 
-  verify_clawhub_publication:
-    name: Verify complete ClawHub publication roster
-    needs: [publish]
-    if: ${{ !cancelled() && inputs.prepared_plugins == '' && inputs.publish_openclaw_npm && needs.publish.result == 'success' }}
-    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-latest'))) || ('ubuntu-latest') }}
-    timeout-minutes: 45
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - name: Checkout trusted ClawHub verification tooling
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.workflow_sha }}
-          sparse-checkout: scripts
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Setup supported Node runtime
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: ${{ env.NODE_VERSION }}
-          package-manager-cache: false
-
-      - name: Reconcile every expected ClawHub package
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERIFIER_SHA: ${{ github.workflow_sha }}
-          PARENT_RUN_ID: ${{ github.run_id }}
-          PARENT_RUN_ATTEMPT: ${{ github.run_attempt }}
-          PARENT_REF: ${{ github.ref_name }}
-          PARENT_SHA: ${{ github.sha }}
-          PARENT_STATUS: in_progress
-          PARENT_CONCLUSION: ""
-        run: node scripts/clawhub-postpublish.mjs
-
-      - name: Retain complete ClawHub roster evidence
-        if: ${{ always() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: clawhub-publication-roster-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/clawhub-postpublish/evidence.json
-          if-no-files-found: warn
-          retention-days: 30
-
   finalize_github_release:
     name: Finalize GitHub release
     # Reconcile the same release after Docker; the opt-in early path reuses its approval.
     # Apps attach independently after npm and Gateway Docker evidence is complete.
-    needs:
-      [
-        publish,
-        publish_docker,
-        verify_clawhub_publication,
-        approve_github_release,
-        finalize_github_release_before_docker,
-      ]
-    # Prepared releases become visible in the outer button workflow, after this
-    # parent succeeds and ClawHub's terminal publication can be verified.
-    if: ${{ always() && inputs.prepared_plugins == '' && inputs.publish_openclaw_npm && needs.publish.result == 'success' && needs.publish_docker.result == 'success' && needs.verify_clawhub_publication.result == 'success' && (needs.approve_github_release.result == 'success' || (inputs.finalize_release_before_docker && needs.finalize_github_release_before_docker.result == 'success')) }}
+    needs: [publish, publish_docker, approve_github_release, finalize_github_release_before_docker]
+    # Prepared releases become visible in the outer button workflow only after
+    # this parent reaches an allowed terminal state and ClawHub is verified.
+    if: ${{ always() && inputs.prepared_plugins == '' && inputs.publish_openclaw_npm && needs.publish.result == 'success' && needs.publish_docker.result == 'success' && (needs.approve_github_release.result == 'success' || (inputs.finalize_release_before_docker && needs.finalize_github_release_before_docker.result == 'success')) }}
     runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-latest'))) || ('ubuntu-latest') }}
     concurrency:
       group: linux-app-release-publish
@@ -2453,8 +2401,8 @@ jobs:
 
   finalize_github_release_before_docker:
     name: Activate GitHub release before Docker
-    needs: [publish, verify_clawhub_publication, approve_github_release_before_docker]
-    if: ${{ inputs.finalize_release_before_docker && needs.publish.result == 'success' && needs.verify_clawhub_publication.result == 'success' && needs.approve_github_release_before_docker.result == 'success' }}
+    needs: [publish, approve_github_release_before_docker]
+    if: ${{ inputs.finalize_release_before_docker && needs.publish.result == 'success' && needs.approve_github_release_before_docker.result == 'success' }}
     runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-latest'))) || ('ubuntu-latest') }}
     concurrency:
       group: linux-app-release-publish
@@ -2472,7 +2420,7 @@ jobs:
     # Dispatch only; the child owns the shared metadata queue and its outcome.
     continue-on-error: true
     runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-latest'))) || ('ubuntu-latest') }}
-    timeout-minutes: 10
+    timeout-minutes: 5
     permissions:
       actions: write
       contents: read

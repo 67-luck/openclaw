@@ -343,8 +343,8 @@ function bridgeFixture(releaseRunAttempt = 1, conclusion = "success") {
     "clawhub-postpublish.mjs",
     `
     import { trace } from './fixture-trace.mjs';
-    export async function verifyClawHubPostpublish({ event }) {
-      trace('public-verified', { runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt });
+    export async function verifyClawHubPostpublish({ event, parentStatePolicy }) {
+      trace('public-verified', { runId: event.workflow_run.id, runAttempt: event.workflow_run.run_attempt, parentStatePolicy });
     }
   `,
   );
@@ -580,8 +580,9 @@ describe("release readiness executable handoff", () => {
     [1, "success"],
     [2, "success"],
     [1, "failure"],
+    [1, "cancelled"],
   ] as const)(
-    "retries only the recorded publication attempt (current parent attempt=%s, conclusion=%s)",
+    "verifies only the recorded sealed terminal publication (current parent attempt=%s, conclusion=%s)",
     (attempt, conclusion) => {
       const fixture = bridgeFixture(attempt, conclusion);
       const request = writeFixtureFile(
@@ -606,12 +607,35 @@ describe("release readiness executable handoff", () => {
           timeout: 10_000,
         },
       );
-      if (attempt === 1 && conclusion === "success") {
+      if (attempt === 1 && ["success", "failure"].includes(conclusion)) {
         expect(result.status, result.stderr).toBe(0);
         expect(fixture.trace().filter((entry) => entry.event !== "gh")).toEqual([
-          { event: "public-verified", runId: 700, runAttempt: 1 },
+          {
+            event: "public-verified",
+            runId: 700,
+            runAttempt: 1,
+            parentStatePolicy: "sealed-producer",
+          },
         ]);
         expect(readFileSync(fixture.env.GITHUB_OUTPUT, "utf8")).toContain("verified=true");
+        if (conclusion === "failure") {
+          const validated = spawnSync(
+            process.execPath,
+            [
+              join(fixture.scripts, "openclaw-release-ready.mjs"),
+              "validate-request",
+              "--request",
+              request,
+              "--output",
+              join(fixture.root, "validated"),
+            ],
+            { cwd: fixture.root, env: fixture.env, encoding: "utf8", timeout: 10_000 },
+          );
+          expect(validated.status, validated.stderr).toBe(0);
+          expect(fixture.trace().filter((entry) => entry.event === "public-verified")).toHaveLength(
+            2,
+          );
+        }
       } else {
         expect(result.status).toBe(1);
         expect(result.stderr).toContain(attempt === 1 ? "owner recovery" : "attempt changed");
@@ -1997,7 +2021,12 @@ process.exitCode = 1;
         });
         expect(verified.status, verified.stderr).toBe(0);
         expect(fixture.trace().filter((entry) => entry.event === "public-verified")).toEqual([
-          { event: "public-verified", runId: 700, runAttempt: 1 },
+          {
+            event: "public-verified",
+            runId: 700,
+            runAttempt: 1,
+            parentStatePolicy: "sealed-producer",
+          },
         ]);
         const finalized = fixture.run("button", "v2026.9.2", "beta", request);
         expect(finalized.status, finalized.stderr).toBe(0);
@@ -2102,13 +2131,27 @@ process.exitCode = 1;
     ["moved tooling tag", { toolingSha: "c".repeat(40) }],
     ["deleted tooling tag", { toolingMissing: true }],
     ["replaced parent attempt", { parentRunAttempt: 2 }],
-    ["failed parent", { parentConclusion: "failure" }],
     ["moved release tag", { sourceSha: "c".repeat(40) }],
   ])("refuses a %s discovered after environment approval", (_label, overrides) => {
     const fixture = finalizationFixture(overrides);
     const result = fixture.run("button", "v2026.9.2", "beta");
     expect(result.status).toBe(1);
     expect(fixture.state()).toMatchObject({ writes: 0, isDraft: true });
+  });
+
+  it("activates a sealed failed parent after repeating public roster verification", () => {
+    const fixture = finalizationFixture({ parentConclusion: "failure" });
+    const result = fixture.run("button", "v2026.9.2", "beta");
+    expect(result.status, result.stderr).toBe(0);
+    expect(fixture.state()).toMatchObject({ writes: 1, isDraft: false });
+    expect(fixture.trace().filter((entry) => entry.event === "public-verified")).toEqual([
+      {
+        event: "public-verified",
+        runId: 700,
+        runAttempt: 1,
+        parentStatePolicy: "sealed-producer",
+      },
+    ]);
   });
 });
 

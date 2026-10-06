@@ -2046,7 +2046,6 @@ describe("release validation no-push transport", () => {
     expect(job(releasePublish, "finalize_github_release").needs).toEqual([
       "publish",
       "publish_docker",
-      "verify_clawhub_publication",
       "approve_github_release",
       "finalize_github_release_before_docker",
     ]);
@@ -2136,11 +2135,7 @@ describe("release validation no-push transport", () => {
       default: false,
     });
     const early = job(workflow, "finalize_github_release_before_docker");
-    expect(early.needs).toEqual([
-      "publish",
-      "verify_clawhub_publication",
-      "approve_github_release_before_docker",
-    ]);
+    expect(early.needs).toEqual(["publish", "approve_github_release_before_docker"]);
     expect(early.steps).toEqual(job(workflow, "finalize_github_release").steps);
     const cases = [
       {

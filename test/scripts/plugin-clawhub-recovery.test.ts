@@ -260,7 +260,7 @@ describe("sealed ClawHub recovery manifest", () => {
           step.name === "Download sealed recovery manifest before cancellation",
       )["continue-on-error"],
     ).toBe(true);
-    expect(release.jobs.finalize_github_release.needs).toContain("verify_clawhub_publication");
+    expect(release.jobs).not.toHaveProperty("verify_clawhub_publication");
 
     const child = parse(readFileSync(".github/workflows/plugin-clawhub-release.yml", "utf8"));
     expect(child.jobs.seal_clawhub_recovery_manifest.steps.at(-1).with.name).toContain(
