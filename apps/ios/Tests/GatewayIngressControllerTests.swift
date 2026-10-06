@@ -373,6 +373,12 @@ extension GatewayIngressControllerTests {
         #expect(storage.values[manualOrigin] == manualBytes)
         #expect(ingress.hasSession(stableID: manual.stableID) == manualHasSession)
         #expect(ingress.attention?.stableID == selected.stableID)
+        // A retained message for B must not appear beside A’s still-valid Access session.
+        #expect(SettingsProTab.gatewayAccessAttention(in: registry, ingress: ingress) == nil)
+        registry.activeStableID = selected.stableID
+        #expect(SettingsProTab.gatewayAccessAttention(in: registry, ingress: ingress)?.id == ingress.attention?.id)
+        registry.activeStableID = nil
+        #expect(SettingsProTab.gatewayAccessAttention(in: registry, ingress: ingress) == nil)
         #expect(fixture.browser.presented.isEmpty)
     }
 

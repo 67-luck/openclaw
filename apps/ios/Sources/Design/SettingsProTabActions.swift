@@ -607,6 +607,17 @@ extension SettingsProTab {
         return nil
     }
 
+    static func gatewayAccessAttention(
+        in registry: GatewaySettingsStore.GatewayRegistry,
+        ingress: GatewayIngressController) -> GatewayIngressController.Attention?
+    {
+        guard let selected = registry.activeEntry,
+              let attention = ingress.attention,
+              GatewayStableIdentifier.matches(selected.stableID, attention.stableID)
+        else { return nil }
+        return attention
+    }
+
     static func gatewayAccessSessionTarget(
         in registry: GatewaySettingsStore.GatewayRegistry,
         ingress: GatewayIngressController) -> (stableID: String, origin: CloudflareAccessOrigin)?

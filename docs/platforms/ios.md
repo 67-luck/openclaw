@@ -141,8 +141,10 @@ If Access expires or is revoked, connections pause and Gateway settings asks you
 to sign in again. Your Gateway pairing and device keys remain saved. Signing out
 of Access removes the shared grant for that host and closes connections using
 that Access session. The sign-out control follows the focused saved Gateway,
-not the manual credential editor. Check **Access Host** above the button to see
-which shared session it will remove. Gateways using their own service headers stay connected.
+not the manual credential editor. **Access Host** above the button shows the full,
+selectable origin for the shared session it will remove. Access status and sign-in
+guidance also follow the focused profile, so another profile’s sign-out message
+does not appear beside its valid session. Gateways using their own service headers stay connected.
 The browser may retain your identity-provider session; this does not sign you
 out of that provider. **Forget Gateway** removes
 one profile and its active work. Other profiles on the same host keep their

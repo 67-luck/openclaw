@@ -936,7 +936,10 @@ extension SettingsProTab {
                     }
                 }
             }
-            if let attention = self.gatewayController.ingress.attention {
+            if !self.appModel.isLocalGatewayFixtureEnabled,
+               let attention = Self.gatewayAccessAttention(
+                   in: self.gatewayRegistry, ingress: self.gatewayController.ingress)
+            {
                 Text(attention.message)
                     .font(OpenClawType.footnote)
                     .foregroundStyle(.secondary)
@@ -959,7 +962,17 @@ extension SettingsProTab {
                let target = Self.gatewayAccessSessionTarget(
                    in: self.gatewayRegistry, ingress: self.gatewayController.ingress)
             {
-                SettingsDetailRow("Access Host", value: .verbatim(target.origin.url.absoluteString))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Access Host")
+                        .font(OpenClawType.body)
+                    Text(verbatim: target.origin.url.absoluteString)
+                        .font(OpenClawType.subhead)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(nil)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Button {
                     Task {
                         await self.gatewayController.ingress.signOut(
