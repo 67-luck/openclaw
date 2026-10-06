@@ -78,7 +78,7 @@ final class GatewayConnectionController {
     let serviceEndpointResolver: GatewayServiceEndpointResolver?
     private let forceReconnectReset: GatewayForceReconnectReset
     private let persistTLSFingerprint: GatewayTLSFingerprintPersist
-    private let autoConnectRetryDelay: @MainActor (Duration) async throws -> Void
+    let autoConnectRetryDelay: @MainActor (Duration) async throws -> Void
     let now: () -> Date
 
     init(
@@ -1003,22 +1003,9 @@ extension GatewayConnectionController {
                 else { return false }
                 refreshedConfig.ingressAuthorization = authorization
                 appModel.applyGatewayConnectConfig(refreshedConfig, expectedGeneration: generation)
-            } catch is CancellationError {
-                guard generation == appModel.gatewayConnectGeneration else { return false }
-                appModel.gatewayStatusText = "Offline"
-                return false
             } catch {
-                guard generation == appModel.gatewayConnectGeneration else { return false }
-                let problem = GatewayConnectionProblemMapper.map(error: error) ?? GatewayConnectionProblem(
-                    kind: .unknown,
-                    owner: .network,
-                    title: "Connection check failed",
-                    message: error.localizedDescription,
-                    actionLabel: "Retry",
-                    retryable: true,
-                    pauseReconnect: false)
-                appModel.failGatewayPreconnectVerification(
-                    problem, stableID: cfg.stableID, host: cfg.url.host, expectedGeneration: generation)
+                self.failGatewayIngressPreparation(
+                    error, stableID: cfg.stableID, url: cfg.url, expectedGeneration: generation)
                 return false
             }
         } else {
@@ -1198,25 +1185,6 @@ extension GatewayConnectionController {
         return true
     }
 
-    func manualGatewayRoute(
-        host: String,
-        port: Int,
-        useTLS: Bool,
-        stableID: String,
-        contextPath: String? = nil) -> (url: URL, tls: GatewayTLSParams?)?
-    {
-        let tls = self.resolveManualTLSParams(
-            stableID: stableID,
-            tlsEnabled: self.resolveManualUseTLS(host: host, useTLS: useTLS))
-        guard let url = self.buildGatewayURL(
-            host: host,
-            port: port,
-            useTLS: tls?.required == true,
-            contextPath: contextPath)
-        else { return nil }
-        return (url, tls)
-    }
-
     private func attemptAutoReconnectIfNeeded() {
         guard let appModel else { return }
         guard appModel.gatewayAutoReconnectEnabled else { return }
@@ -1378,59 +1346,12 @@ extension GatewayConnectionController {
                 self.scheduleOperatorFleetReconcile()
             } catch {
                 guard isCurrent(), !retriedAutomatically || canRetryAutomatically() else { return }
-                if error is CancellationError {
-                    // The ingress owner retains its sign-in guidance; cancellation is not a network failure.
-                    appModel.gatewayStatusText = "Offline"
-                    return
-                }
-                let problem = GatewayConnectionProblemMapper.map(error: error) ?? GatewayConnectionProblem(
-                    kind: .unknown,
-                    owner: .network,
-                    title: "Connection check failed",
-                    message: error.localizedDescription,
-                    actionLabel: "Retry",
-                    retryable: true,
-                    pauseReconnect: false)
-                appModel.failGatewayPreconnectVerification(
-                    problem, stableID: gatewayStableID, host: url.host, expectedGeneration: generation)
+                self.failGatewayIngressPreparation(
+                    error, stableID: gatewayStableID, url: url, expectedGeneration: generation)
             }
         }
         self.pendingAutoConnectTask = task
         return true
-    }
-
-    func prepareGatewayIngress(
-        route: GatewayIngressController.Route,
-        userInitiated: Bool,
-        admissionCheckpoint: UInt64,
-        canRetry: @MainActor () -> Bool) async throws -> GatewayIngressAuthorization?
-    {
-        // Active handoff and fleet reconciliation both need preflight before native loops
-        // exist. Retry inside their existing tasks with one policy and capped backoff.
-        var retrySeconds = 1
-        while true {
-            do {
-                return try await self.ingress.prepare(
-                    route: route,
-                    userInitiated: userInitiated,
-                    admissionCheckpoint: admissionCheckpoint)
-            } catch {
-                let recoverable: Bool = if let accessError = error as? CloudflareAccessError,
-                                           case .connectionFailed = accessError
-                {
-                    true
-                } else if let problem = GatewayConnectionProblemMapper.map(error: error) {
-                    problem.owner == .network && problem.retryable &&
-                        !problem.pauseReconnect && problem.kind != .websocketCancelled
-                } else {
-                    false
-                }
-                guard !userInitiated, recoverable, canRetry() else { throw error }
-                try await self.autoConnectRetryDelay(.seconds(retrySeconds))
-                guard canRetry() else { throw CancellationError() }
-                retrySeconds = min(retrySeconds * 2, 30)
-            }
-        }
     }
 
     private func probeTLSFingerprint(
