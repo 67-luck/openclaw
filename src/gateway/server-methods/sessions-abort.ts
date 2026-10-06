@@ -658,7 +658,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
                   ts: endedAt,
                   ok: true,
                   payload:
-                    runKind === "agent" && capturedRun.executionStarted === false
+                    runKind === "agent" && capturedRun?.executionStarted === false
                       ? {
                           ...buildAbortedAgentPayload(firstAbortedRunId, "rpc", {
                             agentId: targetAgentId,
