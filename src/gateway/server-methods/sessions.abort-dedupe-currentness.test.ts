@@ -151,6 +151,8 @@ it.each(["unchanged", "absent", "successor", "successor from absent"] as const)(
           runId,
           status: "timeout",
           stopReason: "rpc",
+          timeoutPhase: "queue",
+          providerStarted: false,
         });
       }
     } finally {
