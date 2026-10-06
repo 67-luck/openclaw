@@ -50,10 +50,10 @@ vi.mock("../../plugins/provider-public-artifacts.js", () => ({
   resolveProviderPolicySurface: () => undefined,
 }));
 vi.mock("../server-model-catalog-auth.js", () => ({ readPreparedCatalog: mocks.catalog }));
-// mock-isolation: Provider status uses catalog fixtures without opening unrelated credential stores.
+// mock-isolation: Keep catalog initialization outside this prepared-auth boundary test.
 vi.mock("../../agents/model-catalog-decisions.js", () => ({
   prepareModelCatalogDecisions: async () => ({
-    evaluateEntry: async () => ({}),
+    evaluateEntry: () => ({}),
     evaluateNative: () => ({}),
   }),
   resolveCatalogDecisionRuntime: () => ({ id: "openclaw" }),
