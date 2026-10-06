@@ -129,10 +129,13 @@ function createLeaseFixture() {
     actor,
     isDraining: () => false,
     isAvailable: () => true,
-    dispatch: async (payload, _signal, _scope, assertCurrent) => {
+    dispatch: async (request, _signal, _scope, assertCurrent) => {
       physical.beforeDispatch?.();
       assertCurrent?.();
-      physical.events.push(deserialize(payload));
+      if (request.type !== "execute") {
+        throw new Error("Lease fixture does not schedule maintenance units");
+      }
+      physical.events.push(deserialize(request.input));
     },
     release: async () => {
       physical.events.push("physical-close");
