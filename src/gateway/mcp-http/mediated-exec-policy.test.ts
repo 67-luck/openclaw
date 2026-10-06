@@ -8,7 +8,10 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const callGatewayTool = vi.hoisted(() =>
   vi.fn(async () => ({ id: "review-approval", decision: null })),
 );
-vi.mock("../../agents/tools/gateway.js", () => ({ callGatewayTool }));
+vi.mock("../../agents/tools/gateway.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/tools/gateway.js")>()),
+  callGatewayTool,
+}));
 
 describe("CLI mediated exec policy", () => {
   beforeEach(() => {

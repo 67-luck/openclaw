@@ -26,29 +26,35 @@ vi.mock("../runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../runtime.js")>()),
   defaultRuntime: mocks.defaultRuntime,
 }));
-vi.mock("../gateway/call.js", () => ({
+vi.mock("../gateway/call.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../gateway/call.js")>()),
   callGateway: mocks.callGateway,
   isGatewayClientRequestError: () => false,
   isGatewayCredentialsRequiredError: () => false,
   isImplicitLocalGatewayTarget: async () => true,
 }));
-vi.mock("../infra/gateway-lock.js", () => ({
+vi.mock("../infra/gateway-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/gateway-lock.js")>()),
   acquireGatewayLock: mocks.acquireGatewayLock,
 }));
-vi.mock("../skills/workshop/library.js", () => ({
+vi.mock("../skills/workshop/library.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../skills/workshop/library.js")>()),
   archiveWorkshopSkill: mocks.archiveWorkshopSkill,
   listWorkshopChanges: mocks.listWorkshopChanges,
   restoreWorkshopSkill: mocks.restoreWorkshopSkill,
   viewWorkshopSkill: vi.fn(),
 }));
-vi.mock("../skills/workshop/workshop-list.js", () => ({
+vi.mock("../skills/workshop/workshop-list.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../skills/workshop/workshop-list.js")>()),
   buildSkillsWorkshopListResult: vi.fn(),
 }));
-vi.mock("../config/config.js", () => ({
+vi.mock("../config/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config/config.js")>()),
   getRuntimeConfig: () => mocks.config,
   resetConfigRuntimeState: () => undefined,
 }));
-vi.mock("../agents/agent-scope.js", () => ({
+vi.mock("../agents/agent-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/agent-scope.js")>()),
   resolveConfiguredAgentId: (_config: unknown, agentId: string) => agentId,
   resolveAgentIdByWorkspacePath: () => undefined,
   resolveDefaultAgentId: () => "main",

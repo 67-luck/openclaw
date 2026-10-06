@@ -10,20 +10,26 @@ const mocks = vi.hoisted(() => ({
   appendAssistantMessageToSessionTranscript: vi.fn(async () => ({ ok: true })),
   enqueueSystemEvent: vi.fn(() => true),
 }));
-vi.mock("../../config/sessions/delivery-info.js", () => ({
+vi.mock("../../config/sessions/delivery-info.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/delivery-info.js")>()),
   extractDeliveryInfo: mocks.extractDeliveryInfo,
 }));
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../config/sessions/session-accessor.js")>()),
   loadSessionEntryReadOnly: mocks.loadSessionEntryReadOnly,
 }));
-vi.mock("../../channels/message/runtime.js", () => ({
+vi.mock("../../channels/message/runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../channels/message/runtime.js")>()),
   sendDurableMessageBatchCore: mocks.sendDurableMessageBatchCore,
 }));
-vi.mock("../../config/sessions/transcript.runtime.js", () => ({
+vi.mock("../../config/sessions/transcript.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/sessions/transcript.runtime.js")>()),
   appendAssistantMessageToSessionTranscript: mocks.appendAssistantMessageToSessionTranscript,
 }));
-vi.mock("../../infra/system-events.js", () => ({ enqueueSystemEvent: mocks.enqueueSystemEvent }));
+vi.mock("../../infra/system-events.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/system-events.js")>()),
+  enqueueSystemEvent: mocks.enqueueSystemEvent,
+}));
 
 describe("assertSkillReviewRunSucceeded", () => {
   it("does not fail a review whose tool calls were denied or errored", () => {

@@ -18,8 +18,14 @@ const library = vi.hoisted(() => ({
 }));
 const readSkillUsage = vi.hoisted(() => vi.fn());
 
-vi.mock("../../skills/workshop/library.js", () => library);
-vi.mock("../../skills/workshop/skill-usage.js", () => ({ readSkillUsage }));
+vi.mock("../../skills/workshop/library.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../skills/workshop/library.js")>()),
+  ...library,
+}));
+vi.mock("../../skills/workshop/skill-usage.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../skills/workshop/skill-usage.js")>()),
+  readSkillUsage,
+}));
 
 const config: OpenClawConfig = {
   agents: { entries: { ops: {} } },

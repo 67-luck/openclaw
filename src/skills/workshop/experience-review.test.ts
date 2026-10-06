@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => ({
   listWorkshopChanges: vi.fn(),
   postWorkshopChangeNotice: vi.fn(async () => {}),
 }));
-vi.mock("./review-run.js", () => ({ runSkillWorkshopReview: mocks.runSkillWorkshopReview }));
+vi.mock("./review-run.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./review-run.js")>()),
+  runSkillWorkshopReview: mocks.runSkillWorkshopReview,
+}));
 vi.mock("./library.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./library.js")>()),
   listWorkshopChanges: mocks.listWorkshopChanges,

@@ -14,7 +14,8 @@ import {
   runAgentHarnessAgentEndHook,
 } from "./lifecycle-hook-helpers.js";
 
-vi.mock("../../skills/workshop/experience-review-default.js", () => ({
+vi.mock("../../skills/workshop/experience-review-default.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../skills/workshop/experience-review-default.js")>()),
   scheduleSkillExperienceReview: vi.fn(),
   scheduleUnusedWorkshopSkillArchive: vi.fn(),
 }));
