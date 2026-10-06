@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolvePathViaExistingAncestorSync } from "../../infra/boundary-path.js";
 import { toErrorObject } from "../../infra/errors.js";
+import { withSqliteReadOnlyWorkerScope } from "../../infra/sqlite-readonly-worker.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../infra/sqlite-worker-contract.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import {
@@ -384,33 +385,35 @@ export async function listOAuthRefreshGenerationPeers(params: {
   profileId: string;
   generation: OAuthCredential;
 }): Promise<OAuthRefreshGenerationPeer[]> {
-  const peers: OAuthRefreshGenerationPeer[] = [];
-  for (const candidate of await listPeerCandidates(params)) {
-    const store = await loadCandidateAuthProfileStoreAsync(candidate);
-    if (!store) {
-      continue;
+  return withSqliteReadOnlyWorkerScope(async () => {
+    const peers: OAuthRefreshGenerationPeer[] = [];
+    for (const candidate of await listPeerCandidates(params)) {
+      const store = await loadCandidateAuthProfileStoreAsync(candidate);
+      if (!store) {
+        continue;
+      }
+      const credential = store?.profiles[params.profileId];
+      if (credential?.type !== "oauth") {
+        continue;
+      }
+      const removable = isRemovableOAuthRefreshPeer({
+        store,
+        profileId: params.profileId,
+        credential,
+        generation: params.generation,
+      });
+      if (!removable) {
+        continue;
+      }
+      peers.push({
+        candidate,
+        profileId: params.profileId,
+        credential,
+        generation: params.generation,
+      });
     }
-    const credential = store?.profiles[params.profileId];
-    if (credential?.type !== "oauth") {
-      continue;
-    }
-    const removable = isRemovableOAuthRefreshPeer({
-      store,
-      profileId: params.profileId,
-      credential,
-      generation: params.generation,
-    });
-    if (!removable) {
-      continue;
-    }
-    peers.push({
-      candidate,
-      profileId: params.profileId,
-      credential,
-      generation: params.generation,
-    });
-  }
-  return peers;
+    return peers;
+  });
 }
 
 /** Remove only captured generations; a reconnect during config cleanup survives. */
