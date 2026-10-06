@@ -9,6 +9,7 @@ import {
   validateSessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { raceWithTimeout } from "../../../packages/retry/src/index.js";
+import { assertRequiredWorkerSelection } from "../../config/required-worker-profile.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
@@ -54,6 +55,8 @@ import {
   prepareSessionRepositoryWorkspace,
   resolveSessionRepositoryCreation,
   validateSessionProjectPreparation,
+  prepareRequiredWorkerWorkspaceInput,
+  requiredWorkerWorkspaceReuseError,
 } from "./session-create-project.js";
 import {
   prepareSessionCreateFilesystemRoot,
@@ -99,6 +102,14 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const p = structuredClone(params);
+    const requiredProfile = context.getRuntimeConfig().cloudWorkers?.requiredProfile;
+    try {
+      assertRequiredWorkerSelection(context.getRuntimeConfig(), p);
+    } catch (error) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, formatErrorMessage(error)));
+      return;
+    }
+    const automaticEmptyWorkspace = prepareRequiredWorkerWorkspaceInput(p, requiredProfile);
     const requestAuthority = readGatewayRequestMutationAuthority(options);
     const getCurrentConfig = context.getRuntimeConfig;
     const requestingOperatorProfileId = client?.authenticatedUserProfile?.profileId;
@@ -152,6 +163,10 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     // Both uncommitted selections must remain authorized after awaited preparation.
     const commitGuard = () => {
       requestAuthority.assertCurrent();
+      if (getCurrentConfig().cloudWorkers?.requiredProfile !== requiredProfile) {
+        throw new Error("Required worker policy changed during session creation; retry.");
+      }
+      assertRequiredWorkerSelection(getCurrentConfig(), p);
       authority.commitGuard?.();
       sessionMutationAuthorization?.assertCurrent();
       assertPreparedSkillLibrarySelection(sessionCreation.skillLibrarySelections);
@@ -339,6 +354,14 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     const existingTargetEntry = explicitlyRequestedKey
       ? loadGatewaySessionEntryReadOnly(explicitlyRequestedKey, { agentId: titleAgentId }).entry
       : undefined;
+    const workspaceReuseError = requiredWorkerWorkspaceReuseError(
+      automaticEmptyWorkspace,
+      existingTargetEntry,
+    );
+    if (workspaceReuseError) {
+      respond(false, undefined, workspaceReuseError);
+      return;
+    }
     if (existingTargetEntry?.repositoryWorkspaceId && !repository) {
       respond(
         false,
@@ -455,7 +478,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           titleSource: buildDashboardSessionTitleSource({ message: message ?? "", attachments }),
           currentUserMessage: message,
           useRequestedTitleSelection: Boolean(requestedModel && !personalModelSelection),
-          runSetupScript: clientScopes.includes(ADMIN_SCOPE),
+          runSetupScript: !requiredProfile && clientScopes.includes(ADMIN_SCOPE),
           signal,
           commitGuard,
           onTitleError: (error) =>
@@ -596,6 +619,25 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       afterCreate: async (session) => {
         if (!authority.hasActive()) {
           return;
+        }
+        if (requiredProfile && !preparedWorktree?.pendingWorktree && !requestedProjectGitUrl) {
+          const prepare = context.workerPlacementDispatchService?.prepareRequiredSession;
+          if (!prepare) {
+            throw new Error(
+              "Required worker placement is unavailable; repair the configured profile and retry.",
+            );
+          }
+          await prepare(
+            {
+              sessionId: session.entry.sessionId,
+              sessionKey: session.key,
+              agentId: session.agentId,
+            },
+            commitGuard,
+            signal,
+            { waitForReady: false },
+          );
+          commitGuard();
         }
         if (!hasInitialTurn) {
           scheduleCreatedDashboardSessionTitle(session, cfg, context, p.titleSource);

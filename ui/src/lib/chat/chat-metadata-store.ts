@@ -169,7 +169,12 @@ function preparePublication(entry: ChatMetadataEntry): ChatMetadataPublication {
     isCurrent,
     publish: (result) => {
       // Startup responses may include a catalog; models.list owns its UI publication.
-      const metadata = { commands: result.commands };
+      const metadata: ChatMetadataResult = {
+        commands: result.commands,
+        ...(result.requiredWorkerInferenceProfileId !== undefined
+          ? { requiredWorkerInferenceProfileId: result.requiredWorkerInferenceProfileId }
+          : {}),
+      };
       if (isCurrent()) {
         entry.result = metadata;
         notifyChatMetadataListeners(entry, {

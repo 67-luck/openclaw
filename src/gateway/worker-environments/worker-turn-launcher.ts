@@ -35,6 +35,7 @@ import {
 } from "./tunnel-contract.js";
 import {
   claimWorkerTurn,
+  createRequiredWorkerTurnAdmission,
   executeLocalTurn,
   releaseClaimIfOwned,
   requireActivePlacement,
@@ -67,6 +68,7 @@ type RedispatchableWorkerPlacement = Extract<
 >;
 
 type WorkerTurnLauncherOptions = {
+  prepareRequiredSession?: SessionPlacementAdmissionProvider["prepareRequiredSession"];
   environments: WorkerTurnEnvironmentService;
   placements: WorkerSessionPlacementStore;
   /** Read-only resolution; a cancelled turn may stop waiting for these facts. */
@@ -94,6 +96,7 @@ type WorkerTurnLauncherOptions = {
 
 export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLauncherOptions) {
   const activeWorkerTurns = new Map<string, ActiveWorkerTurn>();
+  const requiredAdmission = createRequiredWorkerTurnAdmission(options);
   const provider: SessionPlacementAdmissionProvider & {
     prepareSandbox(params: {
       agentId: string;
@@ -103,6 +106,8 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       workspaceDir: string;
     }): Promise<PreparedSessionPlacementSandbox>;
   } = {
+    prepareRequiredSession: options.prepareRequiredSession,
+    usesWorkerInference: requiredAdmission.usesWorkerInference,
     resolveRuntimeOverride: (identity) =>
       resolveWorkerPlacementRuntimeOverride(options.placements, identity),
     assertCompactionSuccessorAllowed({ currentTarget }) {
@@ -184,6 +189,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
       runLocal: () => Promise<T>,
       assertCurrent?: () => void,
     ) {
+      requiredAdmission.assertLocalAllowed();
       return await executeLocalTurn({
         claim,
         placements: options.placements,
@@ -193,6 +199,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
     },
     async executeTurn(claim, inputTurn, runLocal, onAdmitted, assertRunCurrent) {
       const restartSignal = getGatewayRestartDrainSignal();
+      await requiredAdmission.prepare(claim, inputTurn, assertRunCurrent);
       const runLocalTurn = () =>
         executeLocalTurn({
           claim,
@@ -248,6 +255,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
         (assertSources) => {
           inputTurn.abortSignal?.throwIfAborted();
           assertSources();
+          requiredAdmission.assertCurrent(claim);
         },
       );
       // An admission wait ends without authority; retry from the durable placement.

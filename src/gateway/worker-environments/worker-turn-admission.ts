@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { createSessionPlacementSettlementClosedAbortError } from "../../agents/run-termination.js";
 import type {
   SessionPlacementTurnParams,
+  SessionPlacementAdmissionProvider,
   LocalTurnPlacementClaim,
 } from "../../agents/session-placement-admission.js";
 import { withSessionPlacementForcedTerminalSettlement } from "../../agents/session-placement-forced-terminal-settlement.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
@@ -14,6 +16,8 @@ import { createAbortError, racePromiseWithAbortSignal } from "../../infra/abort-
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { parseCronRunScopeSuffix } from "../../sessions/session-key-utils.js";
 import { SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS } from "../../sessions/session-lifecycle-admission.js";
+import { workerInferencePlacement } from "./inference-placement.js";
+import { isCurrentActiveWorkerEnvironment } from "./placement-dispatch-failure.js";
 import { placementTurnOwner, projectWorkerSessionTurnClaim } from "./placement-record.js";
 import type {
   WorkerSessionPlacementRecord,
@@ -23,6 +27,7 @@ import type {
 import { matchesWorkerPlacementTarget } from "./placement-target.js";
 import { ActiveTurnClaimError } from "./placement-turn-claims.js";
 import type { WorkerRuntimeRefreshInFlight } from "./provider-runtime-refresh.js";
+import type { WorkerEnvironmentService } from "./service.js";
 import { captureWorkerTurnTranscriptSource } from "./worker-turn-transcript-target.js";
 import {
   projectWorkspaceResultConflict,
@@ -32,6 +37,72 @@ import {
 } from "./workspace-conflicts.js";
 
 type ActiveWorkerPlacement = Extract<WorkerSessionPlacementRecord, { state: "active" }>;
+
+/** Required policy uses current placement facts at the existing turn-admission boundary. */
+export function createRequiredWorkerTurnAdmission(options: {
+  placements: WorkerSessionPlacementStore;
+  environments: Pick<WorkerEnvironmentService, "get">;
+  prepareRequiredSession?: SessionPlacementAdmissionProvider["prepareRequiredSession"];
+}) {
+  return {
+    usesWorkerInference: (identity: Omit<LocalTurnPlacementClaim, "runId">) => {
+      const placement = options.placements.get(identity.sessionId);
+      const environment = placement?.environmentId
+        ? options.environments.get(placement.environmentId)
+        : undefined;
+      return Boolean(
+        placement?.state === "active" &&
+        placement.executionMode === "worker-turn" &&
+        placement.agentId === identity.agentId &&
+        placement.sessionKey === identity.sessionKey &&
+        environment &&
+        isCurrentActiveWorkerEnvironment(placement, environment) &&
+        workerInferencePlacement(environment) === "worker",
+      );
+    },
+    assertLocalAllowed() {
+      if (getRuntimeConfig().cloudWorkers?.requiredProfile) {
+        throw new Error("Local execution is disabled by the required worker profile policy.");
+      }
+    },
+    async prepare(
+      claim: LocalTurnPlacementClaim,
+      inputTurn: SessionPlacementTurnParams,
+      assertRunCurrent?: () => void,
+    ) {
+      if (
+        getRuntimeConfig().cloudWorkers?.requiredProfile ||
+        inputTurn.config?.cloudWorkers?.requiredProfile
+      ) {
+        if (!options.prepareRequiredSession) {
+          throw new Error(
+            "Required worker placement is unavailable; repair the configured profile and retry.",
+          );
+        }
+        await options.prepareRequiredSession(claim, assertRunCurrent, inputTurn.abortSignal);
+      }
+    },
+    assertCurrent(claim: LocalTurnPlacementClaim) {
+      const required = getRuntimeConfig().cloudWorkers?.requiredProfile;
+      if (required) {
+        const live = options.placements.get(claim.sessionId);
+        const environment = live?.environmentId
+          ? options.environments.get(live.environmentId)
+          : undefined;
+        if (
+          !live ||
+          live.state === "local" ||
+          live.executionMode !== "worker-turn" ||
+          (environment && environment.profileId !== required)
+        ) {
+          throw new Error(
+            "The live placement no longer satisfies the required worker profile policy.",
+          );
+        }
+      }
+    },
+  };
+}
 
 /** Wait without a placement claim: a claim would fail the refresh's authority check. */
 export async function waitForWorkerRuntimeRefresh(params: {
