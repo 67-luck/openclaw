@@ -10,17 +10,15 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import * as backoff from "../../infra/backoff.js";
 import * as gitExec from "../../infra/git-exec.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import * as commandRunner from "../../process/exec-runner.js";
 import * as commandExec from "../../process/exec.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import type { DB } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
-  runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import * as stateLease from "../../state/openclaw-state-lease.js";
+import { captureWorktreeAllocationHeartbeat } from "./allocation.test-support.js";
 import { useInProcessWorktreeCapacityTransport } from "./capacity.test-support.js";
 import { addManagedWorktree } from "./checkout.js";
 import { detectWorktreeFilesystemBackend } from "./filesystem-backend.js";
@@ -622,6 +620,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
   });
 
   it("fences revoked allocation authority when snapshot and native fallback both fail", async () => {
+    const revokeAllocation = captureWorktreeAllocationHeartbeat();
     vi.mocked(backend.cloneTemplate).mockRejectedValueOnce(new Error("snapshot unavailable"));
     let failedDestination: string | undefined;
     vi.spyOn(commandExec, "runCommandWithTimeout").mockImplementation(async (argv, options) => {
@@ -670,20 +669,7 @@ describe("ManagedWorktreeService filesystem acceleration", () => {
       expect(failedDestination).toBeDefined();
       expect(await git(repo, "rev-parse", branch)).toBe(originalHead);
       await expect(fs.access(failedDestination!)).rejects.toMatchObject({ code: "ENOENT" });
-      runOpenClawStateWriteTransaction(
-        ({ db }) => {
-          const changed = executeSqliteQuerySync(
-            db,
-            getNodeSqliteKysely<Pick<DB, "state_leases">>(db)
-              .updateTable("state_leases")
-              .set({ owner: "successor" })
-              .where("scope", "=", "core:managed-worktrees:create")
-              .where("lease_key", "=", "capacity"),
-          );
-          expect(changed.numAffectedRows).toBe(1n);
-        },
-        { env },
-      );
+      await revokeAllocation();
       release.resolve();
       await holder;
       const error = await pending;
