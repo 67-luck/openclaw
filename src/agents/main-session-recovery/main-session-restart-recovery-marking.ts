@@ -35,8 +35,8 @@ import {
   hasCompletedMainSessionRecoveryOutcome,
   hasUnownedTerminalMainSessionRecoveryFence,
   isMainRestartRecoveryTerminalOnly,
-} from "./main-session-recovery-outcome.js";
-import { transitionMainSessionRecovery } from "./main-session-recovery-state.js";
+  transitionMainSessionRecovery,
+} from "./main-session-recovery-state.js";
 import type { MainSessionRecoveryStoreTarget } from "./main-session-recovery-store.js";
 import {
   recordStartupRecoveryStoreResult,

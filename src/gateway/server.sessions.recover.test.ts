@@ -489,6 +489,22 @@ test.each(["session-id", "lifecycle-revision"] as const)(
   },
 );
 
+test.each([undefined, { cycleId: "unfinished-cycle", revision: 1, chargedAttempts: 0 }])(
+  "sessions.recover requires a tombstone before rollover (%j)",
+  async (mainRestartRecovery) => {
+    const fixture = await recoveryFixture("not-tombstoned", { mainRestartRecovery });
+    const before = fixture.source();
+    await expect(fixture.recover()).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "INVALID_REQUEST",
+        message: "Session recovery requires a restart-tombstoned session.",
+      },
+    });
+    expect(fixture.source()).toEqual(before);
+  },
+);
+
 test("sessions.recover rolls over one tombstone and returns its continuation outcome", async () => {
   const { storePath } = await createSessionStoreDir();
   testState.sessionConfig = { dmScope: "main", scope: "per-sender" };

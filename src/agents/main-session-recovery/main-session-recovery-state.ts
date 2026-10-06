@@ -9,6 +9,7 @@ import type {
 import {
   hasMainSessionRecoveryClaim,
   isMainRestartRecoveryCandidate,
+  hasRestartRecoveryTerminalRun,
   isRetryableUnadoptedChatClaim,
   recordLifecycleFence,
 } from "../../config/sessions/restart-recovery-state.js";
@@ -18,11 +19,6 @@ import {
   buildMainSessionRecoverySettlementPatch,
   removeMainSessionRecoveryForegroundClaim,
 } from "./main-session-recovery-clear.js";
-import {
-  hasCompletedMainSessionRecoveryOutcome,
-  hasUnownedTerminalMainSessionRecoveryFence,
-  isMainRestartRecoveryTerminalOnly,
-} from "./main-session-recovery-outcome.js";
 import type {
   MainSessionRecoveryCommand,
   MainSessionRecoveryConflict,
@@ -149,122 +145,109 @@ export function isMainSessionRecoveryReconciliationCandidate(entry: SessionEntry
   );
 }
 
-type MainRestartRecoveryRolloverEligibility =
-  | { eligible: true }
-  | {
-      eligible: false;
-      reason: "already_recovered";
-      recoveredSessionId?: string;
-      recoveredSessionKey?: string;
-    }
-  | { eligible: false; reason: "not_tombstoned" };
-
-export function inspectMainRestartRecoveryRolloverEligibility(
-  entry: SessionEntry,
-): MainRestartRecoveryRolloverEligibility {
-  if (!entry.mainRestartRecovery?.tombstone) {
-    return { eligible: false, reason: "not_tombstoned" };
-  }
-  const recoveredSessionId = entry.mainRestartRecovery.tombstone.recoveredSessionId;
-  const recoveredSessionKey = entry.mainRestartRecovery.tombstone.recoveredSessionKey;
-  if (recoveredSessionId || recoveredSessionKey) {
-    return {
-      eligible: false,
-      reason: "already_recovered",
-      ...(recoveredSessionId ? { recoveredSessionId } : {}),
-      ...(recoveredSessionKey ? { recoveredSessionKey } : {}),
-    };
-  }
-  return { eligible: true };
+/** A terminal outcome plus a bare runtime fence cannot establish unfinished work. */
+export function hasUnownedTerminalMainSessionRecoveryFence(entry: SessionEntry): boolean {
+  return (
+    isTerminalSessionStatus(entry.status) &&
+    entry.status !== "interrupted" &&
+    !entry.mainRestartRecovery &&
+    !entry.lifecycleRunId &&
+    !entry.activeWriterRunId &&
+    !entry.restartRecoveryDeliveryRunId &&
+    !entry.restartRecoveryHarnessCompletion &&
+    !entry.pendingFinalDelivery &&
+    entry.restartRecoveryRuns?.some((run) => !hasRestartRecoveryTerminalRun(entry, run.runId)) ===
+      true
+  );
 }
 
-function inspectMainSessionRecovery(params: {
-  entry: SessionEntry;
-  lifecycleGeneration: string;
-  sessionKey: string;
-}): MainSessionRecoveryView {
-  const { entry } = params;
+/** A later foreground outcome cannot settle a different run's recovery fence. */
+export function hasCompletedMainSessionRecoveryOutcome(entry: SessionEntry): boolean {
+  return (
+    isTerminalSessionStatus(entry.status) &&
+    entry.status !== "interrupted" &&
+    !isRetryableUnadoptedChatClaim(entry) &&
+    !entry.pendingFinalDelivery &&
+    (entry.restartRecoveryRuns ?? []).every((run) =>
+      hasRestartRecoveryTerminalRun(entry, run.runId),
+    )
+  );
+}
+
+// Retire only proven terminal fences without remaining execution or delivery
+// custody; treating unfinished fences as residue loses crash recovery (#118873).
+export function isMainRestartRecoveryTerminalOnly(entry: SessionEntry): boolean {
   const state = entry.mainRestartRecovery;
+  if (state?.tombstone || state?.reservation || state?.foregroundClaims) {
+    return false;
+  }
+  if (entry.restartRecoveryDeliveryRunId !== undefined || entry.pendingFinalDelivery) {
+    return false;
+  }
+  const runs = entry.restartRecoveryRuns;
+  return (
+    runs !== undefined &&
+    runs.length > 0 &&
+    runs.every((run) => hasRestartRecoveryTerminalRun(entry, run.runId))
+  );
+}
+
+function inspectMainSessionRecovery(
+  entry: SessionEntry,
+  command: Extract<MainSessionRecoveryCommand, { kind: "inspect" | "observe" }>,
+): MainSessionRecoveryView {
+  const state = entry.mainRestartRecovery;
+  const interrupted = entry.abortedLastRun === true;
+  const candidate = isMainRestartRecoveryCandidate(entry, command.sessionKey);
+  if (command.kind === "inspect") {
+    // Standalone admission cannot adopt a cycle or rely on its own process
+    // generation to retire another owner's fences. Only observation may settle them.
+    const unowned = candidate && hasUnownedTerminalMainSessionRecoveryFence(entry);
+    const awaitingCycle = candidate && interrupted && !state && hasMainSessionRecoveryClaim(entry);
+    const retainedOwner =
+      !interrupted &&
+      state &&
+      entry.restartRecoveryRuns?.length &&
+      !isMainRestartRecoveryTerminalOnly(entry);
+    if (unowned || awaitingCycle || retainedOwner) {
+      return { status: "blocked" };
+    }
+  }
   if (state?.tombstone) {
     return { status: "tombstoned" };
   }
-  if (state && hasCurrentForegroundClaim(state, params.lifecycleGeneration)) {
-    return { status: "blocked" };
-  }
   if (
-    entry.abortedLastRun !== true &&
     state &&
-    entry.restartRecoveryRuns?.some((run) => run.lifecycleGeneration === params.lifecycleGeneration)
+    (hasCurrentForegroundClaim(state, command.lifecycleGeneration) ||
+      (!interrupted &&
+        entry.restartRecoveryRuns?.some(
+          (run) => run.lifecycleGeneration === command.lifecycleGeneration,
+        )))
   ) {
-    // Admission clears the interruption flag before the recovery run settles.
-    // Keep ordinary work fenced until that run clears its lifecycle metadata.
+    // An admitted recovery clears the interruption marker before settlement.
     return { status: "blocked" };
   }
-  if (
-    entry.abortedLastRun !== true ||
-    !isMainRestartRecoveryCandidate(entry, params.sessionKey) ||
-    !state
-  ) {
+  if (!interrupted || !candidate || !state) {
     return { status: "inactive" };
+  }
+  if (state.reservation) {
+    return { status: "blocked" };
   }
   const observation = {
     sessionId: entry.sessionId,
     cycleId: state.cycleId,
     revision: state.revision,
   };
-  if (state.reservation) {
-    return { status: "blocked" };
-  }
   const retryCount = getMainSessionRecoveryRetryCount(state);
-  if (retryCount >= MAX_RECOVERY_RETRIES) {
-    return {
-      status: "exhausted",
-      observation,
-      reason:
-        `main-session restart recovery blocked after ${retryCount} automatic attempts without a started runtime turn; ` +
-        MAIN_RESTART_RECOVERY_REMEDIATION_HINT,
-    };
-  }
-  return {
-    status: "recoverable",
-    observation,
-    nextAttempt: state.chargedAttempts + 1,
-  };
-}
-
-function inspectMainSessionRecoveryForAdmission(params: {
-  entry: SessionEntry;
-  lifecycleGeneration: string;
-  sessionKey: string;
-}): MainSessionRecoveryView {
-  if (
-    isMainRestartRecoveryCandidate(params.entry, params.sessionKey) &&
-    hasUnownedTerminalMainSessionRecoveryFence(params.entry)
-  ) {
-    return { status: "blocked" };
-  }
-  if (
-    params.entry.abortedLastRun !== true &&
-    params.entry.mainRestartRecovery &&
-    params.entry.restartRecoveryRuns?.length &&
-    !isMainRestartRecoveryTerminalOnly(params.entry)
-  ) {
-    // Standalone callers may use another process generation. An admitted
-    // recovery fence remains authoritative until Gateway lifecycle settlement —
-    // but a terminal-only aggregate owns nothing and must not wedge standalone
-    // admission forever (#118873); the Gateway scan retires it durably.
-    return { status: "blocked" };
-  }
-  if (
-    hasMainSessionRecoveryClaim(params.entry) &&
-    params.entry.abortedLastRun === true &&
-    isMainRestartRecoveryCandidate(params.entry, params.sessionKey) &&
-    !params.entry.mainRestartRecovery
-  ) {
-    // Only the Gateway owner may assign a cycle to an interrupted admission claim.
-    return { status: "blocked" };
-  }
-  return inspectMainSessionRecovery(params);
+  return retryCount >= MAX_RECOVERY_RETRIES
+    ? {
+        status: "exhausted",
+        observation,
+        reason:
+          `main-session restart recovery blocked after ${retryCount} automatic attempts without a started runtime turn; ` +
+          MAIN_RESTART_RECOVERY_REMEDIATION_HINT,
+      }
+    : { status: "recoverable", observation, nextAttempt: state.chargedAttempts + 1 };
 }
 
 export function transitionMainSessionRecovery(
@@ -339,11 +322,7 @@ export function transitionMainSessionRecovery(
     case "inspect": {
       return {
         kind: "observed",
-        view: inspectMainSessionRecoveryForAdmission({
-          entry,
-          lifecycleGeneration: command.lifecycleGeneration,
-          sessionKey: command.sessionKey,
-        }),
+        view: inspectMainSessionRecovery(entry, command),
       };
     }
     case "observe": {
@@ -392,11 +371,7 @@ export function transitionMainSessionRecovery(
       }
       return {
         kind: "observed",
-        view: inspectMainSessionRecovery({
-          entry,
-          lifecycleGeneration: command.lifecycleGeneration,
-          sessionKey: command.sessionKey,
-        }),
+        view: inspectMainSessionRecovery(entry, command),
       };
     }
     case "prepare_attempt": {
@@ -649,46 +624,41 @@ export function transitionMainSessionRecovery(
         },
       };
     }
-    case "bind_foreground_run": {
-      const state = entry.mainRestartRecovery;
-      const claims = state?.foregroundClaims;
-      if (!state || !claims || !ownsForegroundClaim(state, command.claim)) {
-        return { kind: "no_change" };
-      }
-      recordLifecycleFence(entry, {
-        lifecycleGeneration: command.claim.lifecycleGeneration,
-        runId: command.runId,
-      });
-      updateRecoveryState(entry, state, {
-        foregroundClaims: {
-          ...claims,
-          runIdsByClaimId: { ...claims.runIdsByClaimId, [command.claim.claimId]: command.runId },
-        },
-      });
-      return { kind: "applied" };
-    }
-    case "validate_foreground": {
-      const state = entry.mainRestartRecovery;
-      return entry.sessionId === command.claim.sessionId &&
-        ownsForegroundClaim(state, command.claim)
-        ? { kind: "foreground_validated" }
-        : { kind: "no_change" };
-    }
+    case "bind_foreground_run":
+    case "validate_foreground":
     case "release_foreground": {
       const state = entry.mainRestartRecovery;
       const claims = state?.foregroundClaims;
       if (!state || !claims || !ownsForegroundClaim(state, command.claim)) {
         return { kind: "no_change" };
       }
-      const foregroundClaims = removeMainSessionRecoveryForegroundClaim(
-        claims,
-        command.claim.claimId,
-      );
-      if (!foregroundClaims && entry.abortedLastRun !== true) {
-        Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));
-        return { kind: "applied" };
+      if (command.kind === "validate_foreground") {
+        return entry.sessionId === command.claim.sessionId
+          ? { kind: "foreground_validated" }
+          : { kind: "no_change" };
       }
-      updateRecoveryState(entry, state, { foregroundClaims });
+      if (command.kind === "release_foreground") {
+        const foregroundClaims = removeMainSessionRecoveryForegroundClaim(
+          claims,
+          command.claim.claimId,
+        );
+        if (!foregroundClaims && entry.abortedLastRun !== true) {
+          Object.assign(entry, buildMainSessionRecoveryClearPatch(entry));
+        } else {
+          updateRecoveryState(entry, state, { foregroundClaims });
+        }
+      } else {
+        recordLifecycleFence(entry, {
+          lifecycleGeneration: command.claim.lifecycleGeneration,
+          runId: command.runId,
+        });
+        updateRecoveryState(entry, state, {
+          foregroundClaims: {
+            ...claims,
+            runIdsByClaimId: { ...claims.runIdsByClaimId, [command.claim.claimId]: command.runId },
+          },
+        });
+      }
       return { kind: "applied" };
     }
     case "tombstone": {

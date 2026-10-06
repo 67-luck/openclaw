@@ -1,10 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import { legacyFailedRecoveryEntry } from "./main-session-recovery-legacy.test-support.js";
-import {
-  inspectMainRestartRecoveryRolloverEligibility,
-  transitionMainSessionRecovery,
-} from "./main-session-recovery-state.js";
+import { transitionMainSessionRecovery } from "./main-session-recovery-state.js";
 
 const observe = (entry: SessionEntry) =>
   transitionMainSessionRecovery(entry, {
@@ -26,7 +23,6 @@ describe("terminal legacy recovery fence adoption", () => {
         chargedAttempts: 0,
         tombstone: { reason: expect.stringContaining("unmatched recovery fence") },
       });
-      expect(inspectMainRestartRecoveryRolloverEligibility(entry)).toEqual({ eligible: true });
       const retained = structuredClone(entry);
       expect(observe(entry)).toEqual({ kind: "observed", view: { status: "tombstoned" } });
       expect(entry).toEqual(retained);

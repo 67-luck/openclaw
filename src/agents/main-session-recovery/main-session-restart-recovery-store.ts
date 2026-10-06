@@ -25,8 +25,10 @@ import { resolveExecDefaults } from "../exec-defaults.js";
 import type { MainSessionRecoveryAdmission } from "./main-session-recovery-admission.js";
 import { buildMainSessionRecoverySettlementPatch } from "./main-session-recovery-clear.js";
 import { createCurrentProcessOwnerLookup } from "./main-session-recovery-live-owners.js";
-import { isMainRestartRecoveryTerminalOnly } from "./main-session-recovery-outcome.js";
-import { getMainSessionRecoveryRetryCount } from "./main-session-recovery-state.js";
+import {
+  getMainSessionRecoveryRetryCount,
+  isMainRestartRecoveryTerminalOnly,
+} from "./main-session-recovery-state.js";
 import {
   commitMainSessionRecovery,
   type MainSessionRecoveryStoreTarget,

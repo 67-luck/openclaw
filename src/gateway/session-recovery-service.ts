@@ -9,10 +9,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { isEmbeddedAgentRunActive } from "../agents/embedded-agent.js";
-import {
-  inspectMainRestartRecoveryRolloverEligibility,
-  isMainSessionRecoveryReconciliationCandidate,
-} from "../agents/main-session-recovery/main-session-recovery-state.js";
+import { isMainSessionRecoveryReconciliationCandidate } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import { markOrphanedMainSessionForRecovery } from "../agents/main-session-recovery/main-session-restart-recovery-marking.js";
 import { createAgentRunDirectAbortError } from "../agents/run-termination.js";
 import { recoverSessionEntryFromRestartTombstone } from "../config/sessions/session-accessor.js";
@@ -320,13 +317,9 @@ export async function recoverGatewaySession(params: {
       continuation,
     };
   }
-  const initialEligibility = inspectMainRestartRecoveryRolloverEligibility(initialSource);
-  if (!initialEligibility.eligible && initialEligibility.reason !== "already_recovered") {
-    return invalidSessionRequest("Session recovery requires a restart-tombstoned session.");
-  }
   const recovery = initialSource.mainRestartRecovery;
   if (!recovery?.tombstone) {
-    return invalidSessionRequest("Session is not recoverable.");
+    return invalidSessionRequest("Session recovery requires a restart-tombstoned session.");
   }
   const generatedSuccessorKey = buildDashboardSessionKey(sourceTarget.agentId);
   const successorTarget = await resolveGatewaySessionStoreTargetInWorker({

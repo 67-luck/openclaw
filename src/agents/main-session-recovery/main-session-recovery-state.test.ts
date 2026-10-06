@@ -5,10 +5,7 @@ import type {
   MainRestartRecoveryState,
 } from "../../config/sessions.js";
 import { projectMainSessionRecoveryLifecycle } from "./main-session-recovery-lifecycle.js";
-import {
-  inspectMainRestartRecoveryRolloverEligibility,
-  transitionMainSessionRecovery,
-} from "./main-session-recovery-state.js";
+import { transitionMainSessionRecovery } from "./main-session-recovery-state.js";
 
 const sessionKey = "agent:main:main";
 function recoveryState(
@@ -106,47 +103,6 @@ describe("main session recovery state", () => {
       }).kind,
     ).toBe("reserved");
     expect(entry.status).toBe("interrupted");
-  });
-
-  it("allows rollover until the tombstone records its successor", () => {
-    expect(
-      inspectMainRestartRecoveryRolloverEligibility(
-        interruptedEntry({
-          mainRestartRecovery: recoveryState({ tombstone: { reason: "exhausted" } }),
-        }),
-      ),
-    ).toEqual({ eligible: true });
-    expect(
-      inspectMainRestartRecoveryRolloverEligibility(
-        interruptedEntry({
-          archivedAt: 101,
-          mainRestartRecovery: recoveryState({ tombstone: { reason: "exhausted" } }),
-        }),
-      ),
-    ).toEqual({ eligible: true });
-    expect(
-      inspectMainRestartRecoveryRolloverEligibility(
-        interruptedEntry({
-          archivedAt: 101,
-          mainRestartRecovery: recoveryState({
-            tombstone: {
-              reason: "exhausted",
-              recoveredSessionId: "recovered-id",
-              recoveredSessionKey: "agent:main:dashboard:recovered",
-            },
-          }),
-        }),
-      ),
-    ).toEqual({
-      eligible: false,
-      reason: "already_recovered",
-      recoveredSessionId: "recovered-id",
-      recoveredSessionKey: "agent:main:dashboard:recovered",
-    });
-    expect(inspectMainRestartRecoveryRolloverEligibility(interruptedEntry())).toEqual({
-      eligible: false,
-      reason: "not_tombstoned",
-    });
   });
 
   it("inspects a live reservation without adopting or releasing it", () => {
