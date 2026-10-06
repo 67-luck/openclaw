@@ -247,10 +247,12 @@ permission, retention, or update migration is required.
 
 Restart-safe chat admission consumes lifecycle timestamps from its retained session
 reader, including transcript-header fallback, instead of rereading SQLite on the
-Gateway thread. Terminal claim settlement uses the existing agent entry-patch
-worker: admission retains the physical store through terminal settlement, including
-the acknowledged writer identity when a new Goal creates its store. The synchronous
-transaction compares authoritative claim rows before committing. Accepted
+Gateway thread. Reply claim adoption, hook checkpoints, retirement, and cleanup
+reuse the physical identity and resolved key from their existing logical reader.
+Failure settlement retains the original chat target, including the acknowledged
+writer identity when a new Goal creates its store. These transitions use the
+existing agent entry-patch worker, whose synchronous transaction compares
+authoritative claim rows before committing. Accepted
 settlement remains joined during shutdown after caller cancellation. Input and
 recovery claims still commit before acknowledgment.
 Acknowledged entry publications carry complete membership and participant facts
