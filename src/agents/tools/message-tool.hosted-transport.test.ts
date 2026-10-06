@@ -345,6 +345,7 @@ it("retains scheduled invocation config through bound Gateway dispatch after pre
         sessionId,
         sessionKey,
         jobId,
+        deliveryAttemptFence: { beforeAttempt: vi.fn(async () => {}), assertCurrent: vi.fn() },
         toolsAllow: ["message"],
         scheduledToolPolicy: policy,
         executionIdentity: {

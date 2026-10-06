@@ -43,6 +43,7 @@ import { isSystemdUnitActive, uninstallLegacySystemdUnits } from "../daemon/syst
 import { NON_DEFAULT_INSTALL_SERVICE_SKIP_REASON } from "../infra/gateway-supervision.js";
 import { parseTcpPortFromArgs } from "../infra/tcp-port.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { sleep } from "../utils/sleep.js";
 import { resolveGatewayDaemonRuntime } from "./daemon-runtime.js";
 import {
   preserveGatewayAuthTokenForService,
@@ -105,19 +106,13 @@ async function confirmLegacyLaunchdServiceUnloaded(serviceTarget: string): Promi
     if (delayMs <= 0) {
       break;
     }
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, delayMs);
-    });
+    await sleep(delayMs);
   }
   return false;
 }
 
 function extractDetailPath(detail: string, prefix: string): string | null {
-  if (!detail.startsWith(prefix)) {
-    return null;
-  }
-  const value = detail.slice(prefix.length).trim();
-  return value.length > 0 ? value : null;
+  return detail.startsWith(prefix) ? detail.slice(prefix.length).trim() || null : null;
 }
 
 async function filterInactiveExtraGatewayServices(
@@ -284,12 +279,7 @@ export async function maybeRepairGatewayServiceConfig(
   const serviceRepairDeferred = isServiceRepairDeferred(serviceRepairPolicy);
 
   const service = resolveGatewayService();
-  let command: Awaited<ReturnType<typeof service.readCommand>> | null;
-  try {
-    command = await service.readCommand(process.env);
-  } catch {
-    command = null;
-  }
+  const command = await service.readCommand(process.env).catch(() => null);
   if (!command) {
     const audit = await auditGatewayServiceConfig({
       env: process.env,

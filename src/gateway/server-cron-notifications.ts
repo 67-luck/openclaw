@@ -201,6 +201,7 @@ async function postCronWebhookStrict(params: {
   signal?: AbortSignal;
   deadlineAtMs?: number;
   onDeliveryState?: (outcome: CronWebhookDeliveryOutcome) => void;
+  assertCurrent?: () => void;
   onResponse?: (status: number) => void;
 }): Promise<void> {
   const remainingMs =
@@ -217,7 +218,10 @@ async function postCronWebhookStrict(params: {
     url: params.webhookUrl,
     timeoutMs: requestTimeoutMs,
     policy: params.ssrfPolicy,
-    beforeRequest: () => params.onDeliveryState?.({ status: "unknown" }),
+    beforeRequest: () => {
+      params.assertCurrent?.();
+      params.onDeliveryState?.({ status: "unknown" });
+    },
     onResponse: params.onResponse,
     ...(params.signal ? { signal: params.signal } : {}),
     init: {
@@ -295,6 +299,7 @@ export async function sendGatewayCronWebhook(params: {
   webhookToken?: unknown;
   ssrfPolicy?: SsrFPolicy;
   onDeliveryState?: (outcome: CronWebhookDeliveryOutcome) => void;
+  assertCurrent?: () => void;
 }): Promise<CronWebhookDeliveryOutcome> {
   let outcome: CronWebhookDeliveryOutcome = { status: "not-delivered" };
   const publish = (next: CronWebhookDeliveryOutcome) => {
@@ -324,6 +329,7 @@ export async function sendGatewayCronWebhook(params: {
             signal: params.abortSignal,
             deadlineAtMs: params.deadlineAtMs,
             onDeliveryState: publish,
+            assertCurrent: params.assertCurrent,
             onResponse: () => {
               receivedResponse = true;
             },

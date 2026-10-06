@@ -95,6 +95,7 @@ export async function runCronTurn(home: string, options: RunCronTurnOptions = {}
       ...makeJob(jobPayload),
       delivery: options.delivery ?? { mode: "none" },
     },
+    deliveryAttemptFence: null,
     message:
       options.message ?? (jobPayload.kind === "agentTurn" ? jobPayload.message : DEFAULT_MESSAGE),
     sessionKey: options.sessionKey ?? DEFAULT_SESSION_KEY,

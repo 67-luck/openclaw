@@ -118,10 +118,8 @@ function resolveIsolatedCronPromptCacheKey(params: {
     provider: params.provider,
     model: params.model,
   });
-  const digest = createHash("sha256").update(material).digest("hex").slice(0, 32);
-  // Isolated cron rotates transcript/session ids per run; keep cache affinity
-  // on stable job identity without sending raw local session labels upstream.
-  return `openclaw-cron-${digest}`;
+  // Keep cache affinity on stable job identity; isolated cron rotates transcript/session ids.
+  return `openclaw-cron-${createHash("sha256").update(material).digest("hex").slice(0, 32)}`;
 }
 
 /** Detects single-line cron prompts that look like shell commands or command invocations. */
@@ -251,6 +249,7 @@ function createCronPromptExecutor(
       sessionId: params.cronSession.sessionEntry.sessionId,
       sessionKey: params.runSessionKey,
       jobId: params.job.id,
+      deliveryAttemptFence: params.deliveryAttemptFence,
       channelRequester: resolveCronAuthenticatedChannelRequester(params.job),
       toolsAllow: params.agentPayload?.toolsAllow,
       scheduledToolPolicy,

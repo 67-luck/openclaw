@@ -137,6 +137,7 @@ async function withHostedCreation(
             sessionId: "scope-parent-session",
             sessionKey: parentKey,
             jobId: "scope-test-job",
+            deliveryAttemptFence: null,
           })
         : undefined;
     const parent =

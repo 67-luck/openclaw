@@ -54,6 +54,10 @@ export type CronRuntimeMutationInputs = {
     terminal?: CronReceiptTerminal;
     requireCurrentReceipt?: boolean;
   };
+  "cron.markDeliveryStarted": {
+    storeKey: string;
+    handle: CronRunReceiptHandle;
+  };
   "cron.finishReceipt": {
     storeKey: string;
     terminal: CronReceiptTerminal;

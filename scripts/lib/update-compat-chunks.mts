@@ -14,7 +14,7 @@ export { isUpdateCompatibilityChunk } from "./update-compat-contract.mjs";
 export const UPDATE_COMPATIBILITY_INVENTORY_FILE = "update-compat-inventory.json";
 const HASHED_CHUNK = /-[A-Za-z0-9_-]{8}\.m?js$/;
 const POST_SWAP_OWNER =
-  /^src\/(?:cli\/update-cli\/|daemon\/|cli\/runtime-cleanup\.ts$|infra\/deferred-plugin-migrations\.ts$)/;
+  /^src\/(?:cli\/update-cli\/|daemon\/|cli\/runtime-cleanup(?:-scope)?\.ts$|infra\/deferred-plugin-migrations\.ts$)/;
 
 // These verified releases coalesced lifecycle declarations under the cache module's region.
 // Keep this provenance correction only while those releases remain in the supported upgrade window.

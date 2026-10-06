@@ -236,6 +236,7 @@ export async function runCronIsolatedAgentTurn(
               runId,
               cfg: params.cfg,
               job: params.job,
+              deliveryAttemptFence: params.deliveryAttemptFence,
               lane: params.lane,
               agentVerboseDefault: prepared.context.agentCfg?.verboseDefault,
               persistRunContinuationSession: prepared.context.runContinuationSession?.sync,

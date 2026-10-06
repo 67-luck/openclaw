@@ -153,6 +153,7 @@ describe("gateway update action", () => {
         sessionId: "synthetic-session",
         sessionKey,
         jobId: "synthetic-job",
+        deliveryAttemptFence: null,
         admissionSource,
       });
       try {

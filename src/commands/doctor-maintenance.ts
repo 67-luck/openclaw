@@ -133,7 +133,8 @@ export async function beginDoctorMaintenance(
   let deferredStateReleaseFailure: unknown;
   const throwDeferredStateReleaseFailure = () => {
     if (deferredStateReleaseFailure !== undefined) {
-      throw deferredStateReleaseFailure;
+      // SAFETY: TypeScript erases this assertion, preserving the exact captured rejection identity.
+      throw deferredStateReleaseFailure as Error;
     }
   };
   const release = async (assertCustody?: () => void) => {
