@@ -15,6 +15,11 @@ export type SessionRowFacts =
       sessionId: string;
       category: string | null;
       clearMembers: boolean;
+      /** Complete transaction facts also replace unpublished foreign side-table changes. */
+      projection?: {
+        membership: readonly string[];
+        participants: Pick<SessionEntry, "participants" | "participantCount">;
+      };
     }
   | { kind: "member"; sessionId: string; identityId: string; present: boolean }
   | {

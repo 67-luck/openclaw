@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { isMainThread } from "node:worker_threads";
+import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
@@ -259,6 +260,31 @@ export async function appendExpectedSessionTranscriptTurn(
       );
       const publish = runOpenClawAgentWriteTransaction(
         (transactionDb) => {
+          if (options.onCommittedSource) {
+            const committedIdentity = readOpenClawAgentDatabaseIdentity(transactionDb);
+            const source = {
+              agentId: transactionDb.agentId,
+              path: transactionDb.path,
+              databaseIdentity: committedIdentity.identity,
+              databaseBirthtime: committedIdentity.birthtime,
+            };
+            // Record custody before the kernel's postcommit observers can fail.
+            if (
+              !stageSqliteTransactionState(transactionDb.db, {
+                stage() {},
+                rollback() {},
+                commit() {
+                  if (!result.rejectedReason) {
+                    options.onCommittedSource?.(source);
+                  }
+                },
+              })
+            ) {
+              throw new Error(
+                "Transcript source requires its canonical transaction publication scope",
+              );
+            }
+          }
           const currentIdentity = identity
             ? readOpenClawAgentDatabaseIdentity(transactionDb)
             : undefined;

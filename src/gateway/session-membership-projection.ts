@@ -31,6 +31,19 @@ const noMembership: readonly string[] = Object.freeze([]);
 const noParticipants: SessionParticipantProjection = Object.freeze({});
 type GroupTarget = Readonly<{ sessionKey: string; agentId: string }>;
 
+function copyParticipants(projection: SessionParticipantProjection): SessionParticipantProjection {
+  return {
+    ...projection,
+    ...(projection.participants
+      ? {
+          participants: projection.participants.map(({ identity }) => ({
+            identity: { ...identity },
+          })),
+        }
+      : {}),
+  };
+}
+
 function freezeFact(fact: SessionMembershipFact): SessionMembershipFact {
   for (const participant of fact[3].participants ?? []) {
     Object.freeze(participant.identity);
@@ -186,7 +199,10 @@ export function createSessionMembershipProjection(options: { env?: NodeJS.Proces
         if (facts.kind === "entry") {
           category = facts.category;
           sessionId = facts.sessionId;
-          if (facts.clearMembers) {
+          if (facts.projection) {
+            memberIds = [...facts.projection.membership];
+            participants = copyParticipants(facts.projection.participants);
+          } else if (facts.clearMembers) {
             memberIds = noMembership;
           }
         } else if (facts.kind === "member") {
@@ -196,16 +212,7 @@ export function createSessionMembershipProjection(options: { env?: NodeJS.Proces
         } else if (facts.kind === "category") {
           category = facts.category;
         } else if (facts.projection) {
-          participants = {
-            ...facts.projection,
-            ...(facts.projection.participants
-              ? {
-                  participants: facts.projection.participants.map(({ identity }) => ({
-                    identity: { ...identity },
-                  })),
-                }
-              : {}),
-          };
+          participants = copyParticipants(facts.projection);
         }
         store.facts.set(
           change.sessionKey,

@@ -347,6 +347,7 @@ async function persistExpectedSessionTranscriptTurn(
           message: attachSessionTranscriptRunId(append.message, options.runId),
         })),
         onMessageCommitted: options.onMessageCommitted,
+        onCommittedSource: options.onCommittedSource,
         sessionLifecyclePatch: options.sessionLifecyclePatch,
         sessionTurnMutation: options.sessionTurnMutation,
         sessionFile: target.sessionKey!,

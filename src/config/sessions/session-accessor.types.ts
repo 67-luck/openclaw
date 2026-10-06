@@ -457,6 +457,8 @@ export type SessionTranscriptTurnPersistOptions = {
     result: TranscriptMessageAppendResult<unknown>,
     acceptCompletion: (complete: () => Promise<void>) => void,
   ) => void;
+  /** Record the guarded turn's admitted store after COMMIT, before observers. Must not throw. */
+  onCommittedSource?: (source: CapturedSessionEntryReadSource) => void;
   /** Publish each appended message inline, one file-only invalidation, or nothing. */
   updateMode?: SessionTranscriptTurnUpdateMode;
   /** Emit file-only updates even when every candidate message was skipped. */

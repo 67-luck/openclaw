@@ -105,6 +105,7 @@ async function persistUserTurnTranscript(
         : {}),
       ...(params.sessionTurnMutation ? { sessionTurnMutation: params.sessionTurnMutation } : {}),
       updateMode: params.updateMode ?? "inline",
+      onCommittedSource: params.onCommittedSource,
       onMessageCommitted: (result) => {
         if (!result.appended || !isUserMessage(result.message)) {
           return;
@@ -483,6 +484,7 @@ export function createUserTurnTranscriptRecorder(
                 ? recorder.assertOriginalInputCommit
                 : undefined,
             onOriginalInputCommitted: notifyOriginalInputCommitted,
+            onCommittedSource: params.onCommittedSource,
           });
         // Collection can resolve its media lazily during admission. Bind custody
         // here too so the canonical append always consumes the exact sources.

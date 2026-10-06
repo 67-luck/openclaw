@@ -140,7 +140,10 @@ export type ResolvedSessionEntryRow = {
   row: Pick<SessionEntryRow, "current_session_id" | "entry_json" | "session_key" | "updated_at"> &
     SqliteSessionOwnerRow &
     SessionEntrySnapshotRow &
-    Partial<Pick<SessionEntryRow, "legacy_acp_migration_json">> & { board_present?: SqlBool };
+    Partial<Pick<SessionEntryRow, "legacy_acp_migration_json">> & {
+      board_present?: SqlBool;
+      member_ids_json?: string;
+    };
 };
 
 type ReadableSessionEntryRow = ResolvedSessionEntryRow["row"] &
@@ -397,7 +400,7 @@ export function prepareExactSessionEntryRowReads(
   sessionKeys: readonly string[],
   projection: SessionEntryProjection | "delivery" = "full",
   validation?: "canonical",
-  options?: { includeBoardPresence?: boolean },
+  options?: { includeBoardPresence?: boolean; includeMembership?: boolean },
 ): (sessionKey: string) => ResolvedSessionEntryRow | undefined {
   return runSqliteReadOperationSync(database.db, () => {
     const baseQuery =
@@ -413,7 +416,7 @@ export function prepareExactSessionEntryRowReads(
         : selectReadableSessionEntryRows(database, projection);
     const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
     // Old stores have no board tables until first use; branch before compiling SQL.
-    const query = options?.includeBoardPresence
+    const boardQuery = options?.includeBoardPresence
       ? baseQuery.select(
           (tableExists(database.db, "board_widgets")
             ? eb.exists(
@@ -426,6 +429,18 @@ export function prepareExactSessionEntryRowReads(
           ).as("board_present"),
         )
       : baseQuery;
+    const query = options?.includeMembership
+      ? boardQuery.select((outer) =>
+          outer
+            .selectFrom("session_members")
+            .select(({ fn }) =>
+              fn.agg<string>("json_group_array", ["identity_id"]).orderBy("identity_id").as("ids"),
+            )
+            .whereRef("session_members.session_key", "=", "session_nodes.session_key")
+            .$asScalar()
+            .as("member_ids_json"),
+        )
+      : boardQuery;
     const readRows = (selection: string | readonly string[]) =>
       executeSqliteQuerySync(
         database.db,
@@ -435,7 +450,12 @@ export function prepareExactSessionEntryRowReads(
       ).rows;
     let rows: ReadableSessionEntryRow[];
     try {
-      if (sessionKeys.length === 1 && projection !== "delivery" && !options?.includeBoardPresence) {
+      if (
+        sessionKeys.length === 1 &&
+        projection !== "delivery" &&
+        !options?.includeBoardPresence &&
+        !options?.includeMembership
+      ) {
         const queries = getExactSessionEntryQueries(database.db);
         const key = sessionKeys[0]!;
         const row =
@@ -448,7 +468,7 @@ export function prepareExactSessionEntryRowReads(
       }
     } catch {
       // Native conversion errors have no row identity; exact reads preserve each key's error.
-      if (options?.includeBoardPresence) {
+      if (options?.includeBoardPresence || options?.includeMembership) {
         return (sessionKey) =>
           runSqliteReadOperationSync(database.db, () => {
             const row = readRows(sessionKey)[0];

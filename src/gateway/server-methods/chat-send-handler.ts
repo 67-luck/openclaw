@@ -108,6 +108,7 @@ async function handleChatSendWithOptions(
     return;
   }
   const { request, session, admission } = setup;
+  const { canonicalKey, storeKeys, readSource } = session.sessionTarget;
   const { p, systemInputProvenance, reconnectResumeRequested } = request;
   const { clientRunId, cfg, storePath, entry, sessionKey, sessionRoutingChanged, selectedAgent } =
     session;
@@ -207,17 +208,26 @@ async function handleChatSendWithOptions(
     : undefined;
 
   const admissionStartedAt = Date.now();
+  let admittedSource = readSource;
   const terminalizeRestartSafeAdmission = async (
     terminalState: RestartSafeChatTerminalState,
-  ): Promise<boolean> =>
-    await terminalizeRestartSafeChatAdmission({
+  ): Promise<boolean> => {
+    if (!admittedSource) {
+      return false;
+    }
+    return await terminalizeRestartSafeChatAdmission({
       admittedSessionId,
       clientRunId,
-      sessionKey,
+      target: {
+        agentId: session.agentId,
+        storePath,
+        readSource: admittedSource,
+        target: { canonicalKey, storeKeys: [...storeKeys] },
+      },
       startedAt: admissionStartedAt,
-      storePath,
       ...terminalState,
     });
+  };
   let pendingStageAttempted = false;
   let replyAdmissionTicket: ReturnType<typeof reserveReplyAdmissionTicket>;
   try {
@@ -249,6 +259,8 @@ async function handleChatSendWithOptions(
       warn: (message) => context.logGateway.warn(message),
       mentionInbox: context.mentionInbox,
       assertOriginalInputCommit: assertInputAdmissionCurrent,
+      // A new Goal can create the store. Retain its acknowledged identity before publication.
+      onCommittedSource: (source) => (admittedSource ??= source),
       goalCommitGuard,
     });
     const {

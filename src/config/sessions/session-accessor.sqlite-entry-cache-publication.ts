@@ -30,6 +30,7 @@ import {
   assertSessionEntryCreationCurrent,
   assertSessionEntryCreationTarget,
   type SessionEntryCreationTarget,
+  projectSessionEntryMembershipFacts,
   projectSessionSharingEntry,
   readSessionEntryCreationIdentity,
   type SessionEntryCacheDatabase,
@@ -336,6 +337,9 @@ function publishSessionSharingFieldChange(
     () => {
       if (change.kind === "owner") {
         recordCommittedSessionOwnerPublication(database, sessionKey, change);
+      } else {
+        // A delayed entry receipt must not replay members revoked after its COMMIT.
+        recordCommittedSessionMetadataPublication(database, sessionKey, change);
       }
       for (const read of retainedSharingReads(database, sessionKey) ?? []) {
         if (change.kind === "owner" && read.predicate) {
@@ -546,7 +550,12 @@ export function retainSessionEntryWorkerPublication(params: {
           ...membershipInvalidated,
         ]),
       ];
-      if (changed.length) {
+      const supersededMembership = replacement
+        ? replacement.changedKeys.filter(
+            (key) => !current(key) && replacement.membership.has(key) && !changed.includes(key),
+          )
+        : [];
+      if (changed.length || supersededMembership.length) {
         invalidateSessionEntryCaches(params.databaseIdentity);
       }
       const changes: SessionRowChange[] = [];
@@ -569,6 +578,14 @@ export function retainSessionEntryWorkerPublication(params: {
           : undefined;
       for (const sessionKey of changed) {
         const entry = replacement?.current.get(sessionKey);
+        const previousEntry = replacement?.previous.get(sessionKey);
+        const membership =
+          !unknown &&
+          current(sessionKey) &&
+          !owner.metadataSuperseded.has(sessionKey) &&
+          !membershipInvalidated.has(sessionKey)
+            ? replacement?.membership.get(sessionKey)
+            : undefined;
         const sharingEntry = entry ? projectSessionSharingEntry(entry) : undefined;
         const placeholder =
           initialization?.sessionKey === sessionKey ? initialization.placeholder : undefined;
@@ -591,7 +608,7 @@ export function retainSessionEntryWorkerPublication(params: {
           }
           recordAcquiringSessionEntry(
             read.acquisition,
-            !unknown && !membershipInvalidated.has(sessionKey) ? sharingEntry : undefined,
+            membership ? sharingEntry : undefined,
             replacement?.previous.get(sessionKey),
           );
           publishRetainedSessionGeneration(
@@ -602,21 +619,28 @@ export function retainSessionEntryWorkerPublication(params: {
           const previous = read.facts;
           read.facts = placeholder
             ? { entry: undefined, placeholder, membership: new Set() }
-            : !membershipInvalidated.has(sessionKey) &&
+            : membership &&
                 sharingEntry &&
                 previous?.entry &&
                 previous.entry.sessionId === sharingEntry.sessionId &&
                 previous.entry.lifecycleRevision === sharingEntry.lifecycleRevision
-              ? { entry: sharingEntry, membership: previous.membership }
+              ? {
+                  entry: sharingEntry,
+                  membership: new Set(membership),
+                }
               : undefined;
         }
+        const facts: SessionRowFacts | undefined =
+          previousEntry && !entry
+            ? { kind: "removed" }
+            : entry && membership
+              ? projectSessionEntryMembershipFacts(entry, previousEntry, membership)
+              : undefined;
         const change: SessionRowChange = {
           agentId: params.agentId,
           storePath: ownsCreation ? creationSource.path : params.storePath,
           sessionKey,
-          ...(replacement?.previous.has(sessionKey) && !replacement.current.has(sessionKey)
-            ? { facts: { kind: "removed" } as const }
-            : { factsInvalidated: true as const }),
+          ...(facts ? { facts } : { factsInvalidated: true as const }),
           ...(receipt && !unknown ? { scope: "session-entry" as const } : {}),
         };
         if (receipt) {
@@ -651,6 +675,28 @@ export function retainSessionEntryWorkerPublication(params: {
             databaseIdentity: params.databaseIdentity,
           });
         }
+        changes.push(change);
+      }
+      for (const sessionKey of supersededMembership) {
+        // The newer native row owns its metadata, but its delta cannot certify the
+        // worker's complete membership snapshot. Reconcile membership while retaining
+        // the exact generation already published by the native writer.
+        for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
+          read.facts = undefined;
+          recordAcquiringSessionEntry(read.acquisition, undefined, undefined);
+        }
+        const change: SessionRowChange = {
+          agentId: params.agentId,
+          storePath: params.storePath,
+          sessionKey,
+          scope: "session-entry",
+          factsInvalidated: true,
+        };
+        bindPreparedSessionEntryPublication(change, {
+          kind: "marker",
+          sharingChange: "unchanged",
+          databaseIdentity: params.databaseIdentity,
+        });
         changes.push(change);
       }
       owner.settled = true;

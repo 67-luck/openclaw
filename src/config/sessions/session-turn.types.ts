@@ -49,6 +49,7 @@ export type SqliteSessionTurnOptions = {
   initialSessionEntry?: SessionEntry;
   messages: readonly SessionTranscriptTurnMessageAppend[];
   onMessageCommitted?: SessionTranscriptTurnPersistOptions["onMessageCommitted"];
+  onCommittedSource?: SessionTranscriptTurnPersistOptions["onCommittedSource"];
   sessionLifecyclePatch?: SessionTranscriptTurnLifecyclePatch;
   sessionTurnMutation?: SessionTranscriptTurnMutation;
   sessionFile: string;
@@ -60,7 +61,12 @@ export type SessionTurnPlan = {
   sessionKey: string;
   options: Omit<
     SqliteSessionTurnOptions,
-    "messages" | "onMessageCommitted" | "assertCurrent" | "sessionTurnMutation" | "config"
+    | "messages"
+    | "onMessageCommitted"
+    | "onCommittedSource"
+    | "assertCurrent"
+    | "sessionTurnMutation"
+    | "config"
   > & {
     sessionTurnMutation?: Omit<SessionTranscriptTurnMutation, "assertCurrent">;
     messages: Array<

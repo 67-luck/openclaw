@@ -65,6 +65,7 @@ export async function appendSessionTurnInWorker(
   };
   const {
     onMessageCommitted: _onMessageCommitted,
+    onCommittedSource: _onCommittedSource,
     assertCurrent: _assertCurrent,
     sessionTurnMutation,
     messages,
@@ -258,6 +259,18 @@ export async function appendSessionTurnInWorker(
         return commit(() => worker.execute({ type: "session.turn.commit", input: plan }));
       },
       onAcknowledged(candidate) {
+        if (options.onCommittedSource && !candidate.result.rejectedReason) {
+          const identity = execution.fileIdentity;
+          if (!identity) {
+            throw new Error("Committed transcript turn omitted its admitted database identity");
+          }
+          options.onCommittedSource({
+            agentId: execution.agentId,
+            path: database.path,
+            databaseIdentity: identity.physicalIdentity,
+            databaseBirthtime: identity.birthtime,
+          });
+        }
         if (candidate.custody) {
           custody?.publish(candidate.custody);
         }

@@ -75,6 +75,31 @@ export function projectSessionSharingEntry(entry: InternalSessionEntry) {
 
 export type SessionEntryPlaceholder = Readonly<{ sessionId: string }>;
 
+export function projectSessionEntryMembershipFacts(
+  entry: SessionEntry,
+  previous: Pick<SessionEntry, "sessionId"> | undefined,
+  membership?: readonly string[],
+): Extract<SessionRowFacts, { kind: "entry" }> {
+  return {
+    kind: "entry",
+    previousSessionId: previous?.sessionId,
+    sessionId: entry.sessionId,
+    category: entry.category?.trim() || null,
+    clearMembers: previous !== undefined && previous.sessionId !== entry.sessionId,
+    ...(membership
+      ? {
+          projection: {
+            membership,
+            participants: {
+              participants: entry.participants,
+              participantCount: entry.participantCount,
+            },
+          },
+        }
+      : {}),
+  };
+}
+
 export type SessionTranscriptInitializationPublication = {
   kind: "session-transcript-initialized";
   sessionKey: string;
@@ -122,6 +147,7 @@ export type SessionEntryReplacementPublication = {
   pendingArchiveRecovery: boolean;
   previous: Map<string, Pick<SessionEntry, "sessionId" | "lifecycleRevision">>;
   current: Map<string, SessionEntry>;
+  membership: Map<string, readonly string[]>;
   ageChanges: SessionEntryMaintenanceAgeChange[];
   source?: SessionEntryPublicationSource;
   changedKeys: string[];

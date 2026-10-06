@@ -9,22 +9,33 @@ import {
   resolveSessionResetType,
   type SessionEntry,
 } from "../../config/sessions.js";
-import { resolveSessionEntryResetFreshness } from "../../config/sessions/entry-freshness.js";
+import {
+  resolvePreparedSessionEntryResetFreshness,
+  resolveSessionEntryResetFreshness,
+} from "../../config/sessions/entry-freshness.js";
+import type { SessionLifecycleTimestamps } from "../../config/sessions/lifecycle.types.js";
 import {
   buildRestartRecoveryClaimCleanupPatch,
   hasRestartRecoveryTerminalRun,
 } from "../../config/sessions/restart-recovery-state.js";
 import {
-  patchSessionEntryCore,
+  patchSessionEntryTarget,
+  type SessionEntryTargetPatchScope,
   type SessionTranscriptTurnExpectedState,
   type SessionTranscriptTurnLifecyclePatch,
 } from "../../config/sessions/session-accessor.js";
+import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import { buildRestartRecoveryExpectedState } from "../../config/sessions/session-transcript-turn-state.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../../infra/device-identity-async.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { findRestartRecoveryUnsafeChatAdmissionHook } from "../../plugins/restart-recovery-hook-safety.js";
-import { isCronSessionKey, isSubagentSessionKey } from "../../routing/session-key.js";
+import {
+  isCronSessionKey,
+  isIncognitoSessionKey,
+  isSubagentSessionKey,
+} from "../../routing/session-key.js";
 import { isAgentHarnessSessionKey } from "../../sessions/agent-harness-session-key.js";
 import { isAcpSessionKey, resolveSessionDispatchKind } from "../../sessions/session-key-utils.js";
 import { recordGatewaySessionRunFailure } from "../../sessions/session-run-error.js";
@@ -333,6 +344,7 @@ export function resolveRestartSafeChatAdmission(params: {
   entry?: SessionEntry;
   acpMeta: SessionEntry["acp"] | null;
   initialSessionEntry?: SessionEntry;
+  lifecycleTimestamps?: SessionLifecycleTimestamps;
   now: number;
   placement: WorkerSessionPlacementRecord | undefined;
   request?: RestartSafeChatRequest;
@@ -349,25 +361,41 @@ export function resolveRestartSafeChatAdmission(params: {
   if (placement && placement.state !== "local") {
     return undefined;
   }
-  if (
-    !request ||
-    !entry ||
-    !isRestartSafeChatSession({ ...params, entry }) ||
-    (!params.initialSessionEntry &&
-      resolveSessionEntryResetFreshness({
-        agentId: params.agentId,
-        now: params.now,
-        resetOverride: resolveChannelResetConfig({
-          sessionCfg: params.cfg.session,
-          channel: sessionDeliveryChannel(params.entry),
-        }),
-        resetType: resolveSessionResetType({ sessionKey: params.sessionKey }),
+  if (!request || !entry || !isRestartSafeChatSession({ ...params, entry })) {
+    return undefined;
+  }
+  if (!params.initialSessionEntry) {
+    const freshnessScope = {
+      agentId: params.agentId,
+      now: params.now,
+      resetOverride: resolveChannelResetConfig({
         sessionCfg: params.cfg.session,
-        sessionKey: params.sessionKey,
-        storePath: params.storePath,
-      }).state !== "fresh") ||
-    hasRestartUnsafeChatWork(params)
-  ) {
+        channel: sessionDeliveryChannel(params.entry),
+      }),
+      resetType: resolveSessionResetType({ sessionKey: params.sessionKey }),
+      sessionCfg: params.cfg.session,
+      sessionKey: params.sessionKey,
+      storePath: params.storePath,
+    };
+    let freshness: ReturnType<typeof resolvePreparedSessionEntryResetFreshness>;
+    if (isIncognitoSessionKey(params.sessionKey)) {
+      // Process-held incognito freshness retains its existing native owner.
+      freshness = resolveSessionEntryResetFreshness(freshnessScope);
+    } else {
+      if (params.lifecycleTimestamps === undefined) {
+        throw new Error("Restart-safe chat freshness was not prepared; retry.");
+      }
+      freshness = resolvePreparedSessionEntryResetFreshness(
+        freshnessScope,
+        entry,
+        params.lifecycleTimestamps,
+      );
+    }
+    if (freshness.state !== "fresh") {
+      return undefined;
+    }
+  }
+  if (hasRestartUnsafeChatWork(params)) {
     return undefined;
   }
   const retryableClaim = isRetryableUnadoptedChatClaim(entry, params.clientRunId);
@@ -430,15 +458,14 @@ export async function terminalizeRestartSafeChatAdmission(
   params: RestartSafeChatTerminalState & {
     admittedSessionId: string;
     clientRunId: string;
-    sessionKey: string;
+    target: SessionEntryTargetPatchScope & { readSource: CapturedSessionEntryReadSource };
     startedAt: number;
-    storePath: string;
   },
 ): Promise<boolean> {
   const endedAt = Date.now();
   let terminalized = false;
-  const persisted = await patchSessionEntryCore(
-    { sessionKey: params.sessionKey, storePath: params.storePath },
+  const persisted = await patchSessionEntryTarget(
+    params.target,
     (current) => {
       if (
         current.sessionId !== params.admittedSessionId ||
@@ -476,19 +503,34 @@ export async function terminalizeRestartSafeChatAdmission(
             })),
       };
     },
-    { requireWriteSuccess: true, skipMaintenance: true },
+    { requireWriteSuccess: true, skipMaintenance: true, workerGuard: {} },
   );
   if (terminalized && persisted && params.status === "failed") {
     await recordGatewaySessionRunFailure({
       target: {
-        sessionKey: params.sessionKey,
-        storePath: params.storePath,
+        agentId: params.target.agentId,
+        env: params.target.env,
+        sessionKey: params.target.target.canonicalKey,
+        storePath: params.target.readSource.path,
         sessionId: persisted.sessionId,
         expectedLifecycleRevision: persisted.lifecycleRevision,
       },
       runId: params.clientRunId,
       error: params.error,
       errorKind: params.errorKind,
+      assertCommitAllowed: () => {
+        const source = params.target.readSource;
+        if (
+          !isIncognitoSessionKey(params.target.target.canonicalKey) &&
+          typeof source.databaseIdentity === "string"
+        ) {
+          assertExistingDatabaseIdentity(
+            source.path,
+            `file:${source.databaseIdentity}`,
+            source.databaseBirthtime,
+          );
+        }
+      },
     }).catch((error: unknown) => {
       // The claim is already settled; report failure must not trigger a competing terminal write.
       log.warn(`Failed to record restart-safe chat failure notice: ${boundedWorkerError(error)}`);

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +14,7 @@ import {
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { readSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { SessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { onAgentRuntimeEvent } from "../../infra/agent-events.js";
 import * as sessionRunError from "../../sessions/session-run-error.js";
@@ -34,6 +36,22 @@ import {
 
 const policyMessage =
   "OpenCode cannot run with this chat's tool restrictions. Choose a different model provider or update the tool settings.";
+
+async function prepareTerminalTarget(scope: { sessionKey: string; storePath: string }) {
+  const read = await readSessionEntriesFromStoreInWorker({
+    agentId: "main",
+    storePath: scope.storePath,
+    sessionKeys: [scope.sessionKey],
+    projection: "exact",
+  });
+  assert(read.source);
+  return {
+    agentId: "main",
+    storePath: scope.storePath,
+    target: { canonicalKey: scope.sessionKey, storeKeys: [scope.sessionKey] },
+    readSource: read.source,
+  };
+}
 
 describe("handleChatSendSetupError", () => {
   it.each([
@@ -168,6 +186,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         if (restartSafe) {
           await persistUserTurnTranscript();
         }
+        const terminalTarget = await prepareTerminalTarget(target);
         const warn = vi.fn();
         const chatRunState = createChatRunState();
         const broadcast = vi.fn();
@@ -228,7 +247,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
           terminalizeRestartSafeAdmission: (terminal) =>
             terminalizeRestartSafeChatAdmission({
               ...terminal,
-              ...target,
+              target: terminalTarget,
               admittedSessionId: target.sessionId,
               clientRunId: runId,
               startedAt: 1_000,
@@ -346,7 +365,7 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         if (restartSafe) {
           expect(loadSessionEntry(target)?.restartRecoveryDeliveryRunId).toBe(runId);
           const terminal = {
-            ...target,
+            target: terminalTarget,
             admittedSessionId: target.sessionId,
             clientRunId: runId,
             startedAt: 1_000,
@@ -378,13 +397,14 @@ describe("createChatSendDispatchErrorLifecycle", () => {
         updatedAt: 1_000,
         restartRecoveryDeliveryRunId: "settled-run",
       });
+      const terminalTarget = await prepareTerminalTarget(target);
       const report = vi
         .spyOn(sessionRunError, "recordGatewaySessionRunFailure")
         .mockRejectedValueOnce(new Error("notice write failed"));
       try {
         expect(
           await terminalizeRestartSafeChatAdmission({
-            ...target,
+            target: terminalTarget,
             admittedSessionId: "settled-session",
             clientRunId: "settled-run",
             startedAt: 1_000,

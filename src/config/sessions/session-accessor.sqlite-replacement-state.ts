@@ -9,6 +9,7 @@ import {
   type SessionEntryReplacementPublication,
 } from "./session-accessor.sqlite-entry-cache.types.js";
 import { sqliteSessionEntriesEqual } from "./session-accessor.sqlite-entry-equality.js";
+import { prepareExactSessionEntryRowReads } from "./session-accessor.sqlite-entry-read.js";
 import { readSessionNodesGeneration } from "./session-accessor.sqlite-entry-revision.js";
 import {
   deleteLegacySessionEntryRows,
@@ -42,13 +43,28 @@ export function prepareSessionEntryReplacementPublication(
   );
   const invalidated = new Set([...result.membershipInvalidatedKeys, ...archived]);
   const current = new Map<string, SessionEntry>();
+  const membership = new Map<string, readonly string[]>();
+  const readCommitted =
+    result.current.size > 0
+      ? prepareExactSessionEntryRowReads(database, [...result.current.keys()], "list", undefined, {
+          includeMembership: true,
+        })
+      : undefined;
   for (const key of result.current.keys()) {
     // Read the final persisted bytes and side tables after assignment, alias moves and maintenance.
-    const committed = readExactSessionEntryRow(database, key, "list");
+    const committed = readCommitted?.(key);
     if (!committed) {
       throw new Error(`Session publication lost its committed metadata: ${key}`);
     }
+    const memberIds: unknown = JSON.parse(committed.row.member_ids_json ?? "null");
+    if (
+      !Array.isArray(memberIds) ||
+      !memberIds.every((id): id is string => typeof id === "string")
+    ) {
+      throw new Error(`Session publication lost its committed membership: ${key}`);
+    }
     current.set(key, freezeJsonSnapshot(committed.entry));
+    membership.set(key, Object.freeze(memberIds));
   }
   return {
     kind: "session-entry-replacements",
@@ -66,6 +82,7 @@ export function prepareSessionEntryReplacementPublication(
       ]),
     ),
     current,
+    membership,
     ageChanges: [...current].map(([sessionKey, entry]) =>
       captureSessionEntryMaintenanceAgeChange({
         sessionKey,

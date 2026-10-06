@@ -50,7 +50,7 @@ import {
   consumeChatSendCurrent,
   respondChatSessionRoutingChanged,
 } from "./chat-send-pre-admission.js";
-import type { ChatSendPreAdmissionParams } from "./chat-send-pre-admission.types.js";
+import type { ChatSendAdmissionParams } from "./chat-send-pre-admission.types.js";
 import {
   createPendingChatSendReservationAccess,
   inspectGoalChatSendRetry,
@@ -58,11 +58,7 @@ import {
 } from "./chat-send-reservation.js";
 import { bindChatSendPreparedSession } from "./chat-send-session-binding.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
-import {
-  withCurrentChatSendSession,
-  prepareChatSendSessionEntry,
-  type PreparedChatSendSession,
-} from "./chat-send-session.js";
+import { withCurrentChatSendSession, prepareChatSendSessionEntry } from "./chat-send-session.js";
 import {
   admitChatSendUploads,
   assertChatSendExclusiveAdmission,
@@ -75,17 +71,9 @@ import {
   interruptChatSendWork,
   respondChatSendWorkAdmissionFailure,
 } from "./chat-send-work-admission.js";
-import type { GatewayRequestHandlerOptions, SessionMutationAuthorization } from "./types.js";
 
 /** Reserve the session lifecycle and register the abortable run before attachment work. */
-export async function admitChatSend(
-  params: ChatSendPreAdmissionParams & {
-    session: PreparedChatSendSession;
-    withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];
-    hasCurrentClientAuthority?: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];
-    onAdmissionOwned?: () => Promise<boolean>;
-  },
-) {
+export async function admitChatSend(params: ChatSendAdmissionParams) {
   const { request, session, respond, context, client } = params;
   const { p, turnKind } = request;
   const requestIdentity = request.goalOperation?.requestFingerprint ?? request.requestIdentity;
@@ -347,6 +335,7 @@ export async function admitChatSend(
         context,
         entry: latestEntry,
         initialSessionEntry,
+        lifecycleTimestamps: latestSession.lifecycleTimestamps,
         acpMeta,
         now: Date.now(),
         placement: preparedPlacement?.facts.placement,
