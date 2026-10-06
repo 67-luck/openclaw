@@ -21,7 +21,7 @@ import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
 import { resolveSessionWorkerPlacementContext } from "./session-worker-placement-context.js";
 import { resolveSessionWorkspaceRoots } from "./session-workspace-roots.js";
 
-export type AssistantMediaSession = {
+type AssistantMediaSession = {
   sessionKey: string;
   agentId: string;
   sessionId: string;
