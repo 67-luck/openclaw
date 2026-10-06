@@ -33,6 +33,7 @@ import {
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { buildAbortedAgentPayload } from "../agent-turn/agent-dedupe.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { waitForChatAbortTerminalPersistence } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
@@ -655,13 +656,21 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
                 entry: {
                   ts: endedAt,
                   ok: true,
-                  payload: {
-                    status: "timeout",
-                    runId: firstAbortedRunId,
-                    agentId: targetAgentId,
-                    stopReason: "rpc",
-                    endedAt,
-                  },
+                  payload:
+                    runKind === "agent"
+                      ? {
+                          ...buildAbortedAgentPayload(firstAbortedRunId, "rpc", {
+                            agentId: targetAgentId,
+                          }),
+                          endedAt,
+                        }
+                      : {
+                          status: "timeout",
+                          runId: firstAbortedRunId,
+                          agentId: targetAgentId,
+                          stopReason: "rpc",
+                          endedAt,
+                        },
                 },
               });
             }
