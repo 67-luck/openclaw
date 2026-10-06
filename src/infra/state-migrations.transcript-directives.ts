@@ -36,7 +36,9 @@ import {
 } from "./state-migrations.media-persistence-targets.js";
 import {
   migrateTranscriptDirectiveArchives,
+  recoverPendingTranscriptArchivePublication,
   TRANSCRIPT_DIRECTIVE_MIGRATION_BATCH_SIZE,
+  transcriptDirectiveArchiveRecoveryPending,
   transcriptDirectiveArchivesNeedMigration,
 } from "./state-migrations.transcript-directives-archives.js";
 import {
@@ -66,6 +68,7 @@ type TranscriptRowPlan = {
 type DatabaseMigrationResult = {
   archivedTranscripts: number;
   transcriptSessions: number;
+  warnings: string[];
 };
 
 function createMigrationDatabaseHandle(
@@ -136,28 +139,23 @@ function writeMigrationCursor(
 ): void {
   const now = Date.now();
   const db = getNodeSqliteKysely<TranscriptDirectiveMigrationDatabase>(database);
+  const row = {
+    agent_id: agentId,
+    app_version: JSON.stringify(cursor),
+    role: "agent",
+    schema_version: 1,
+    updated_at: now,
+  };
   executeSqliteQuerySync(
     database,
     db
       .insertInto("schema_meta")
       .values({
-        agent_id: agentId,
-        app_version: JSON.stringify(cursor),
+        ...row,
         created_at: now,
         meta_key: MIGRATION_META_KEY,
-        role: "agent",
-        schema_version: 1,
-        updated_at: now,
       })
-      .onConflict((conflict) =>
-        conflict.column("meta_key").doUpdateSet({
-          agent_id: agentId,
-          app_version: JSON.stringify(cursor),
-          role: "agent",
-          schema_version: 1,
-          updated_at: now,
-        }),
-      ),
+      .onConflict((conflict) => conflict.column("meta_key").doUpdateSet(row)),
   );
 }
 
@@ -342,7 +340,13 @@ async function migrateAgentDatabase(
     assertOpenClawAgentDatabaseForMaintenance(database, params);
     const cursor = readMigrationCursor(database, params.pathname);
     if (cursor.phase === "complete") {
-      return { archivedTranscripts: 0, transcriptSessions: 0 };
+      const warnings = await recoverPendingTranscriptArchivePublication({
+        agentId: params.agentId,
+        database,
+        pathname: params.pathname,
+        signal: maintenance.signal,
+      });
+      return { archivedTranscripts: 0, transcriptSessions: 0, warnings };
     }
     const owner = createMigrationDatabaseHandle(database, params.agentId, params.pathname);
     const transcriptSessions =
@@ -356,12 +360,13 @@ async function migrateAgentDatabase(
           })
         : 0;
     const archiveCursor = readMigrationCursor(database, params.pathname);
-    const archivedTranscripts =
+    const archives =
       archiveCursor.phase === "archives"
         ? await migrateTranscriptDirectiveArchives({
             agentId: params.agentId,
             database,
             pathname: params.pathname,
+            signal: maintenance.signal,
             start: archiveCursor,
             writeCursor: (next) =>
               writeMigrationCursor(
@@ -370,8 +375,12 @@ async function migrateAgentDatabase(
                 "phase" in next ? next : { ...next, phase: "archives" },
               ),
           })
-        : 0;
-    return { archivedTranscripts, transcriptSessions };
+        : { rewrittenArchives: 0, warnings: [] };
+    return {
+      archivedTranscripts: archives.rewrittenArchives,
+      transcriptSessions,
+      warnings: archives.warnings,
+    };
   } finally {
     clearNodeSqliteKyselyCacheForDatabase(database);
     database.close();
@@ -396,7 +405,7 @@ function agentDatabaseNeedsTranscriptDirectiveMigration(params: {
     }
     const cursor = readMigrationCursor(database, params.pathname);
     if (cursor.phase === "complete") {
-      return false;
+      return transcriptDirectiveArchiveRecoveryPending(database);
     }
     if (
       cursor.phase === "transcripts" &&
@@ -475,6 +484,8 @@ export async function migrateHistoricalTranscriptDirectives(
               { agentId: target.agentId, pathname: target.path },
               maintenance,
             );
+            warnings.push(...result.warnings);
+            recoverableWarningCount += result.warnings.length;
             if (result.transcriptSessions > 0 || result.archivedTranscripts > 0) {
               changes.push(
                 `Migrated historical transcript directives in ${target.path}: ${result.transcriptSessions} active session(s), ${result.archivedTranscripts} archived transcript(s).`,

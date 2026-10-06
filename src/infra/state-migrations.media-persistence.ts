@@ -130,11 +130,12 @@ async function migrateAgentDatabase(params: {
     env: params.env,
     onMigrationWarning: (warning: string) => schemaWarnings.push(warning),
   };
-  const migrateArchives = () =>
-    migrateCanonicalTranscriptArchives({
+  const migrateArchives = async () => {
+    const archives = await migrateCanonicalTranscriptArchives({
       agentId: params.agentId,
       database,
       pathname: params.pathname,
+      signal: params.maintenance.signal,
       start: { generation: "", sessionId: "" },
       // Imports and restores can introduce legacy media after any successful pass.
       // Reuse archive repair without persisting the directive migration's cursor.
@@ -142,6 +143,9 @@ async function migrateAgentDatabase(params: {
       onArchive: (archivePath) => params.canonicalArchivePaths.add(archivePath),
       transformContent: transformMediaArchiveContent,
     });
+    schemaWarnings.push(...archives.warnings);
+    return archives.rewrittenArchives;
+  };
   try {
     configureSqliteMaintenanceCache(database);
     database.exec(`PRAGMA busy_timeout = ${OPENCLAW_SQLITE_BUSY_TIMEOUT_MS};`);
