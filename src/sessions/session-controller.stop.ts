@@ -5,7 +5,11 @@ import {
 import type { SessionEntry } from "../config/sessions/types.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
 import type { ReplyOperation } from "./session-controller.contracts.js";
-import type { SessionTarget } from "./session-controller.lifecycle.js";
+import { waitForSessionControllerSettlement } from "./session-controller.lifecycle-observation.js";
+import {
+  SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
+  type SessionTarget,
+} from "./session-controller.lifecycle.js";
 import {
   abortSessionControllerInput,
   captureSessionControllerSourceSettlement,
@@ -675,4 +679,55 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
   void completed.catch(rejectParentResult);
   void completed.catch(() => {});
   return Object.freeze({ ...initial, completed });
+}
+
+async function drainSessionControllerOwnersForTest(): Promise<void> {
+  const candidates = captureSessionControllerStopCandidates();
+  const capture = captureSessionControllerStop({
+    inputs: candidates.flatMap((candidate) => candidate.capture.inputs),
+    operations: candidates.flatMap((candidate) => candidate.capture.operations),
+  });
+  if (capture.inputs.length === 0 && capture.operations.length === 0) {
+    return;
+  }
+
+  // Teardown must use the same Stop owner as production and retain committed failures.
+  const failures: unknown[] = [];
+  const execution = stopSession({
+    source: "restart",
+    capture,
+    onError: () => "continue",
+  });
+  const completion = execution.completed.then(
+    async (outcome) => {
+      failures.push(...outcome.failures.map(({ error }) => error));
+      await outcome.settled;
+    },
+    (error: unknown) => {
+      failures.push(error);
+    },
+  );
+  const settlement = Promise.all([capture.settled, completion])
+    .then(() => undefined)
+    .catch((error: unknown) => {
+      failures.push(error);
+    });
+  if (
+    !(await waitForSessionControllerSettlement(settlement, SESSION_CONTROLLER_DRAIN_TIMEOUT_MS))
+  ) {
+    failures.push(
+      new Error(
+        `Session-controller cleanup remains pending after ${SESSION_CONTROLLER_DRAIN_TIMEOUT_MS}ms`,
+      ),
+    );
+  }
+  if (failures.length > 0) {
+    throw new AggregateError(failures, "Session-controller cleanup failed");
+  }
+}
+
+if (process.env.VITEST || process.env.NODE_ENV === "test") {
+  (globalThis as Record<PropertyKey, unknown>)[
+    Symbol.for("openclaw.sessionControllerStopTestApi")
+  ] = { drainSessionControllerOwners: drainSessionControllerOwnersForTest };
 }

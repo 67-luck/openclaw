@@ -75,6 +75,7 @@ const SHARED_TEST_SETUP = Symbol.for("openclaw.sharedTestSetup");
 const RETIRED_TEST_API_EXECUTIONS = Symbol.for("openclaw.retiredTestApiExecutions");
 const EMBEDDED_RUNS_TEST_API = Symbol.for("openclaw.embeddedRunsTestApi");
 const REPLY_RUN_REGISTRY_TEST_API = Symbol.for("openclaw.replyRunRegistryTestApi");
+const SESSION_CONTROLLER_STOP_TEST_API = Symbol.for("openclaw.sessionControllerStopTestApi");
 const DIAGNOSTIC_EVENTS_STATE = Symbol.for("openclaw.diagnosticEvents.state.v1");
 const DIAGNOSTIC_EVENT_LISTENER_PRESENCE = Symbol.for(
   "openclaw.diagnosticEventListenerPresence.v1",
@@ -261,11 +262,16 @@ function restoreConsoleRoutingState(): void {
 type CleanupAction = () => void;
 
 type EmbeddedRunsTestApi = {
+  drainActiveEmbeddedRuns?: () => Promise<void>;
   resetActiveEmbeddedRuns?: () => void;
 };
 
 type ReplyRunRegistryTestApi = {
   resetReplyRunRegistry?: () => void;
+};
+
+type SessionControllerStopTestApi = {
+  drainSessionControllerOwners?: () => Promise<void>;
 };
 
 type DiagnosticEventsStateForTest = {
@@ -298,9 +304,8 @@ function runCleanupActions(actions: CleanupAction[]): unknown {
 async function resetOpenClawGlobalRunState(): Promise<void> {
   const cleanupActions: CleanupAction[] = [];
   const globalStore = globalThis as Record<PropertyKey, unknown>;
-  const resetActiveEmbeddedRuns = (
-    globalStore[EMBEDDED_RUNS_TEST_API] as EmbeddedRunsTestApi | undefined
-  )?.resetActiveEmbeddedRuns;
+  const embeddedRuns = globalStore[EMBEDDED_RUNS_TEST_API] as EmbeddedRunsTestApi | undefined;
+  const resetActiveEmbeddedRuns = embeddedRuns?.resetActiveEmbeddedRuns;
   if (resetActiveEmbeddedRuns) {
     cleanupActions.push(resetActiveEmbeddedRuns);
   }
@@ -312,11 +317,17 @@ async function resetOpenClawGlobalRunState(): Promise<void> {
     cleanupActions.push(resetReplyRunRegistry);
   }
 
-  if (cleanupActions.length > 0) {
-    const { drainNonIsolatedRunState } = await vi.importActual<
-      typeof import("./non-isolated-run-state.js")
-    >("./non-isolated-run-state.js");
-    await drainNonIsolatedRunState();
+  const drainActions = [
+    embeddedRuns?.drainActiveEmbeddedRuns,
+    (globalStore[SESSION_CONTROLLER_STOP_TEST_API] as SessionControllerStopTestApi | undefined)
+      ?.drainSessionControllerOwners,
+  ].filter((action): action is () => Promise<void> => action !== undefined);
+  const drainResults = await Promise.allSettled(drainActions.map((action) => action()));
+  const drainFailures = drainResults.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (drainFailures.length > 0) {
+    throw new AggregateError(drainFailures, "Run owner cleanup failed");
   }
 
   const cleanupError = runCleanupActions(cleanupActions);

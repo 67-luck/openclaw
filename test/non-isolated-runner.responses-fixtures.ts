@@ -206,5 +206,38 @@ it("tears down run state without expanding imports through file-owned mocks", ()
   expect(globalThis[Symbol.for("openclaw.embeddedRunsTestApi")]).toBeDefined();
 });
 `,
+    "13-d-file-owned-paths.test.ts": `import { expect, it, vi } from "vitest";
+
+vi.mock(${source("config/paths.ts")}, () => ({
+  resolveStateDir: () => "/synthetic/state",
+}));
+
+it("tears down run state without evaluating through a file-owned paths mock", () => {
+  expect(globalThis[Symbol.for("openclaw.embeddedRunsTestApi")]).toBeDefined();
+});
+`,
+    "13-e-module-mock.test.ts": `import { expect, it, vi } from "vitest";
+import { SessionStoreRegistryReadRequired } from ${source("config/sessions/session-sqlite-target.ts")};
+import { readSessionStoreTargetInventory } from ${source("config/sessions/session-store-target-inventory.ts")};
+import { resolveExistingAgentSessionStoreTargetsReadOnlyResult } from ${source("config/sessions/targets-read-availability.ts")};
+
+vi.mock(${source("config/sessions/targets-read-availability.ts")}, () => ({
+  resolveExistingAgentSessionStoreTargetsReadOnlyResult: vi.fn(),
+}));
+
+it("applies a later file's module mock after run teardown", () => {
+  vi.mocked(resolveExistingAgentSessionStoreTargetsReadOnlyResult)
+    .mockReturnValueOnce({ available: false, reason: "read-failed" })
+    .mockImplementationOnce(() => { throw new SessionStoreRegistryReadRequired(); });
+  expect(readSessionStoreTargetInventory({
+    config: {},
+    agentIds: ["main", "other"],
+    env: {},
+    paths: new Map(),
+    candidates: [],
+    registeredDatabases: { status: "deferred" },
+  })).toEqual({ kind: "session-target-registry-required", readFailed: true });
+});
+`,
   };
 }

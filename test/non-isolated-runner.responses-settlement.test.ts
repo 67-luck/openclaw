@@ -127,7 +127,7 @@ export default defineConfig({
     expect(result.code, output).toBe(0);
     expect(child.exitCode, output).toBe(0);
     expect(child.signalCode, output).toBeNull();
-    expect(output).toContain("3 passed");
+    expect(output).toContain("5 passed");
     await fs.rm(root, { recursive: true, force: true });
   } catch (error) {
     if (error instanceof Error) {
