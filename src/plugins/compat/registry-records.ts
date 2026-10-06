@@ -11,6 +11,7 @@ import {
 } from "./plugin-sdk-subpath-records.js";
 import { PROGRESS_RECEIPT_HANDOFF_COMPAT_RECORD } from "./progress-receipt-handoff-record.js";
 import { SESSION_PERSISTENCE_COMPAT_RECORDS } from "./session-persistence-records.js";
+import { SKILL_PROPOSAL_HOOKS_COMPAT_RECORD } from "./skill-proposal-hooks-record.js";
 import { TTS_PREFERENCES_COMPAT_RECORD } from "./tts-preferences-record.js";
 import type { PluginCompatRecord } from "./types.js";
 import { WATCHED_SESSIONS_COMPAT_RECORD } from "./watched-sessions.js";
@@ -291,30 +292,7 @@ export const PLUGIN_COMPAT_RECORDS = [
     releaseNote:
       '`api.on("subagent_spawning", ...)` was removed; core now owns thread-bound subagent routing, and `subagent_spawned` remains available for observation.',
   },
-  {
-    code: "removed-skill-proposal-hooks",
-    status: "removed",
-    owner: "sdk",
-    introduced: "2026-09-29",
-    docsPath: "/plugins/sdk-migration/removed-surfaces#skill-workshop-proposal-hooks",
-    surfaces: [
-      'api.on("skill_proposal_evaluate", ...)',
-      'api.on("skill_proposal_changed", ...)',
-      "PluginHookSkillProposalEvaluateEvent",
-      "PluginHookSkillProposalEvaluateResult",
-      "PluginHookSkillProposalEvaluationOutcome",
-      "PluginHookSkillProposalChangedEvent",
-      "PluginHookSkillProposalKind",
-      "PluginHookSkillEvaluationFinding",
-      "PluginHookSkillBundleFile",
-      "PluginHookSkillBundleSnapshot",
-      "PluginHookSkillChangedEvent.proposal",
-    ],
-    diagnostics: ["plugin compatibility registry and migration guide"],
-    tests: ["src/plugins/compat/registry.test.ts"],
-    releaseNote:
-      "The Skill Workshop `skill_proposal_evaluate` and `skill_proposal_changed` plugin hooks were removed with Workshop proposals; Workshop now applies changes immediately with restorable versions.",
-  },
+  SKILL_PROPOSAL_HOOKS_COMPAT_RECORD,
   {
     code: "hook-only-plugin-shape",
     status: "active",
