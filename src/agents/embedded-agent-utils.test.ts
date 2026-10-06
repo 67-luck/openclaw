@@ -735,6 +735,27 @@ b](https://example.com/x) tail`;
     expect(chunks.some((chunk) => chunk.includes(link))).toBe(true);
   });
 
+  it("keeps a fitting table with nested links whole", () => {
+    const table = [
+      "| Service | Link |",
+      "| --- | --- |",
+      "| Mail | [open](https://mail.example) |",
+      "| Calendar | [open](https://calendar.example) |",
+      "| Notes | plain |",
+    ].join("\n");
+    const chunker = new EmbeddedBlockChunker({
+      minChars: 1,
+      maxChars: 200,
+      breakPreference: "newline",
+    });
+    const chunks: string[] = [];
+
+    chunker.append(`${table}\n\n${"trailing prose ".repeat(20)}`);
+    chunker.drain({ force: false, emit: (chunk) => chunks.push(chunk) });
+
+    expect(chunks[0]?.slice(0, table.length)).toBe(table);
+  });
+
   it("does not treat a label spanning a blank line as a link", () => {
     const text = `[label
 

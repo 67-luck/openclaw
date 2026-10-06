@@ -19,6 +19,7 @@ import { prepareIndentedCode } from "./embedded-agent-block-chunker.code.js";
 import {
   findTableBreakIndex,
   findUnsplittableTableSpans,
+  mergeOverlappingBreakSpans,
   type BreakSpan,
   type BreakSpans,
 } from "./embedded-agent-block-chunker.tables.js";
@@ -338,9 +339,7 @@ export class EmbeddedBlockChunker {
     const unbreakableSpans = scanUnbreakableSpans(source, fenceSpans, hardMaxChars);
     const unsafe =
       tables.length > 0 || unbreakableSpans.length > 0
-        ? [...fenceSpans, ...tables, ...unbreakableSpans].toSorted(
-            (left, right) => left.start - right.start,
-          )
+        ? mergeOverlappingBreakSpans([...fenceSpans, ...tables, ...unbreakableSpans])
         : fenceSpans;
     const spans: BreakSpans = { fences: fenceSpans, tables, unsafe };
     const originalIndex = (index: number) =>
