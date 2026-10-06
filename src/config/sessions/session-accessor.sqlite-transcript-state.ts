@@ -319,25 +319,31 @@ export function advanceTranscriptMutationAtInTransaction(
   value: number,
   options: { strictly?: boolean } = {},
 ): void {
-  const transcriptUpdatedAt = Math.floor(value);
+  let transcriptUpdatedAt = Math.floor(value);
   if (!Number.isFinite(transcriptUpdatedAt) || transcriptUpdatedAt < 0) {
     return;
   }
-  const state = readTranscriptMutationStateInTransaction(database, sessionId);
-  const next = options.strictly
-    ? Math.max(transcriptUpdatedAt, (state.updatedAt ?? -1) + 1, (state.observedAt ?? -1) + 1)
-    : Math.max(transcriptUpdatedAt, state.updatedAt ?? 0);
-  if (state.updatedAt !== null && state.updatedAt >= next) {
-    return;
+  if (!options.strictly) {
+    const state = readTranscriptMutationStateInTransaction(database, sessionId);
+    transcriptUpdatedAt = Math.max(transcriptUpdatedAt, state.updatedAt ?? 0);
+    if (state.updatedAt !== null && state.updatedAt >= transcriptUpdatedAt) {
+      return;
+    }
   }
   const db = getSessionKysely(database.db);
-  executeSqliteQuerySync(
-    database.db,
-    db
-      .updateTable("session_windows")
-      .set({ transcript_updated_at: next })
-      .where("session_id", "=", sessionId),
-  );
+  const update = db
+    .updateTable("session_windows")
+    .set((eb) => ({
+      transcript_updated_at: options.strictly
+        ? eb.fn<number>("max", [
+            eb.val(transcriptUpdatedAt),
+            eb(eb.fn.coalesce("transcript_updated_at", eb.val(-1)), "+", 1),
+            eb(eb.fn.coalesce("transcript_observed_at", eb.val(-1)), "+", 1),
+          ])
+        : transcriptUpdatedAt,
+    }))
+    .where("session_id", "=", sessionId);
+  executeSqliteQuerySync(database.db, update);
 }
 
 export function touchTranscriptMutationInTransaction(
