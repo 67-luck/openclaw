@@ -10,7 +10,7 @@
   "dependencies": {
     "@agentclientprotocol/claude-agent-acp": "0.81.2",
     "@agentclientprotocol/codex-acp": "1.13.1",
-    "@openclaw/fs-safe": "0.23.0",
+    "@openclaw/fs-safe": "0.23.1",
     "acpx": "0.19.3",
     "smol-toml": "1.9.0",
     "zod": "4.6.5"
