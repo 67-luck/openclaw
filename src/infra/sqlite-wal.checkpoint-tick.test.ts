@@ -1,4 +1,5 @@
 // Covers the WAL checkpoint tick and inline autocheckpoint threshold.
+import fs from "node:fs";
 import path from "node:path";
 import { setImmediate as realImmediate } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -88,6 +89,51 @@ describe("sqlite WAL checkpoint tick", () => {
     }
   });
 
+  it("checkpoints WAL pressure on the next maintenance wake", async () => {
+    vi.useFakeTimers();
+    const { DatabaseSync } = requireNodeSqlite();
+    const dbPath = path.join(tempDirs.make("openclaw-sqlite-wal-pressure-"), "openclaw.sqlite");
+    const db = new DatabaseSync(dbPath);
+    const maintenance = configureSqliteWalMaintenance(db, { databasePath: dbPath });
+    try {
+      db.exec("CREATE TABLE payload (value TEXT); INSERT INTO payload VALUES ('committed');");
+      let reportedWalBytes = 64 * 1024 * 1024;
+      const nativeStat = fs.statSync;
+      // A recycled WAL at the retained limit must not force every pressure wake.
+      vi.spyOn(fs, "statSync").mockImplementation((...args) => {
+        const stat = nativeStat(...args);
+        if (stat && args[0] === `${dbPath}-wal` && typeof stat.size === "number") {
+          stat.size = reportedWalBytes;
+        }
+        return stat;
+      });
+      await vi.advanceTimersByTimeAsync(250);
+      expect(maintenance.health).toBeUndefined();
+      reportedWalBytes += 1;
+      await vi.advanceTimersByTimeAsync(250);
+      const health = expectDefined(maintenance.health, "pressure checkpoint");
+      expect(health.state).toBe("complete");
+      expect(health.checkpointedFrames).toBeGreaterThan(0);
+      expect(health.checkpointedFrames).toBe(health.logFrames);
+      expect(fs.readFileSync(`${dbPath}-wal`).length).toBeGreaterThan(0);
+      reportedWalBytes = 1024 * 1024 * 1024 + 1;
+      await vi.advanceTimersByTimeAsync(250);
+      expect(fs.readFileSync(`${dbPath}-wal`)).toHaveLength(0);
+      expect(db.prepare("SELECT value FROM payload").get()?.value).toBe("committed");
+      const truncatedAt = maintenance.health?.observedAtMs;
+      reportedWalBytes = 0;
+      db.exec("INSERT INTO payload VALUES ('next');");
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(maintenance.health?.observedAtMs).toBe(truncatedAt);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(maintenance.health?.observedAtMs).toBeGreaterThan(truncatedAt ?? 0);
+      expect(maintenance.health?.state).toBe("complete");
+    } finally {
+      maintenance.close();
+      db.close();
+    }
+  });
+
   it("joins admitted maintenance before native close and refuses subsequent wakes", async () => {
     vi.useFakeTimers();
     const sqlite = requireNodeSqlite();
@@ -167,7 +213,9 @@ describe("sqlite WAL checkpoint tick", () => {
       expect(maintenance.health).toBeUndefined();
 
       // Ticks checkpoint without vacuuming.
-      await vi.advanceTimersByTimeAsync(10_000);
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(maintenance.health).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1_000);
       await settle();
 
       const ticked = expectDefined(maintenance.health, "WAL tick health");

@@ -38,8 +38,10 @@ one so entry metadata, board presence, and transcript watermarks share a snapsho
 
 Scheduled WAL connections disable automatic checkpoints, so ordinary commits do
 not copy WAL pages into the database. The existing worker maintenance tick runs
-PASSIVE checkpoints every ten seconds and attempts nonwaiting truncation after a
-complete checkpoint above 64 MiB. This is a recycling target, not a hard limit:
+PASSIVE checkpoints every ten seconds, or on the next 250 ms maintenance wake
+when the WAL exceeds its 64 MiB recycling target. Ordinary WALs remain allocated
+for reuse; above 1 GiB, maintenance attempts nonwaiting truncation after a complete
+checkpoint. These are not hard limits:
 a pinned reader can prevent WAL reuse. Timer-disabled connections retain their
 inline fallback. Retirement joins maintenance and keeps its final checkpoint,
 including during updates and Doctor operations. Schema and synchronous settings

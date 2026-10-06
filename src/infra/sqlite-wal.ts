@@ -46,9 +46,9 @@ const DEFAULT_SQLITE_WAL_AUTOCHECKPOINT_PAGES = 16_384;
 const DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS = 10 * 1000;
 const DEFAULT_SQLITE_WAL_CHECKPOINT_INTERVAL_MS = 30 * 60 * 1000;
 // SQLite applies this ceiling when a fully checkpointed WAL resets on the next
-// commit. Maintenance also attempts nonwaiting truncation above this size;
-// readers can pin older frames, so this is a recycling target, not a hard cap.
+// commit. Readers can pin older frames, so this is a recycling target, not a hard cap.
 const DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
+const DEFAULT_SQLITE_WAL_TRUNCATE_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 const JOURNAL_MODE_RETRY_INTERVAL_MS = 10;
 const JOURNAL_MODE_RETRY_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
@@ -244,10 +244,7 @@ export function configureSqliteWalMaintenance(
   );
   const timerIntervalMs = Math.min(checkpointIntervalMs, MAX_TIMER_TIMEOUT_MS);
   // Checkpoint-only ticks keep commits off the checkpoint between periodic passes.
-  const checkpointTickMs =
-    checkpointIntervalMs > DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS
-      ? DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS
-      : 0;
+  const checkpointTickMs = checkpointIntervalMs > DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS ? 250 : 0;
   const checkpointMode = options.checkpointMode ?? "TRUNCATE";
   const periodicCheckpointMode = options.checkpointMode ?? "PASSIVE";
   const journalPolicy = options.databasePath
@@ -321,6 +318,8 @@ export function configureSqliteWalMaintenance(
 
   const scope = maintenanceScheduler.scope();
   const maintenanceId = `sqlite-wal:${++nextMaintenanceId}`;
+  const walPath = options.databasePath ? `${options.databasePath}-wal` : undefined;
+  let lastCheckpointAt = scope.now();
   // The periodic pass sets the vacuum budget; the next run consumes it, ticks add none.
   let nextPageBudget = 0;
   const maintainPeriodic = (
@@ -339,6 +338,19 @@ export function configureSqliteWalMaintenance(
     const runTickCheckpoint = (mode: SqliteWalCheckpointMode) =>
       checkpointOwner.checkpoint(mode, { quiet });
     runMaintenance(() => {
+      const now = scope.now();
+      // Delegated host ticks are skipped before entering this maintenance owner.
+      if (
+        quiet &&
+        now >= lastCheckpointAt &&
+        now - lastCheckpointAt < DEFAULT_SQLITE_WAL_CHECKPOINT_TICK_MS &&
+        (!walPath ||
+          (fs.statSync(walPath, { throwIfNoEntry: false })?.size ?? 0) <=
+            DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES)
+      ) {
+        return true;
+      }
+      lastCheckpointAt = now;
       const reclaimed = reclaimSqliteWalFreePages(db, runTickCheckpoint, {
         checkpointMode: request.checkpointMode,
         maxPages: request.maxPages,
@@ -359,10 +371,10 @@ export function configureSqliteWalMaintenance(
       if (
         checkpointed &&
         request.checkpointMode === "PASSIVE" &&
-        (checkpointOwner.health?.walBytes ?? 0) > DEFAULT_SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES
+        (checkpointOwner.health?.walBytes ?? 0) > DEFAULT_SQLITE_WAL_TRUNCATE_THRESHOLD_BYTES
       ) {
-        // A completed PASSIVE checkpoint need not recycle its high-water file
-        // until another commit. Try once without waiting for readers or writers.
+        // Retain ordinary WALs for reuse; reclaim oversized files without waiting
+        // for readers or writers after PASSIVE has finished copying their pages.
         admit?.("transaction");
         runWithSqliteBusyTimeout(db, 0, () => runTickCheckpoint("TRUNCATE"));
       }

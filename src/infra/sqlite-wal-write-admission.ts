@@ -8,6 +8,7 @@ import type {
 } from "./sqlite-wal-checkpoint.js";
 
 export type SqliteWalPeriodicRequest = {
+  /** Zero requests a checkpoint only when the maintenance cadence or WAL pressure is due. */
   maxPages: number;
   /** Subsequent vacuum units keep FIFO yields without repeating once-per-pass maintenance. */
   continuation?: boolean;
@@ -61,10 +62,14 @@ export function createSqliteWalMaintenanceScheduler(
         let remaining = pageBudget();
         let continuation = false;
         while (true) {
-          const request = prepare(remaining);
+          const admission = admissions.get(database);
           // A delegated writer's checkpoint-only tick would round-trip through its worker
           // and race store replacement; worker connections to the same WAL tick inline.
-          if (!request || (remaining === 0 && admissions.get(database)?.execute)) {
+          if (remaining === 0 && admission?.execute) {
+            return;
+          }
+          const request = prepare(remaining);
+          if (!request) {
             return;
           }
           request.continuation = continuation;
@@ -74,7 +79,6 @@ export function createSqliteWalMaintenanceScheduler(
               result = operation(request);
             }
           };
-          const admission = admissions.get(database);
           if (admission?.execute) {
             result = await admission.execute(request);
             if (!prepare(remaining)) {
