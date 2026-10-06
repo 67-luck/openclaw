@@ -90,6 +90,12 @@ export function createControlUiMockResponses(
     return value;
   }
 
+  function applySessionPlacement(params: unknown, response: Record<string, unknown>) {
+    return isRecord(params) && params.includeSessionPlacement === true
+      ? { sessionPlacement: {}, ...response }
+      : response;
+  }
+
   function valuesEqual(actual: unknown, expected: unknown): boolean {
     if (Object.is(actual, expected)) {
       return true;
@@ -285,6 +291,7 @@ export function createControlUiMockResponses(
     select: configuredResponse,
     startupPending,
     applyAgentModel,
+    applySessionPlacement,
     sessionList: sessionListResponse,
     cases: responseCases,
     sequence: responseSequence,

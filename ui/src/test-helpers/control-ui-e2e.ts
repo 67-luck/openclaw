@@ -2022,7 +2022,7 @@ function installControlUiMockGateway(
           name: scenario.assistantName,
         };
       case "agents.list":
-        return {
+        return responseFixtures.applySessionPlacement(params, {
           agents: [
             {
               id: scenario.defaultAgentId,
@@ -2036,7 +2036,7 @@ function installControlUiMockGateway(
           defaultId: scenario.defaultAgentId,
           mainKey: "main",
           scope: scenario.sessionScope,
-        };
+        });
       case "agents.files.list":
         return {
           agentId:
