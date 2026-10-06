@@ -2,12 +2,15 @@ import "../test-utils/prepare-compiled-subprocesses.js";
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { loadCombinedSessionStoreForGatewayCoreAsync } from "../config/sessions/combined-store-gateway-read.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { withIncognitoSessionActor } from "../config/sessions/session-incognito-binding.js";
 import { resolvePhysicalSessionStorePath } from "../config/sessions/session-store-path.js";
 import { createCompletionGrantLineageAdmission } from "../gateway/tool-resolution-completion.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import type { IncognitoAgentDatabaseExecution } from "./openclaw-agent-execution-incognito.js";
 import { captureOpenClawAgentDatabaseExecution } from "./openclaw-agent-execution.js";
+import { runOpenClawAgentWorkerWrite } from "./openclaw-agent-write-admission.js";
 
 // Exercise acquisition at the broker's two-worker floor.
 vi.mock("node:os", async (importOriginal) => ({
@@ -94,6 +97,48 @@ it("keeps durable completion lineage in its incognito requester's captured root"
       ]);
     });
   } finally {
+    if (originalRoot === undefined) {
+      delete process.env.OPENCLAW_STATE_DIR;
+    } else {
+      process.env.OPENCLAW_STATE_DIR = originalRoot;
+    }
+  }
+});
+
+it("rejects an ambient store-root change while the actor listing waits for FIFO custody", async () => {
+  const originalRoot = process.env.OPENCLAW_STATE_DIR;
+  const entered = createDeferredCore();
+  const release = createDeferredCore();
+  const started = createDeferredCore();
+  const replacementRoot = tempDirs.make("incognito-listing-replacement-root-");
+  process.env.OPENCLAW_STATE_DIR = env.OPENCLAW_STATE_DIR;
+  const held = runOpenClawAgentWorkerWrite(
+    { target: actor.identity, assertCurrent: () => actor.assertReadable() },
+    async () => {
+      entered.resolve();
+      await release.promise;
+    },
+  );
+  try {
+    await entered.promise;
+    const listing = withIncognitoSessionActor(actor, () => {
+      const result = loadCombinedSessionStoreForGatewayCoreAsync({
+        agents: { entries: { main: {} } },
+      });
+      started.resolve();
+      return result;
+    });
+    const rejected = expect(listing).rejects.toThrow(
+      "Session stores changed while preparing the listing",
+    );
+    await started.promise;
+    process.env.OPENCLAW_STATE_DIR = replacementRoot;
+    release.resolve();
+    await held;
+    await rejected;
+  } finally {
+    release.resolve();
+    await held;
     if (originalRoot === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
