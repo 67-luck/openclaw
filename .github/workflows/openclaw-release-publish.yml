@@ -126,6 +126,88 @@ env:
   NODE_VERSION: "24.21.0"
 
 jobs:
+  sealed_authority_runtime_proof:
+    name: Sealed authority runtime proof fixture
+    if: inputs.tag == 'v9999.1.1' && inputs.plugins == 'authority-proof'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Resolve or dispatch proof child
+        id: child
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PROVIDED_CHILD_RUN_ID: ${{ inputs.openclaw_npm_resume_run_id }}
+        run: |
+          set -euo pipefail
+          child_run_id="${PROVIDED_CHILD_RUN_ID:-}"
+          if [[ -z "$child_run_id" ]]; then
+            baseline="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/plugin-clawhub-release.yml/runs?branch=${GITHUB_REF_NAME}&event=workflow_dispatch&per_page=20" --jq '[.workflow_runs[].id] | max // 0')"
+            gh workflow run plugin-clawhub-release.yml \
+              --repo "$GITHUB_REPOSITORY" \
+              --ref "$GITHUB_REF_NAME" \
+              -f publish_scope=selected \
+              -f plugins=@openclaw/acpx \
+              -f ref="$GITHUB_SHA" \
+              -f dry_run=true
+            for _ in $(seq 1 40); do
+              child_run_id="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/plugin-clawhub-release.yml/runs?branch=${GITHUB_REF_NAME}&event=workflow_dispatch&per_page=20" --jq ".workflow_runs[] | select(.id > ${baseline} and .head_sha == \"${GITHUB_SHA}\" and .actor.login == \"github-actions[bot]\") | .id" | head -n 1)"
+              [[ -n "$child_run_id" ]] && break
+              sleep 3
+            done
+          fi
+          [[ "$child_run_id" =~ ^[1-9][0-9]*$ ]] || { echo "Proof child run was not resolved" >&2; exit 1; }
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${child_run_id}" > "$RUNNER_TEMP/child-run.json"
+          echo "run_id=$child_run_id" >> "$GITHUB_OUTPUT"
+
+      - name: Upload sealed parent authorization
+        env:
+          CHILD_RUN_ID: ${{ steps.child.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          child_repository="$(jq -r '.repository.full_name' "$RUNNER_TEMP/child-run.json")"
+          child_workflow="$(jq -r '.path | split("@")[0]' "$RUNNER_TEMP/child-run.json")"
+          child_run_attempt="$(jq -r '.run_attempt' "$RUNNER_TEMP/child-run.json")"
+          child_ref="$(jq -r '.head_branch' "$RUNNER_TEMP/child-run.json")"
+          child_sha="$(jq -r '.head_sha' "$RUNNER_TEMP/child-run.json")"
+          artifact_name="openclaw-clawhub-parent-authorization-v2-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${CHILD_RUN_ID}-${child_run_attempt}"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg runId "$GITHUB_RUN_ID" \
+            --arg runAttempt "$GITHUB_RUN_ATTEMPT" \
+            --arg ref "$GITHUB_REF_NAME" \
+            --arg fullRef "$GITHUB_REF" \
+            --arg headSha "$GITHUB_SHA" \
+            --arg childRepository "$child_repository" \
+            --arg childWorkflow "$child_workflow" \
+            --arg childRunId "$CHILD_RUN_ID" \
+            --arg childRunAttempt "$child_run_attempt" \
+            --arg childRef "$child_ref" \
+            --arg childFullRef "refs/heads/${child_ref}" \
+            --arg childHeadSha "$child_sha" \
+            --arg digest "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" \
+            '{version:2,kind:"openclaw-clawhub-parent-authorization",repository:$repository,workflow:".github/workflows/openclaw-release-publish.yml",runId:$runId,runAttempt:$runAttempt,ref:$ref,fullRef:$fullRef,headSha:$headSha,childRepository:$childRepository,childWorkflow:$childWorkflow,childRunId:$childRunId,childRunAttempt:$childRunAttempt,childRef:$childRef,childFullRef:$childFullRef,childHeadSha:$childHeadSha,candidateRepository:$repository,candidateSha:$headSha,toolingRef:$ref,toolingFullRef:$fullRef,toolingSha:$headSha,authorizationRoute:"automated-sealed",packages:["allowed","cancelled","nonbot","revoked","reassigned"]|map({name:("@openclaw/sealed-live-" + .),version:"0.0.0-proof",inventoryDigest:$digest})}' \
+            > "$RUNNER_TEMP/authorization.json"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_ENV"
+      - name: Preserve exact sealed receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ env.artifact_name }}
+          path: ${{ runner.temp }}/authorization.json
+          if-no-files-found: error
+          retention-days: 1
+      - name: Finish proof parent
+        env:
+          WAIT_FOR_CANCEL: ${{ inputs.wait_for_clawhub }}
+        run: |
+          set -euo pipefail
+          if [[ "$WAIT_FOR_CANCEL" == "true" ]]; then
+            sleep 1200
+          fi
+          echo "Intentional failed parent after sealed receipt upload" >&2
+          exit 1
+
   resolve_release_target:
     name: Resolve release target
     runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-latest'))) || ('ubuntu-latest') }}
