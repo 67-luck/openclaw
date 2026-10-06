@@ -365,8 +365,10 @@ if (kind === "held-unrelated") await waitForControl(controlUrl + "/wait");
 if (kind === "unrelated" || kind === "held-unrelated") { process.stderr.write("unrelated startup failure\\n"); process.exit(1); }
 const server = createServer(async (req, res) => {
   if (req.url === "/readyz" && kind === "held-ready") await waitForControl(controlUrl + "/wait");
-  res.writeHead(req.url === "/readyz" ? 200 : 404, { "content-type": "application/json" });
-  res.end(JSON.stringify({ ready: req.url === "/readyz" && kind !== "never-ready" }));
+  const ready = req.url === "/readyz" && kind !== "never-ready";
+  const startup = req.url === "/startupz";
+  res.writeHead(ready || startup ? 200 : 404, { "content-type": "application/json" });
+  res.end(JSON.stringify(startup ? { ok: true, status: "started" } : { ready }));
 });
 process.on("SIGTERM", () => server.close(() => process.exit(0))); server.listen(port, "127.0.0.1");
 `,
@@ -2317,7 +2319,6 @@ describe("openclaw test instance", () => {
           attempt: 3,
           status: 503,
           ready: true,
-          error: "foreign-responder",
         }),
       }),
     );

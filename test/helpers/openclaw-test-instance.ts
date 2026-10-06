@@ -477,13 +477,19 @@ async function waitForGatewayReady(
             const startup: unknown = await startupResponse.json();
             probe.phase = "complete";
             if (
-              probe.uptimeMs !== undefined &&
-              probe.uptimeMs > Date.now() - startedAt + GATEWAY_READINESS_UPTIME_SKEW_MS
+              isRecord(startup) &&
+              (startup.status === "starting" ||
+                startup.status === "started" ||
+                startup.status === "draining")
             ) {
-              probe.error = "foreign-responder";
-              return false;
+              probe.startupStatus = startup.status;
             }
-            return true;
+            return (
+              startupResponse.ok &&
+              isRecord(startup) &&
+              startup.ok === true &&
+              startup.status === "started"
+            );
           })(),
           exitPromise,
           timeoutPromise,
@@ -550,6 +556,7 @@ async function waitForGatewayReady(
   } finally {
     record?.({
       probe: "GET /readyz",
+      settlementProbe: "GET /startupz",
       startedAtMs: startedAt,
       deadlineMs: startedAt + timeoutMs,
       elapsedMs: Date.now() - startedAt,
