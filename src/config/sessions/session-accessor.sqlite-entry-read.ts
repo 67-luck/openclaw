@@ -322,19 +322,7 @@ function scanSessionEntryRows(
     if (firstLookupKey === undefined) {
       return undefined;
     }
-    let rows: ResolvedSessionEntryRow["row"][];
-    if (lookupKeys.length === 1) {
-      const queries = getExactSessionEntryQueries(database.db);
-      const row = queries.row(firstLookupKey, projection);
-      rows = row ? [row] : [];
-    } else {
-      rows = executeSqliteQuerySync(
-        database.db,
-        selectReadableSessionEntryRows(database, projection)
-          .where("session_key", "in", lookupKeys)
-          .orderBy("session_key", "asc"),
-      ).rows;
-    }
+    const rows = readSelectedSessionEntryRows(database, lookupKeys, projection);
     let selected: ResolvedSessionEntryRow | undefined;
     for (const row of rows) {
       const entry = parseReadableSqliteSessionEntryRow(database, row, projection);
@@ -394,6 +382,76 @@ export function readExactSessionEntryRow(
   });
 }
 
+/** Single-key and cohort readers share the same row selection and ordering. */
+function readSelectedSessionEntryRows(
+  database: OpenClawAgentDatabaseReader,
+  selection: string | readonly string[],
+  projection: SessionEntryProjection | "delivery",
+  validation?: "canonical",
+  options?: { includeBoardPresence?: boolean; includeMembership?: boolean },
+): ReadableSessionEntryRow[] {
+  const key =
+    typeof selection === "string" ? selection : selection.length === 1 ? selection[0] : undefined;
+  if (
+    key !== undefined &&
+    projection !== "delivery" &&
+    !options?.includeBoardPresence &&
+    !options?.includeMembership
+  ) {
+    const queries = getExactSessionEntryQueries(database.db);
+    const row =
+      validation === "canonical"
+        ? queries.canonical(key, projection)
+        : queries.row(key, projection);
+    return row ? [row] : [];
+  }
+  const baseQuery =
+    validation === "canonical"
+      ? canonicalSessionValidationQuery(database, { metadata: true })
+          .select("session_nodes.updated_at")
+          .select(
+            sessionEntrySnapshotColumnsForKeys(
+              undefined,
+              projection === "delivery" ? "list" : projection,
+            ),
+          )
+      : selectReadableSessionEntryRows(database, projection);
+  const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
+  // Old stores have no board tables until first use; branch before compiling SQL.
+  const boardQuery = options?.includeBoardPresence
+    ? baseQuery.select(
+        (tableExists(database.db, "board_widgets")
+          ? eb.exists(
+              eb
+                .selectFrom("board_tabs")
+                .select("session_key")
+                .whereRef("board_tabs.session_key", "=", "session_nodes.session_key"),
+            )
+          : eb.lit(0)
+        ).as("board_present"),
+      )
+    : baseQuery;
+  const query = options?.includeMembership
+    ? boardQuery.select((outer) =>
+        outer
+          .selectFrom("session_members")
+          .select(({ fn }) =>
+            fn.agg<string>("json_group_array", ["identity_id"]).orderBy("identity_id").as("ids"),
+          )
+          .whereRef("session_members.session_key", "=", "session_nodes.session_key")
+          .$asScalar()
+          .as("member_ids_json"),
+      )
+    : boardQuery;
+  return executeSqliteQuerySync(
+    database.db,
+    (typeof selection === "string"
+      ? query.where("session_nodes.session_key", "=", selection)
+      : query.where("session_nodes.session_key", "in", sqliteStringSet(selection))
+    ).orderBy("session_nodes.session_key", "asc"),
+  ).rows;
+}
+
 /** Capture exact rows once; failed cohort acquisition retains single-key error isolation. */
 export function prepareExactSessionEntryRowReads(
   database: OpenClawAgentDatabaseReader,
@@ -403,69 +461,11 @@ export function prepareExactSessionEntryRowReads(
   options?: { includeBoardPresence?: boolean; includeMembership?: boolean },
 ): (sessionKey: string) => ResolvedSessionEntryRow | undefined {
   return runSqliteReadOperationSync(database.db, () => {
-    const baseQuery =
-      validation === "canonical"
-        ? canonicalSessionValidationQuery(database, { metadata: true })
-            .select("session_nodes.updated_at")
-            .select(
-              sessionEntrySnapshotColumnsForKeys(
-                undefined,
-                projection === "delivery" ? "list" : projection,
-              ),
-            )
-        : selectReadableSessionEntryRows(database, projection);
-    const eb = expressionBuilder<OpenClawAgentKyselyDatabase, "session_nodes">();
-    // Old stores have no board tables until first use; branch before compiling SQL.
-    const boardQuery = options?.includeBoardPresence
-      ? baseQuery.select(
-          (tableExists(database.db, "board_widgets")
-            ? eb.exists(
-                eb
-                  .selectFrom("board_tabs")
-                  .select("session_key")
-                  .whereRef("board_tabs.session_key", "=", "session_nodes.session_key"),
-              )
-            : eb.lit(0)
-          ).as("board_present"),
-        )
-      : baseQuery;
-    const query = options?.includeMembership
-      ? boardQuery.select((outer) =>
-          outer
-            .selectFrom("session_members")
-            .select(({ fn }) =>
-              fn.agg<string>("json_group_array", ["identity_id"]).orderBy("identity_id").as("ids"),
-            )
-            .whereRef("session_members.session_key", "=", "session_nodes.session_key")
-            .$asScalar()
-            .as("member_ids_json"),
-        )
-      : boardQuery;
     const readRows = (selection: string | readonly string[]) =>
-      executeSqliteQuerySync(
-        database.db,
-        typeof selection === "string"
-          ? query.where("session_nodes.session_key", "=", selection)
-          : query.where("session_nodes.session_key", "in", sqliteStringSet(selection)),
-      ).rows;
+      readSelectedSessionEntryRows(database, selection, projection, validation, options);
     let rows: ReadableSessionEntryRow[];
     try {
-      if (
-        sessionKeys.length === 1 &&
-        projection !== "delivery" &&
-        !options?.includeBoardPresence &&
-        !options?.includeMembership
-      ) {
-        const queries = getExactSessionEntryQueries(database.db);
-        const key = sessionKeys[0]!;
-        const row =
-          validation === "canonical"
-            ? queries.canonical(key, projection)
-            : queries.row(key, projection);
-        rows = row ? [row] : [];
-      } else {
-        rows = readRows(sessionKeys);
-      }
+      rows = readRows(sessionKeys);
     } catch {
       // Native conversion errors have no row identity; exact reads preserve each key's error.
       if (options?.includeBoardPresence || options?.includeMembership) {

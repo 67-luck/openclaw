@@ -15,7 +15,10 @@ import {
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../auto-reply/reply/reply-run-registry.state.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
-import { hasRestartRecoveryTerminalRun } from "../../config/sessions/restart-recovery-state.js";
+import {
+  hasRestartRecoveryTerminalRun,
+  isRetryableUnadoptedChatClaim,
+} from "../../config/sessions/restart-recovery-state.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { claimAgentRunContext, clearAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -30,7 +33,6 @@ import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import type { DedupeEntry } from "../server-shared.js";
 import { writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import {
-  isRetryableUnadoptedChatClaim,
   resolveRestartSafeChatAdmission,
   withRestartSafeChatPlacement,
   type PreparedRestartSafeChatPlacement,
@@ -96,6 +98,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     restartSafeRequest,
     expectedLeafEntryId,
   } = session;
+  const cachedMeta = { cached: true, runId: clientRunId };
   const assertSessionTargetCurrent = session.assertSessionTargetCurrent;
   const { chatSendTraceAttributes, originatingRoute } = prepareChatSendAdmissionContext({
     request,
@@ -124,10 +127,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     const goalRetry = inspectGoalChatSendRetry({ ...params, prepared: preparedGoalRetry });
     if (goalRetry.kind !== "new") {
       if (goalRetry.kind === "replay") {
-        respond(true, { ...goalRetry.receipt, replayed: true }, undefined, {
-          cached: true,
-          runId: clientRunId,
-        });
+        respond(true, { ...goalRetry.receipt, replayed: true }, undefined, cachedMeta);
       }
       return undefined;
     }
@@ -463,16 +463,10 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     const supersedingCached =
       supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
-      respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, {
-        cached: true,
-        runId: clientRunId,
-      });
+      respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, cachedMeta);
       return { ok: false as const };
     }
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
     return { ok: false as const };
   }
   if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
@@ -488,20 +482,14 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
       abortPendingChatSend(activeRunAbort?.entry?.abortStopReason ?? "restart");
     }
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
-    respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, cachedMeta);
     return { ok: false as const };
   }
   if (!activeRunAbort) {
     gatewayWorkAdmission.release();
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
-      respond(aborted.ok, aborted.payload, aborted.error, {
-        cached: true,
-        runId: clientRunId,
-      });
+      respond(aborted.ok, aborted.payload, aborted.error, cachedMeta);
       return { ok: false as const };
     }
     respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "chat run admission failed"));
@@ -509,10 +497,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   }
   if (!activeRunAbort.registered) {
     gatewayWorkAdmission.release();
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
     return { ok: false as const };
   }
   const acquiredGatewayWorkAdmission = gatewayWorkAdmission;

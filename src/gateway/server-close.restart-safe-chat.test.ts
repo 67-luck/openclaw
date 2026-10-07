@@ -40,7 +40,6 @@ it("joins accepted restart-safe terminal persistence after the real close prelud
     await upsertSessionEntryCore(target, {
       sessionId: "close-session",
       updatedAt: 1_000,
-      status: "running",
       restartRecoveryDeliveryRunId: "close-run",
       restartRecoveryDeliverySourceRunId: "close-run",
     });

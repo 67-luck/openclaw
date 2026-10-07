@@ -17,6 +17,7 @@ import type { SessionLifecycleTimestamps } from "../../config/sessions/lifecycle
 import {
   buildRestartRecoveryClaimCleanupPatch,
   hasRestartRecoveryTerminalRun,
+  isRetryableUnadoptedChatClaim,
 } from "../../config/sessions/restart-recovery-state.js";
 import {
   patchSessionEntryTarget,
@@ -27,6 +28,7 @@ import {
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import { buildRestartRecoveryExpectedState } from "../../config/sessions/session-transcript-turn-state.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveProjectedAgentRunProgressState } from "../../infra/agent-run-registry.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../../infra/device-identity-async.js";
 import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -67,15 +69,6 @@ export type RestartSafeChatTerminalState = {
   error?: string;
   errorKind?: "state_contention";
   retryable: boolean;
-  status: "failed" | "killed";
-};
-
-type RetryableUnadoptedChatClaim = SessionEntry & {
-  abortedLastRun?: false;
-  restartRecoveryDeliveryContext?: undefined;
-  restartRecoveryDeliveryRequestFingerprint: string;
-  restartRecoveryDeliveryRunId: string;
-  restartRecoveryDeliverySourceRunId: string;
   status: "failed" | "killed";
 };
 
@@ -144,21 +137,6 @@ export async function createRestartSafeChatRequest(params: {
   };
 }
 
-export function isRetryableUnadoptedChatClaim(
-  entry: SessionEntry | undefined,
-  clientRunId: string,
-): entry is RetryableUnadoptedChatClaim {
-  return Boolean(
-    entry &&
-    entry.abortedLastRun !== true &&
-    (entry.status === "failed" || entry.status === "killed") &&
-    entry.restartRecoveryDeliveryContext === undefined &&
-    entry.restartRecoveryDeliveryRunId === clientRunId &&
-    entry.restartRecoveryDeliverySourceRunId === clientRunId &&
-    entry.restartRecoveryDeliveryRequestFingerprint,
-  );
-}
-
 function isAdoptedRestartRecoveryClaim(
   entry: SessionEntry | undefined,
   clientRunId: string,
@@ -185,11 +163,7 @@ export async function resolveDurableChatClaim(params: {
   warn: (message: string) => void;
 }): Promise<DurableChatClaimResolution> {
   let entry = params.entry;
-  if (
-    isAdoptedRestartRecoveryClaim(entry, params.clientRunId) &&
-    entry.status === "running" &&
-    entry.abortedLastRun === true
-  ) {
+  if (isAdoptedRestartRecoveryClaim(entry, params.clientRunId) && entry.abortedLastRun === true) {
     const recoverySessionError = resolveAgentSessionWorkStartError(
       params.canonicalSessionKey,
       entry,
@@ -220,11 +194,7 @@ export async function resolveDurableChatClaim(params: {
       params.warn(String(error));
     }
     entry = params.reloadEntry();
-    if (
-      isAdoptedRestartRecoveryClaim(entry, params.clientRunId) &&
-      entry.status === "running" &&
-      entry.abortedLastRun === true
-    ) {
+    if (isAdoptedRestartRecoveryClaim(entry, params.clientRunId) && entry.abortedLastRun === true) {
       return {
         kind: "pending",
         message: "accepted chat turn recovery is still pending; retry",
@@ -258,7 +228,6 @@ function isRestartSafeChatSession(params: {
   return Boolean(
     entry?.sessionId &&
     params.sessionKey !== "global" &&
-    entry.status !== "running" &&
     entry.abortedLastRun !== true &&
     entry.archivedAt === undefined &&
     entry.initializationPending !== true &&
@@ -291,6 +260,11 @@ function hasRestartUnsafeChatWork(params: {
     findRestartRecoveryUnsafeChatAdmissionHook(
       resolveSessionDispatchKind(params.sessionKey, params.entry),
     ) !== undefined ||
+    resolveProjectedAgentRunProgressState({
+      agentId: params.agentId,
+      sessionId: params.sessionId,
+      sessionKeys: [params.sessionKey],
+    }) !== undefined ||
     listActiveEmbeddedRunSessionIds().includes(params.sessionId) ||
     replyRunRegistry.isActive(params.activeRunScopeKey)
   ) {

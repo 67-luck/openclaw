@@ -43,7 +43,6 @@ it("settles restart-safe chat claims without caller-thread SQL", async () => {
     await upsertSessionEntryCore(target, {
       sessionId: "terminal-session",
       updatedAt: 1_000,
-      status: "running",
       restartRecoveryDeliveryRunId: "terminal-run",
       restartRecoveryDeliverySourceRunId: "source-run",
     });
@@ -96,7 +95,6 @@ it.each(["restartRecoveryDeliveryRunId", "restartRecoveryDeliverySourceRunId"] a
       await upsertSessionEntryCore(target, {
         sessionId: "terminal-session",
         updatedAt: 1_000,
-        status: "running",
         restartRecoveryDeliveryRunId: "terminal-run",
         restartRecoveryDeliverySourceRunId: "source-run",
       });
@@ -137,7 +135,7 @@ it.each(["restartRecoveryDeliveryRunId", "restartRecoveryDeliverySourceRunId"] a
               "SELECT status, json_extract(entry_json, ?) AS owner FROM session_nodes WHERE session_key = ?",
             )
             .get(`$.${field}`, target.sessionKey),
-        ).toEqual({ status: "running", owner: "foreign-run" });
+        ).toEqual({ status: null, owner: "foreign-run" });
       } finally {
         spy.mockRestore();
         foreign.close();
@@ -155,7 +153,6 @@ it("refuses terminal settlement against a replacement store with identical claim
     await upsertSessionEntryCore(target, {
       sessionId: "terminal-session",
       updatedAt: 1_000,
-      status: "running",
       restartRecoveryDeliveryRunId: "terminal-run",
       restartRecoveryDeliverySourceRunId: "source-run",
     });
@@ -185,7 +182,7 @@ it("refuses terminal settlement against a replacement store with identical claim
                FROM session_nodes WHERE session_key = ?`,
             )
             .get(target.sessionKey),
-        ).toEqual({ status: "running", claim: "terminal-run" });
+        ).toEqual({ status: null, claim: "terminal-run" });
       } finally {
         observer.close();
       }
