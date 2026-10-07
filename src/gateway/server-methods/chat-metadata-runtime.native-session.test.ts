@@ -257,6 +257,7 @@ describe("gateway chat metadata native session ownership", () => {
       expect(await harness.runtime.read({ ...request, includeModels: false })).toEqual({
         commands: [{ name: "command-1-1" }],
         swarmEnabled: true,
+        revision: expect.any(String),
       });
       expect(acpRead).not.toHaveBeenCalled();
     } finally {
