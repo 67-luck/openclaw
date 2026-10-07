@@ -5,6 +5,7 @@ import {
   bindInheritedNativeProcessOwner,
   bindInheritedProcessLineageFds,
 } from "../process/supervisor/inherited-process-lineage.js";
+import { isOwnedProcessGroupGone } from "../process/supervisor/service-child-group-ownership.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { WorkerBrowserRuntime } from "./browser-runtime.js";
 import {
@@ -128,8 +129,14 @@ function createWorkerIpcLifetime(): WorkerCommandLifetime {
       }
     },
     terminateOwnedTree: () => {
+      if (process.platform === "win32") {
+        signalProcessTree(process.pid, "SIGKILL");
+        return;
+      }
       // Anchored applications share their owner's group; direct workers may lead their own.
-      signalProcessTree(process.pid, "SIGKILL");
+      // Exec relays start parent-loss cleanup only after this process dies, so decide by
+      // syscall: a ps census here can stall past their cleanup budget.
+      process.kill(isOwnedProcessGroupGone(process.pid) ? process.pid : -process.pid, "SIGKILL");
     },
     dispose: () => {
       if (disposed) {
