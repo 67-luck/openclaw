@@ -55,7 +55,6 @@ export const PLUGIN_COMPAT_RECORDS = [
       "GatewayRequestHandlerOptions.context.placementStandingGrants.resolveBinding",
       "GatewayRequestHandlerOptions.context.placementStandingGrants.retain",
       "GatewayRequestHandlerOptions.context.placementStandingGrants.validate",
-      "GatewayRequestHandlerOptions.context.placementStandingGrants.consume",
       "GatewayRequestHandlerOptions.context.workerSessionPlacementService.listPendingWorkspaceResults",
       "GatewayRequestHandlerOptions.context.workerSessionPlacementService.getWorkspaceResultReconcilingSessionIds",
       "GatewayRequestHandlerOptions.context.githubPublicationService.deferOrphanedRequests",
