@@ -627,6 +627,7 @@ export async function restoreWorkshopSkill(
       path.join(paths.versionsDir, target.id),
     );
     const staging = path.join(paths.root, ARCHIVE_DIR, `.restore-${randomUUID()}`);
+    const previous = path.join(paths.root, ARCHIVE_DIR, `.restore-previous-${randomUUID()}`);
     try {
       for (const [filePath, content] of files) {
         const destination = path.join(staging, ...filePath.split("/"));
@@ -634,9 +635,21 @@ export async function restoreWorkshopSkill(
         await fs.writeFile(destination, content, { flag: "wx" });
       }
       const versionId = await snapshotSkill(paths, "restore");
+      // Swap by rename so a refused or failed publish puts the previous live skill back.
       paths.assertLive();
-      await fs.rm(paths.skillDir, { recursive: true, force: true });
-      await fs.rename(staging, paths.skillDir);
+      const hadLive = await pathExists(paths.skillDir);
+      if (hadLive) {
+        await fs.rename(paths.skillDir, previous);
+      }
+      try {
+        paths.assertLive();
+        await fs.rename(staging, paths.skillDir);
+      } catch (error) {
+        if (hadLive) {
+          await fs.rename(previous, paths.skillDir);
+        }
+        throw error;
+      }
       const summary =
         params.summary ??
         (target.action === "archive"
@@ -647,6 +660,7 @@ export async function restoreWorkshopSkill(
       return { summary, versionId };
     } finally {
       await fs.rm(staging, { recursive: true, force: true });
+      await fs.rm(previous, { recursive: true, force: true });
     }
   });
 }

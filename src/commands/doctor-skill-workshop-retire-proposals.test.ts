@@ -222,7 +222,7 @@ it.each([
   expect(first).toEqual({
     changes: [],
     warnings: [
-      `Could not tell which agent owns Skill Workshop proposal unowned-procedure-1; kept ${proposalDir}. Copy its PROPOSAL.md into the owning agent's workshop skills, delete that directory, then rerun openclaw doctor --fix.`,
+      `Could not tell which agent owns Skill Workshop proposal unowned-procedure-1; kept ${proposalDir}. To keep it, ask the owning agent to save that whole directory (draft and support files) with /learn; then delete the directory and rerun openclaw doctor --fix.`,
     ],
     warningDisposition: "recoverable",
   });

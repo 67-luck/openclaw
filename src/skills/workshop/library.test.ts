@@ -253,4 +253,24 @@ describe("workshop library", () => {
       expect(await listWorkshopArchive({}, "main")).toEqual([]);
     },
   );
+
+  it("keeps the live skill when restore is revoked between the swap's two renames", async () => {
+    await createWorkshopSkill(ctx, { name: "deploy", content: skill("deploy", "step 0") });
+    await patchWorkshopSkill(ctx, { name: "deploy", oldText: "step 0", newText: "step 1" });
+    // Lock time, snapshot publish and the first swap check pass; the final publish is refused.
+    let checks = 0;
+    const revoking = {
+      ...ctx,
+      assertLive: () => {
+        checks += 1;
+        if (checks > 3) {
+          throw new Error("Learning is off.");
+        }
+      },
+    };
+    await expect(restoreWorkshopSkill(revoking, { name: "deploy" })).rejects.toThrow(
+      "Learning is off.",
+    );
+    expect(await readLive("deploy")).toContain("step 1");
+  });
 });
