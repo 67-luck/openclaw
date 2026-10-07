@@ -2233,6 +2233,18 @@ Schemas, stored values, permissions, retention, and update behavior are unchange
 
 ## Migrate a caller
 
+Manual `sessions.compact` requests with `maxLines` retain their selected physical
+store and prepared caller and sharing authority through cold restoration. The
+existing entry worker reads the target, source predicates, and cold metadata in
+one preflight; restoration checks typed source and lifecycle predicates in its
+transaction and live host authority at admission and commit. Foreign durable
+sources open read-only before write admission and get a fresh final check after
+the host grant; refusal rolls back restoration. Native trimming keeps its FIFO
+and synchronous final fences. Prepared checks survive composition with opaque
+SDK callbacks, which remain on the native boundary and never run inside
+restoration worker grants. Schemas, retained bytes, transport ownership,
+accepted-work settlement, and update behavior are unchanged.
+
 Completed-child archive lookups resolve durable store ownership and check exact
 archive registration through the existing history reader. Empty lookups do not
 start the archive reader. Positive lookups retain the original physical database
