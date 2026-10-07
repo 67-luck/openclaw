@@ -218,6 +218,7 @@ describe("node SQLite safety", () => {
         await loadNodeSqliteWithVersion(version);
       expect(() => requireNodeSqlite()).not.toThrow();
       const queries = prepare.mock.calls.length;
+      expect(queries).toBe(1);
       expect(supportsNodeSqliteJsonb()).toBe(jsonb);
       expect(supportsNodeSqliteJsonb()).toBe(jsonb);
       expect(prepare.mock.calls).toHaveLength(queries);
