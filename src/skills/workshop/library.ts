@@ -588,12 +588,11 @@ export async function archiveWorkshopSkill(
         );
       }
       const versionId = await snapshotSkill(paths, "archive");
-      await removePathWithinRoot({
-        rootDir: paths.root,
-        relativePath: params.name,
-        recursive: true,
-        assertBeforeMutation: paths.assertLive,
-      });
+      // One fenced rename takes the skill out of service, so a refusal leaves it whole.
+      const detached = path.join(paths.root, ARCHIVE_DIR, `.archiving-${randomUUID()}`);
+      paths.assertLive();
+      await fs.rename(paths.skillDir, detached);
+      await fs.rm(detached, { recursive: true, force: true });
       const detail = [
         params.absorbedInto ? `merged into ${params.absorbedInto}` : undefined,
         params.reason?.trim() || undefined,
