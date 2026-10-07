@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "../../../packages/gateway-client/src/timeouts.js";
 import {
   ErrorCodes,
   errorShape,
   validateSessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { raceWithTimeout } from "../../../packages/retry/src/index.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { resolveSessionPublicShare } from "../../config/sessions/session-public-share.js";
@@ -68,6 +66,7 @@ import {
   resolveSessionCreateSpawnContext,
   validateSessionCreateSpawnRequest,
 } from "./session-create-spawn.js";
+import { createSessionModelCatalogWait } from "./session-model-catalog-wait.js";
 import {
   bindGatewayRequestHandlerMutationAuthority,
   readGatewayRequestMutationAuthority,
@@ -479,13 +478,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
     if (!authority.ensureActive()) {
       return;
     }
-    let catalogDeadline: number | undefined;
-    const catalogUnavailable = new Error(
-      "The model catalog is still loading. The session was not created; retry shortly.",
-    );
-    const stopCatalogWait = (): never => {
-      throw catalogUnavailable;
-    };
+    const catalogWait = createSessionModelCatalogWait([signal, client?.connectionSignal]);
     const createParams: Parameters<typeof createGatewaySession>[0] = {
       cfg,
       getCurrentConfig,
@@ -550,21 +543,9 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       armSessionDiffBaselineCapture: !repository,
       loadGatewayModelCatalogSnapshot: async () => {
         const captured = await operatorCapture.preparation;
-        const waitSignal = AbortSignal.any(
-          [signal, client?.connectionSignal, captured?.authority.signal].filter(
-            (value): value is AbortSignal => value !== undefined,
-          ),
-        );
-        if (waitSignal.aborted) {
-          stopCatalogWait();
-        }
-        // Leave response headroom below the Node Gateway client's 30-second request budget.
-        catalogDeadline ??= performance.now() + (DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS * 2) / 3;
-        return raceWithTimeout(
+        return catalogWait.run(
           () => context.loadGatewayModelCatalogSnapshot({ agentId: sessionAgentId }),
-          Math.max(0, catalogDeadline - performance.now()),
-          stopCatalogWait,
-          { signal: waitSignal, onAbort: stopCatalogWait },
+          captured?.authority.signal,
         );
       },
       commitGuard,
@@ -633,12 +614,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       },
     };
     const created = await createGatewaySession(createParams).catch((error: unknown) => {
-      if (error === catalogUnavailable) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.UNAVAILABLE, catalogUnavailable.message, { retryable: true }),
-        );
+      if (error === catalogWait.unavailable) {
+        respond(false, undefined, catalogWait.unavailable.error);
         return undefined;
       }
       if (error instanceof ModelAccountConnectAuthorityError) {
