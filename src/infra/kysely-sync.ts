@@ -66,6 +66,13 @@ export function sqliteStringSet(values: readonly string[]): RawBuilder<string> {
   return kyselySql<string>`(SELECT value FROM json_each(${encodeSqliteStringSet(values)}))`;
 }
 
+/** Expands encoded string tuples without adding one SQLite parameter per field. */
+export function sqliteStringSetEntries(
+  encoded: string | RawBuilder<string>,
+): RawBuilder<{ key: number; value: string | null }> {
+  return kyselySql<{ key: number; value: string | null }>`json_each(${encoded})`;
+}
+
 function reportNodeSqliteKyselyQueryError(db: DatabaseSync, error: unknown): void {
   try {
     queryErrorHandlerByDatabase.get(db)?.(error);

@@ -1,6 +1,9 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
-import { sql } from "kysely";
-import { encodeSqliteStringSet, executeSqliteQuerySync } from "../../infra/kysely-sync.js";
+import {
+  encodeSqliteStringSet,
+  executeSqliteQuerySync,
+  sqliteStringSetEntries,
+} from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import {
   conversationIdentityFromSessionEntry,
@@ -173,8 +176,7 @@ export function upsertConversationIdentities(
     "label",
     "metadata_json",
   ] as const;
-  /* kysely-allow-raw: a JSON tuple table keeps the registration batch within SQLite's parameter limit. */
-  const fields = sql<{ key: number; value: string | null }>`json_each(${encoded})`.as("field");
+  const fields = sqliteStringSetEntries(encoded).as("field");
   executeSqliteQuerySync(
     database.db,
     db

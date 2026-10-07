@@ -4,7 +4,6 @@ import {
   isFutureDateTimestampMs,
 } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { sql } from "kysely";
 import { isPluginOwnedBindingMetadata } from "../../plugins/conversation-binding-metadata.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import {
@@ -12,6 +11,7 @@ import {
   getNodeSqliteKysely,
   prepareSqliteQuerySync,
   encodeSqliteStringSet,
+  sqliteStringSetEntries,
 } from "../kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../sqlite-transaction.js";
 import { currentConversationBindingRow } from "./current-conversation-binding-row.js";
@@ -96,8 +96,7 @@ function createCurrentConversationBindingQueries(db: DatabaseSync) {
           ]),
         ),
       );
-      /* kysely-allow-raw: a fixed JSON tuple table bounds parameters without changing SQLite string encoding. */
-      const fields = sql<{ key: number; value: string }>`json_each(${encoded})`.as("field");
+      const fields = sqliteStringSetEntries(encoded).as("field");
       const requested = bindingDb.with("requested", (query) =>
         query
           .selectFrom(fields)
