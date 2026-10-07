@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -20,9 +20,10 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { withOpenClawStateLease } from "../../state/openclaw-state-lease.js";
 import * as allocation from "./allocation.js";
-import { captureWorktreeAllocationHeartbeat } from "./allocation.test-support.js";
+import { captureWorktreeMutationHeartbeat } from "./allocation.test-support.js";
 import * as capacity from "./capacity.js";
 import { useInProcessWorktreeCapacityTransport } from "./capacity.test-support.js";
+import { readPendingWorktrees } from "./pending-slots.js";
 import { getRegistryWorktree } from "./registry.test-support.js";
 import { abortWorktreeRemoval, claimWorktreeRemoval } from "./run-lease.js";
 import { ManagedWorktreeService } from "./service.js";
@@ -415,7 +416,7 @@ describe("ManagedWorktreeService capacity", () => {
   );
 
   it.each(["create", "restore"] as const)(
-    "preserves materialized files and their branch when %s loses allocation ownership",
+    "preserves materialized files and their branch when %s loses checkout ownership",
     async (operation) => {
       const params = { repoRoot: repo, name: "lost-allocation", baseRef: "HEAD" };
       const branch = `openclaw/${params.name}`;
@@ -426,7 +427,7 @@ describe("ManagedWorktreeService capacity", () => {
         await service.remove({ id: archived.id, reason: "test" });
       }
       const before = await service.listRegistryRecords();
-      const revokeAllocation = captureWorktreeAllocationHeartbeat();
+      const revokeCheckout = captureWorktreeMutationHeartbeat();
       let destination: string | undefined;
       const realRun = commandExec.runCommandWithTimeout;
       vi.spyOn(commandExec, "runCommandWithTimeout").mockImplementation(async (argv, options) => {
@@ -438,7 +439,12 @@ describe("ManagedWorktreeService capacity", () => {
           result.code === 0
         ) {
           destination = argv[argv.indexOf("-C") + 1];
-          await revokeAllocation();
+          const checkoutId =
+            archived?.id ??
+            (await readPendingWorktrees(env)).find(({ record }) => record.path === destination)
+              ?.record.id;
+          assert(checkoutId);
+          await revokeCheckout(checkoutId);
         }
         return result;
       });
@@ -470,7 +476,7 @@ describe("ManagedWorktreeService capacity", () => {
       let cleanupEntered = false;
       const recoveryRegistryReads: string[] = [];
       let destination: string | undefined;
-      const revokeAllocation = captureWorktreeAllocationHeartbeat();
+      const revokeCheckout = captureWorktreeMutationHeartbeat();
       const nativeOutcomeUnknown = Object.assign(new Error("native hydration outcome unknown"), {
         code: "outcome-unknown",
       });
@@ -483,7 +489,12 @@ describe("ManagedWorktreeService capacity", () => {
           .split("\n")
           .find((line) => line.startsWith("worktree ") && line.endsWith("retry-hydration"))
           ?.slice("worktree ".length);
-        await revokeAllocation();
+        const pending = (await readPendingWorktrees(env)).find(
+          ({ record }) => record.path === destination,
+        );
+        assert(pending);
+        expect(pending.record.path).toBe(destination);
+        await revokeCheckout(pending.record.id);
         if (changed === "unknown") {
           throw nativeOutcomeUnknown;
         }

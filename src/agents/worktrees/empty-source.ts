@@ -5,6 +5,7 @@ import { resolveStateDir } from "../../config/state-dir.js";
 import { gitNullConfigPath } from "../../infra/git-exec.js";
 import { mergeProcessEnv } from "../../infra/process-env.js";
 import { listGitWorktrees, requireGit, worktreePathExists } from "./git.js";
+import { readPendingWorktrees } from "./pending-slots.js";
 import { readRegistryWorktrees } from "./registry-read.js";
 import { captureWorktreeRunEndContext } from "./run-end-lifecycle.js";
 import type { ManagedWorktreeRecord } from "./types.js";
@@ -75,10 +76,16 @@ export async function ensureEmptyWorktreeSource(params: {
   const ownerRoot = path.join(await fs.realpath(sourceDirectory), sourceName(params.ownerId));
   const sourceRoot = path.join(ownerRoot, "workspace");
   if (!(await worktreePathExists(sourceRoot))) {
-    const records = await readRegistryWorktrees(env, {}, context);
+    const retained =
+      (await readPendingWorktrees(context.environment)).some(
+        ({ record }) => path.relative(sourceRoot, record.repoRoot) === "",
+      ) ||
+      (await readRegistryWorktrees(context.environment, {}, context)).some(
+        (record) => path.relative(sourceRoot, record.repoRoot) === "",
+      );
     context.admission.assertCurrent();
     commitGuard();
-    if (records.some((record) => path.relative(sourceRoot, record.repoRoot) === "")) {
+    if (retained) {
       throw new Error(
         `Empty workspace source is missing: ${sourceRoot}. Restore its original Git metadata before starting this workspace; existing session history and snapshots depend on it.`,
       );
@@ -160,7 +167,14 @@ export async function removeUnusedEmptyWorktreeSource(params: {
     return;
   }
   const ownerRoot = path.dirname(expected);
-  const records = await readRegistryWorktrees(env, {}, context);
+  if (
+    (await readPendingWorktrees(context.environment)).some(
+      ({ record: pending }) => path.relative(expected, pending.repoRoot) === "",
+    )
+  ) {
+    return;
+  }
+  const records = await readRegistryWorktrees(context.environment, {}, context);
   context.admission.assertCurrent();
   params.signal?.throwIfAborted();
   commitGuard();

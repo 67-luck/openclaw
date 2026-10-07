@@ -170,14 +170,18 @@ export function rewriteRegistryWorktreePathsForMigration(
 export function insertRegistryWorktree(
   env: NodeJS.ProcessEnv,
   record: ManagedWorktreeRecord,
-  options: { provisionedPaths?: readonly string[]; workerAuthority?: WorktreeWorkerAuthority } = {},
+  options: {
+    provisionedPaths?: readonly string[];
+    workerAuthority?: WorktreeWorkerAuthority;
+    pendingId?: string;
+  } = {},
 ): Promise<void> {
   return runWorktreeRunEndCommand(
     captureWorktreeRunEndContext(env),
     {
       type: "worktrees.insert",
       input: {
-        value: { record, provisionedPaths: options.provisionedPaths },
+        value: { record, provisionedPaths: options.provisionedPaths, pendingId: options.pendingId },
         receipt: randomUUID(),
       },
     },
