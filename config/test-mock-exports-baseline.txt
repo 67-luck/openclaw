@@ -8693,7 +8693,6 @@
 ["src/infra/device-identity-async.test.ts","../config/paths.js","5014db9e3bd2a7c52b2d894f0586984694bebe509e72b21775972649140f0b2a",1]
 ["src/infra/device-identity-async.test.ts","../state/openclaw-state-db-async-lifecycle.js","91f5d03448d3c4341856f6ff310c9b40f7494f8a443b804a661e0207afd6c79e",1]
 ["src/infra/device-identity-async.test.ts","../state/openclaw-state-db-cache.js","2cf06eac56993305e3908aaafa49655e996f77ebe4c4bd3ef0b3cf509c078950",1]
-["src/infra/device-identity-async.test.ts","../state/openclaw-state-db-readonly.js","cda873b5d70e22f708a8e86b7637209379124b4035200938fc805ab5c3266220",1]
 ["src/infra/device-identity-async.test.ts","../state/openclaw-state-db.js","108cb8c2fd43ffad1dddfbba3d949f09313b48df7303369cbddfd4f1dc3be4d2",1]
 ["src/infra/device-identity-async.test.ts","../state/openclaw-state-worker-store.js","7cb3d0de23292c8877b498856bc028d133cd7e82c6e25e7147124dbf48fed99e",1]
 ["src/infra/device-identity-async.test.ts","./path-existence.js","9ea7ff7edcac491821dba6bed9bc11312a7f0d9dbded4040309bf3ed422b8415",1]
