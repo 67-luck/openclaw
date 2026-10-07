@@ -170,7 +170,7 @@ test("required placement stops before provider setup when caller authority ends 
   );
   // Hold dispatch after its durable requested commit. The requested acknowledgment is reported
   // on resume, leaving the post-acknowledgment recheck as the only fence before setup I/O.
-  let hold: { committed: Deferred<void>; resume: Promise<void> } | undefined;
+  let hold: { committed: Deferred; resume: Promise<void> } | undefined;
   const startDispatch = placementDispatchStore.startWorkerPlacementDispatch;
   vi.spyOn(placementDispatchStore, "startWorkerPlacementDispatch").mockImplementation(
     async (...args) => {
@@ -185,7 +185,7 @@ test("required placement stops before provider setup when caller authority ends 
     },
   );
   // The requested acknowledgment and the failed dispatch's final transition each publish once.
-  let settled: { remaining: number; done: Deferred<void> } | undefined;
+  let settled: { remaining: number; done: Deferred } | undefined;
   const emitSessionsChanged = sessionChangeEvent.emitSessionsChanged;
   vi.spyOn(sessionChangeEvent, "emitSessionsChanged").mockImplementation((...args) => {
     if (args[1].reason === "dispatch" && settled && --settled.remaining === 0) {
