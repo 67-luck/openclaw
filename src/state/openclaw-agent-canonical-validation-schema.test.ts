@@ -240,7 +240,7 @@ describe("canonical validation schema admission", () => {
       });
       const pathname = state.path("worker-admission.sqlite");
       const spawn = () => {
-        const child = source.create(
+        const worker = source.create(
           `
           const { parentPort, workerData } = require("node:worker_threads");
           const { DatabaseSync, StatementSync } = require("node:sqlite");
@@ -299,13 +299,13 @@ describe("canonical validation schema admission", () => {
             },
           },
         );
-        children.push(child);
+        children.push(worker);
         let pending: ReturnType<typeof createDeferredCore<unknown>>;
-        child.on("message", (value) => pending.resolve(value));
-        child.on("error", (error) => pending.reject(error));
+        worker.on("message", (value) => pending.resolve(value));
+        worker.on("error", (error) => pending.reject(error));
         return (command = "read") => {
           pending = createDeferredCore<unknown>();
-          child.postMessage(command);
+          worker.postMessage(command, []);
           return pending.promise;
         };
       };

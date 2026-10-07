@@ -458,8 +458,8 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
   }) => Promise<T>,
   lane: SessionHistoryWorkerLane = historyLane,
 ): Promise<T> {
-  const capturedCandidates = candidates.map(({ path, physicalPath, scope }) => ({
-    path,
+  const capturedCandidates = candidates.map(({ path: requestedPath, physicalPath, scope }) => ({
+    path: requestedPath,
     physicalPath,
     scope,
   }));
@@ -554,7 +554,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
           revoked ||
           [...retained.values()].some(
             (resource) =>
-              resource.revoked || resource.closing || !resource.nativeSequences.has(lane),
+              resource.revoked || Boolean(resource.closing) || !resource.nativeSequences.has(lane),
           )
         ) {
           throw new WorkerTaskError(
