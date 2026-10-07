@@ -117,6 +117,8 @@ describe("canonical proof on physical database validation", () => {
           { path: database.path, ...(selection === "sibling-family" ? { scope: selection } : {}) },
         ];
 
+        releaseOpenClawAgentDatabaseReadValidation(candidates, [database.path]);
+        expect(getOpenClawAgentDatabaseValidationForTransfer(database)?.valid).toBe(receipt.valid);
         releaseOpenClawAgentDatabaseReadValidation(candidates);
 
         expect(getOpenClawAgentDatabaseValidationForTransfer(database)).toBeUndefined();
