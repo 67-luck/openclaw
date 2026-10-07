@@ -588,8 +588,12 @@ export async function archiveWorkshopSkill(
         );
       }
       const versionId = await snapshotSkill(paths, "archive");
-      paths.assertLive();
-      await fs.rm(paths.skillDir, { recursive: true, force: true });
+      await removePathWithinRoot({
+        rootDir: paths.root,
+        relativePath: params.name,
+        recursive: true,
+        assertBeforeMutation: paths.assertLive,
+      });
       const detail = [
         params.absorbedInto ? `merged into ${params.absorbedInto}` : undefined,
         params.reason?.trim() || undefined,
@@ -636,9 +640,9 @@ export async function restoreWorkshopSkill(
       }
       const versionId = await snapshotSkill(paths, "restore");
       // Swap by rename so a refused or failed publish puts the previous live skill back.
-      paths.assertLive();
       const hadLive = await pathExists(paths.skillDir);
       if (hadLive) {
+        paths.assertLive();
         await fs.rename(paths.skillDir, previous);
       }
       try {
