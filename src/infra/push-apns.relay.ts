@@ -1,4 +1,3 @@
-import { URL } from "node:url";
 import {
   parseStrictPositiveInteger,
   resolveTimerTimeoutMs,
@@ -10,7 +9,6 @@ import {
 import type { GatewayConfig } from "../config/types.gateway.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "./device-identity-async.js";
 import { signDevicePayload, type DeviceIdentity } from "./device-identity.js";
-import { formatErrorMessage } from "./errors.js";
 import { readResponseWithLimit } from "./http-body.js";
 import { normalizeApnsRelayBaseUrl } from "./push-apns-relay-url.js";
 import { requireCurrentApnsSend } from "./push-apns-send-current.js";

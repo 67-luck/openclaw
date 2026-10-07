@@ -1,12 +1,12 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { reconcileHeartbeatMonitorJobs } from "../cron/heartbeat-monitor.js";
+import type { CronService } from "../cron/service.js";
 import { resolveHeartbeatSchedulerSeedAsync } from "../infra/heartbeat-schedule.js";
-import type { GatewayCronServiceContract } from "./server-cron-contract.js";
 import { reconcileSkillCollectionReviewJobs } from "./server-cron-skill-review-jobs.js";
 
 /** Reconcile both monitor families against one configuration and device identity. */
 export async function reconcileGatewayMonitorJobs(params: {
-  cron: Pick<GatewayCronServiceContract, "add" | "list" | "remove">;
+  cron: Pick<CronService, "add" | "list" | "remove">;
   cfg: OpenClawConfig;
   logger: { warn: (obj: unknown, msg?: string) => void };
   commitGuard: () => void;
