@@ -545,7 +545,7 @@ test.each(["archive-publication", "worker-queue"] as const)(
     await placementStore.releaseTurn(claim);
     let retired = false;
     let placementService = placementStore;
-    const retire = placementStore.retireSessionPlacementAsync;
+    const retire = placementStore.retireSessionPlacementAsync.bind(placementStore);
     if (phase === "archive-publication") {
       const publish = sessionArchiveStore.publishSessionStateArchives;
       vi.spyOn(sessionArchiveStore, "publishSessionStateArchives").mockImplementation(
