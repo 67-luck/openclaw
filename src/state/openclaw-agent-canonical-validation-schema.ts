@@ -30,6 +30,40 @@ const validatedSchemas = resolveGlobalSingleton(
       { cookie: number; schema?: SqliteSchemaFacts; unregister: () => void }
     >(),
 );
+const canonicalContracts = resolveGlobalSingleton(
+  Symbol.for("openclaw.agentCanonicalValidationSchemaContracts"),
+  () => new Map<string, ReadonlyMap<string, string | null>>(),
+);
+
+export type PreparedCanonicalSessionValidationSchema = {
+  schemaSql: string;
+  definitions: ReadonlyMap<string, string | null>;
+};
+
+/** Capture existing canonical facts without constructing a comparison database on the host. */
+export function captureCanonicalSessionValidationSchema():
+  | PreparedCanonicalSessionValidationSchema
+  | undefined {
+  const definitions = canonicalContracts.get(OPENCLAW_AGENT_SCHEMA_SQL);
+  return definitions
+    ? {
+        schemaSql: OPENCLAW_AGENT_SCHEMA_SQL,
+        definitions: new Map(definitions),
+      }
+    : undefined;
+}
+
+/** Private worker requests carry expected definitions, never observed database schemas. */
+export function adoptPreparedCanonicalSessionValidationSchema(
+  contract: PreparedCanonicalSessionValidationSchema,
+): void {
+  if (
+    contract.schemaSql === OPENCLAW_AGENT_SCHEMA_SQL &&
+    !canonicalContracts.has(contract.schemaSql)
+  ) {
+    canonicalContracts.set(contract.schemaSql, new Map(contract.definitions));
+  }
+}
 
 function readDefinitions(
   database: DatabaseSync,
@@ -58,30 +92,32 @@ function readDefinitions(
   return definitions;
 }
 
-function expectedDefinitions(): Map<string, string | null> {
-  return resolveGlobalSingleton(
-    Symbol.for("openclaw.agentCanonicalValidationSchemaDefinitions"),
-    () => {
-      const database = openNodeSqliteDatabase(":memory:");
-      try {
-        // sqlite-allow-raw -- Bootstrap the canonical DDL in an isolated schema comparison database.
-        database.exec(
-          [
-            extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_nodes"),
-            extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_windows"),
-            extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_key_contract", {
-              endMarker: "CREATE TABLE IF NOT EXISTS session_windows (",
-              includeEndMarker: false,
-            }),
-            canonicalSessionValidationSchemaSql(),
-          ].join("\n"),
-        );
-        return readDefinitions(database);
-      } finally {
-        database.close();
-      }
-    },
-  );
+function expectedDefinitions(): ReadonlyMap<string, string | null> {
+  const cached = canonicalContracts.get(OPENCLAW_AGENT_SCHEMA_SQL);
+  if (cached) {
+    return cached;
+  }
+  const database = openNodeSqliteDatabase(":memory:");
+  let definitions: Map<string, string | null>;
+  try {
+    // sqlite-allow-raw -- Bootstrap the canonical DDL in an isolated schema comparison database.
+    database.exec(
+      [
+        extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_nodes"),
+        extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_windows"),
+        extractSqliteTableSchema(OPENCLAW_AGENT_SCHEMA_SQL, "session_key_contract", {
+          endMarker: "CREATE TABLE IF NOT EXISTS session_windows (",
+          includeEndMarker: false,
+        }),
+        canonicalSessionValidationSchemaSql(),
+      ].join("\n"),
+    );
+    definitions = readDefinitions(database);
+  } finally {
+    database.close();
+  }
+  canonicalContracts.set(OPENCLAW_AGENT_SCHEMA_SQL, definitions);
+  return definitions;
 }
 
 /** Require the exact invalidation group before an empty pending set can certify readiness. */

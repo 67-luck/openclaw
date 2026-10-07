@@ -39,6 +39,12 @@ revision. Existing foreign-commit probes, local mutations, rollback, and schema 
 snapshot changes invalidate that row. Unadmitted and authorizer-controlled reads
 still query SQLite, and each caller applies its own published-version floor.
 
+Trajectory retention readers receive already cached canonical validation
+definitions under the exact source-schema key. Cold hosts do not build a
+comparison database to prepare that handoff. Each reader still validates the
+actual schema, database identity, quarantine state, and read freshness; retention
+selection and retry policy are unchanged.
+
 Reusable SQLite inspection children launch in the detached lifecycle context,
 after the caller captures the runtime generation, transport, environment, and
 working directory. Their process callbacks and idle queue tail must not retain

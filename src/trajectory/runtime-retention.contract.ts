@@ -1,3 +1,5 @@
+import type { PreparedCanonicalSessionValidationSchema } from "../state/openclaw-agent-canonical-validation-schema.js";
+
 export type TrajectoryRuntimeRetentionInput = { sessionId: string; maxGlobalRuntimeBytes?: number };
 
 export type TrajectoryRuntimeRetentionPlan = {
@@ -16,7 +18,11 @@ export type TrajectoryRuntimeRetentionPlan = {
 
 export type TrajectoryRuntimeRetentionReadOperations = {
   "trajectoryRetention.read": {
-    input: TrajectoryRuntimeRetentionInput & { agentId: string; now: number };
+    input: TrajectoryRuntimeRetentionInput & {
+      agentId: string;
+      now: number;
+      schemaContract?: PreparedCanonicalSessionValidationSchema;
+    };
     output: TrajectoryRuntimeRetentionPlan;
   };
 };
