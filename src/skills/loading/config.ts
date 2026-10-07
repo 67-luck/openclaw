@@ -93,7 +93,7 @@ export function isBundledSkillAllowed(entry: SkillEntry, allowlist?: ReadonlySet
   if (!BUNDLED_SOURCES.has(resolveSkillSource(entry.skill))) {
     return true;
   }
-  const key = resolveSkillKey(entry.skill, entry);
+  const key = resolveSkillKey(entry);
   return allowlist.has(key) || allowlist.has(entry.skill.name);
 }
 
@@ -105,12 +105,7 @@ export function isSkillEntrySelected(
 ): boolean {
   return (
     resolveSkillSource(entry.skill) === "openclaw-workshop" ||
-    isSessionSkillEnabled(
-      entry.skill.name,
-      skillFilter,
-      skillOverrides,
-      resolveSkillKey(entry.skill, entry),
-    )
+    isSessionSkillEnabled(entry.skill.name, skillFilter, skillOverrides, resolveSkillKey(entry))
   );
 }
 
@@ -123,7 +118,7 @@ export function shouldIncludeSkill(params: {
   platform?: string;
 }): boolean {
   const { entry, config, bundledAllowlist, eligibility } = params;
-  const skillKey = resolveSkillKey(entry.skill, entry);
+  const skillKey = resolveSkillKey(entry);
   const skillConfig = resolveSkillConfig(config, skillKey);
 
   if (skillConfig?.enabled === false) {

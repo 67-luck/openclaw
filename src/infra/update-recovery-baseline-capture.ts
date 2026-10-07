@@ -29,7 +29,6 @@ import { resolvePathViaExistingAncestorSync } from "./boundary-path.js";
 import { sha256Hex } from "./crypto-digest.js";
 import {
   pinDirectory,
-  publishFileExclusive,
   requireDirectorySync,
   sha256File,
   syncDirectory,
@@ -54,6 +53,7 @@ import {
 import { createUpdateDatabaseBackup } from "./update-database-backup.js";
 import { readUpdateDatabaseGenerations } from "./update-database-generations.js";
 import type { UpdateRecoveryCaptureAcquisition } from "./update-recovery-capture-acquisition.js";
+import { publishUpdateRecoveryCaptureFile } from "./update-recovery-capture-publication.js";
 import { readUpdateRunDriver, type UpdateRunDriver } from "./update-run-driver.js";
 import { getUpdateRunAsync } from "./update-run-reader.js";
 
@@ -398,11 +398,11 @@ export function captureUpdateRecoveryBaseline(params: {
         assertCurrent();
         await pin.assertCurrent();
         assertCurrent();
-        const publication = await publishFileExclusive({
+        const publication = await publishUpdateRecoveryCaptureFile({
           sourcePath: file.snapshotPath,
           targetPath: payloadPath,
           expectedSourceIdentity: sourceIdentity,
-          strategy: "rename-noreplace",
+          assertCurrent,
           onSyncFailure: "preserve",
         });
         assertCurrent();
@@ -589,12 +589,12 @@ export function captureUpdateRecoveryBaseline(params: {
       }
       await pin.assertCurrent();
       assertCurrent();
-      const publication = await publishFileExclusive({
+      const publication = await publishUpdateRecoveryCaptureFile({
         sourcePath: temporaryManifestPath,
         targetPath: manifestPath,
         expectedSourceIdentity: manifestIdentity,
         parentReceipt: pin.receipt,
-        strategy: "rename-noreplace",
+        assertCurrent,
         onSyncFailure: "preserve",
       });
       requireDirectorySync(publication.directorySync, "Original update capture seal");
