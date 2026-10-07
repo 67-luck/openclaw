@@ -188,6 +188,7 @@ export function createWorkerPlacementDispatchService(options: WorkerPlacementDis
       const projectPath = workspace.kind === "local" ? workspace.path : undefined;
       // Workspace preparation yields; fence the current paired node again before durable provision.
       await startup.validateDevicePlacement(request);
+      assertCurrent();
       const preparedIntent = !request.deviceId
         ? await environments.prepareProjectIntent(request.profileId, {
             machineClass: request.machineClass,

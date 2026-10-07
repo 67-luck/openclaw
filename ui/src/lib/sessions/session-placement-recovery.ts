@@ -13,10 +13,7 @@ import { formatUiError } from "../format-error.ts";
 import type { SessionCreateParams } from "./create.ts";
 import {
   listSessionPlacementRecoveryStorageKeys,
-  requiredSessionPlacementRecoveryExactStorageKey,
-  requiredSessionPlacementRecoveryScopeStoragePrefix,
   sessionPlacementRecoveryExactStorageKey,
-  sessionPlacementRecoveryExactStorageKeys,
   sessionPlacementRecoveryScopeStoragePrefix,
 } from "./session-placement-recovery-storage-key.ts";
 
@@ -49,10 +46,6 @@ type SessionPlacementSubmission = {
   gatewayUrl: string;
   recoveryScope: string;
   createParams?: SessionPlacementCreateParams;
-};
-
-type StoredSessionPlacementRecovery = Partial<SessionPlacementRecovery> & {
-  requiredProfileId?: unknown;
 };
 
 export type SessionPlacementPendingRecovery = SessionPlacementSubmission & {
@@ -152,11 +145,13 @@ export function parseSessionPlacementCreateParams(
   return record as SessionPlacementCreateParams;
 }
 
-function parseStoredSessionPlacementRecovery(raw: string): StoredSessionPlacementRecovery | null {
+function parseStoredSessionPlacementRecovery(
+  raw: string,
+): Partial<SessionPlacementRecovery> | null {
   try {
     const value: unknown = JSON.parse(raw);
     // SAFETY: fields remain optional until validateSessionPlacementRecovery checks their values.
-    return isRecord(value) ? (value as StoredSessionPlacementRecovery) : null;
+    return isRecord(value) ? (value as Partial<SessionPlacementRecovery>) : null;
   } catch {
     return null;
   }
@@ -200,13 +195,12 @@ function parseSessionPlacementTarget(value: unknown): SessionPlacementTarget | n
 }
 
 function validateSessionPlacementRecovery(
-  value: StoredSessionPlacementRecovery,
+  value: Partial<SessionPlacementRecovery>,
   gatewayUrl: string,
   recoveryScope: string,
   expectedSessionKey?: string,
 ): SessionPlacementRecovery | null {
   const target = parseSessionPlacementTarget(value.target);
-  const requiredProfileId = value.requiredProfileId;
   if (
     value.createParams?.incognito === true ||
     !isNonEmptyString(value.sessionKey) ||
@@ -216,10 +210,6 @@ function validateSessionPlacementRecovery(
     (!isNonEmptyString(value.message) && !value.attachments?.length) ||
     (value.attachments !== undefined && !Array.isArray(value.attachments)) ||
     !target ||
-    (requiredProfileId !== undefined &&
-      (!isNonEmptyString(requiredProfileId) ||
-        target.kind !== "profile" ||
-        target.profileId !== requiredProfileId)) ||
     !isNonEmptyString(value.agentId) ||
     value.gatewayUrl !== gatewayUrl ||
     value.recoveryScope !== recoveryScope ||
@@ -238,7 +228,7 @@ function validateSessionPlacementRecovery(
   ) {
     return null;
   }
-  const { mentions: storedMentions, requiredProfileId: _requiredProfileId, ...recovery } = value;
+  const { mentions: storedMentions, ...recovery } = value;
   const mentions = readHumanMentions(value.message, storedMentions);
   if (
     storedMentions !== undefined &&
@@ -246,37 +236,11 @@ function validateSessionPlacementRecovery(
   ) {
     return null;
   }
-  const restoredTarget: SessionPlacementTarget =
-    target.kind === "profile" && requiredProfileId === target.profileId
-      ? { ...target, required: true }
-      : target;
   return {
     ...recovery,
-    target: restoredTarget,
+    target,
     ...(mentions ? { mentions } : {}),
-  } as SessionPlacementRecovery; // SAFETY: every recovery field and restored target were validated.
-}
-
-function serializeSessionPlacementRecovery(recovery: SessionPlacementRecovery): string {
-  if (recovery.target.kind !== "profile" || recovery.target.required !== true) {
-    return JSON.stringify(recovery);
-  }
-  const { required: _required, ...target } = recovery.target;
-  return JSON.stringify({ ...recovery, target, requiredProfileId: target.profileId });
-}
-
-function storageKeyForSessionPlacementRecovery(recovery: SessionPlacementRecovery): string {
-  return recovery.target.kind === "profile" && recovery.target.required === true
-    ? requiredSessionPlacementRecoveryExactStorageKey(
-        recovery.gatewayUrl,
-        recovery.recoveryScope,
-        recovery.sessionKey,
-      )
-    : sessionPlacementRecoveryExactStorageKey(
-        recovery.gatewayUrl,
-        recovery.recoveryScope,
-        recovery.sessionKey,
-      );
+  } as SessionPlacementRecovery; // SAFETY: every recovery field and target were validated.
 }
 
 function removeSessionPlacementRecoveryRow(storage: Storage, key: string): boolean {
@@ -305,7 +269,11 @@ function readOwnedSessionPlacementRecovery(
     const recovery = value
       ? validateSessionPlacementRecovery(value, gatewayUrl, recoveryScope, expectedSessionKey)
       : null;
-    if (!recovery || key !== storageKeyForSessionPlacementRecovery(recovery)) {
+    if (
+      !recovery ||
+      key !==
+        sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, recovery.sessionKey)
+    ) {
       // Every row below a framed scope prefix belongs to that exact scope.
       // A bad row can therefore be removed without touching another namespace.
       removeSessionPlacementRecoveryRow(storage, key);
@@ -323,8 +291,12 @@ function relocateSessionPlacementRecoveryRow(
   sourceRaw: string,
   recovery: SessionPlacementRecovery,
 ): SessionPlacementRecovery | null {
-  const key = storageKeyForSessionPlacementRecovery(recovery);
-  const serialized = serializeSessionPlacementRecovery(recovery);
+  const key = sessionPlacementRecoveryExactStorageKey(
+    recovery.gatewayUrl,
+    recovery.recoveryScope,
+    recovery.sessionKey,
+  );
+  const serialized = JSON.stringify(recovery);
   try {
     // Relocate instead of copying so a full store needs no duplicate capacity.
     storage.removeItem(sourceKey);
@@ -414,23 +386,8 @@ export function readSessionPlacementRecovery(
     if (!storage) {
       return null;
     }
-    for (const key of sessionPlacementRecoveryExactStorageKeys(
-      gatewayUrl,
-      recoveryScope,
-      sessionKey,
-    )) {
-      const recovery = readOwnedSessionPlacementRecovery(
-        storage,
-        key,
-        gatewayUrl,
-        recoveryScope,
-        sessionKey,
-      );
-      if (recovery) {
-        return recovery;
-      }
-    }
-    return null;
+    const key = sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, sessionKey);
+    return readOwnedSessionPlacementRecovery(storage, key, gatewayUrl, recoveryScope, sessionKey);
   } catch {
     return null;
   }
@@ -452,23 +409,11 @@ export function writeSessionPlacementRecovery(recovery: SessionPlacementRecovery
     if (!storage) {
       return false;
     }
-    const key = storageKeyForSessionPlacementRecovery(normalized);
-    storage.setItem(key, serializeSessionPlacementRecovery(normalized));
-    const written = Boolean(
+    const key = sessionPlacementRecoveryExactStorageKey(gatewayUrl, recoveryScope, sessionKey);
+    storage.setItem(key, JSON.stringify(normalized));
+    return Boolean(
       readOwnedSessionPlacementRecovery(storage, key, gatewayUrl, recoveryScope, sessionKey),
     );
-    if (written) {
-      for (const alternate of sessionPlacementRecoveryExactStorageKeys(
-        gatewayUrl,
-        recoveryScope,
-        sessionKey,
-      )) {
-        if (alternate !== key) {
-          removeSessionPlacementRecoveryRow(storage, alternate);
-        }
-      }
-    }
-    return written;
   } catch {
     return false;
   }
@@ -501,28 +446,30 @@ export function promoteSessionPlacementRecovery(
     if (!storage || !previousSessionKey) {
       return false;
     }
-    const previousKey = sessionPlacementRecoveryExactStorageKeys(
+    const previousKey = sessionPlacementRecoveryExactStorageKey(
       recovery.gatewayUrl,
       recovery.recoveryScope,
       previousSessionKey,
-    ).find((candidate) => storage.getItem(candidate) !== null);
-    const previousRaw = previousKey ? storage.getItem(previousKey) : null;
-    const previous = previousKey
-      ? readOwnedSessionPlacementRecovery(
-          storage,
-          previousKey,
-          recovery.gatewayUrl,
-          recovery.recoveryScope,
-          previousSessionKey,
-        )
-      : null;
-    if (!previousKey || !previousRaw || !previous) {
+    );
+    const previousRaw = storage.getItem(previousKey);
+    const previous = readOwnedSessionPlacementRecovery(
+      storage,
+      previousKey,
+      recovery.gatewayUrl,
+      recovery.recoveryScope,
+      previousSessionKey,
+    );
+    if (!previousRaw || !previous) {
       return writeSessionPlacementRecoveryIfAvailable(recovery);
     }
     if (previous.messageId !== recovery.messageId) {
       return false;
     }
-    const key = storageKeyForSessionPlacementRecovery(recovery);
+    const key = sessionPlacementRecoveryExactStorageKey(
+      recovery.gatewayUrl,
+      recovery.recoveryScope,
+      recovery.sessionKey,
+    );
     const existing = readOwnedSessionPlacementRecovery(
       storage,
       key,
@@ -559,31 +506,27 @@ export function clearSessionPlacementRecovery(
       return;
     }
     if (expectedSessionKey) {
-      for (const key of sessionPlacementRecoveryExactStorageKeys(
+      const key = sessionPlacementRecoveryExactStorageKey(
         gatewayUrl,
         recoveryScope,
         expectedSessionKey,
-      )) {
-        // Async completion may belong to an older submission at this session key.
-        // Unconditional session/scope retirement remains available to intentional deletion.
-        if (
-          expectedMessageId &&
-          parseStoredSessionPlacementRecovery(storage.getItem(key) ?? "")?.messageId !==
-            expectedMessageId
-        ) {
-          continue;
-        }
-        removeSessionPlacementRecoveryRow(storage, key);
+      );
+      // Async completion may belong to an older submission at this session key.
+      // Unconditional session/scope retirement remains available to intentional deletion.
+      if (
+        expectedMessageId &&
+        parseStoredSessionPlacementRecovery(storage.getItem(key) ?? "")?.messageId !==
+          expectedMessageId
+      ) {
+        return;
       }
+      removeSessionPlacementRecoveryRow(storage, key);
       return;
     }
-    const scopePrefixes = [
-      sessionPlacementRecoveryScopeStoragePrefix(gatewayUrl, recoveryScope),
-      requiredSessionPlacementRecoveryScopeStoragePrefix(gatewayUrl, recoveryScope),
-    ];
+    const scopePrefix = sessionPlacementRecoveryScopeStoragePrefix(gatewayUrl, recoveryScope);
     for (let index = storage.length - 1; index >= 0; index -= 1) {
       const key = storage.key(index);
-      if (key && scopePrefixes.some((prefix) => key.startsWith(prefix))) {
+      if (key?.startsWith(scopePrefix)) {
         removeSessionPlacementRecoveryRow(storage, key);
       }
     }

@@ -14,7 +14,7 @@ type RedispatchableWorkerPlacement = Extract<
 >;
 
 export type WorkerTurnLauncherOptions = {
-  prepareRequiredSession?: SessionPlacementAdmissionProvider["prepareRequiredSession"];
+  withRequiredSession?: SessionPlacementAdmissionProvider["withRequiredSession"];
   environments: WorkerTurnEnvironmentService;
   placements: WorkerSessionPlacementStore;
   resolveWorkspace: (identity: {

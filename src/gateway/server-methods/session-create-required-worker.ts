@@ -4,7 +4,7 @@ import {
   type ErrorShape,
   type SessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
-import type { LocalTurnPlacementClaim } from "../../agents/session-placement-admission.js";
+import type { SessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
 import { assertRequiredWorkerSelection } from "../../config/required-worker-profile.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -71,14 +71,7 @@ export async function prepareRequiredWorkerCreatedSession(params: {
   requiredProfile: string | undefined;
   pendingWorktree: boolean;
   requestedProjectGitUrl: string | undefined;
-  prepare:
-    | ((
-        identity: Omit<LocalTurnPlacementClaim, "runId">,
-        assertCurrent?: () => void,
-        signal?: AbortSignal,
-        options?: { waitForReady: false },
-      ) => Promise<void>)
-    | undefined;
+  prepare: SessionPlacementAdmissionProvider["withRequiredSession"];
   session: { entry: Pick<SessionEntry, "sessionId">; key: string; agentId: string };
   assertCurrent: () => void;
   signal?: AbortSignal;
@@ -97,9 +90,12 @@ export async function prepareRequiredWorkerCreatedSession(params: {
       sessionKey: params.session.key,
       agentId: params.session.agentId,
     },
+    async (assertCurrent) => {
+      params.assertCurrent();
+      assertCurrent();
+    },
     params.assertCurrent,
     params.signal,
     { waitForReady: false },
   );
-  params.assertCurrent();
 }

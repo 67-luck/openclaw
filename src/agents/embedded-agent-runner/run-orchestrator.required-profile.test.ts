@@ -26,7 +26,7 @@ it("resolves the admitted canonical agent before mandatory placement preparation
   );
   const local = vi.fn(async () => ({ meta: { durationMs: 0 } }));
   const uninstall = installSessionPlacementAdmissionProvider({
-    prepareRequiredSession: prepare,
+    withRequiredSession: prepare,
     assertCompactionSuccessorAllowed: () => {},
     executeLocalTurn: async (_claim, run) => await run(),
     executeTurn: local,

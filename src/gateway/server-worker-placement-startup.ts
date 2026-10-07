@@ -1,4 +1,5 @@
 import { resolveConfiguredGitHubToolIdentity } from "../agents/github-tool-identity.js";
+import type { SessionPlacementAdmissionProvider } from "../agents/session-placement-admission.js";
 import { installSessionPlacementAdmissionProvider } from "../agents/session-placement-admission.js";
 import { getRuntimeConfig } from "../config/config.js";
 import { registerSessionMaintenancePreserveKeysProvider } from "../config/sessions/store-maintenance-preserve.js";
@@ -7,6 +8,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import type { GatewayScheduler } from "../infra/gateway-scheduler.js";
 import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
+import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { createGitHubPublicationRuntime } from "./github-publication-runtime.js";
 import type { NodeWorkerSupervisorTransport } from "./node-registry-private.js";
 import { emitSessionsChanged } from "./server-methods/session-change-event.js";
@@ -36,7 +38,6 @@ import {
   WorkerDispatchTargetChangedError,
 } from "./server-worker-placement-session-target.js";
 import { recoverGatewayWorkerPlacementWorkspaces } from "./server-worker-placement-workspace-recovery.js";
-import { createLazyRequiredWorkerSessionPreparer } from "./server-worker-required-profile-loader.js";
 import { materializeSessionRepositoryWorkspaceOnGateway } from "./session-repository-materialization.js";
 import { createDevicePlacementAuthority } from "./worker-environments/device-placement-eligibility.js";
 import {
@@ -59,6 +60,10 @@ import type { WorkerSessionWorkspace } from "./worker-environments/session-works
 import { createWorkerPlacementRedispatch } from "./worker-environments/worker-placement-redispatch.js";
 import { createWorkerSessionTurnPlacementProvider } from "./worker-environments/worker-turn-launcher.js";
 import { createWorkerWorkspaceOperationCoordinator } from "./worker-environments/workspace-operation-coordinator.js";
+
+const loadRequiredWorkerPreparation = createLazyRuntimeModule(
+  () => import("./server-worker-required-profile.js"),
+);
 
 const WORKER_PLACEMENT_RECONCILE_INTERVAL_MS = 60_000;
 
@@ -313,25 +318,52 @@ export function createGatewayWorkerPlacementRuntime(
           })
         )?.gitAuthor,
     }),
-    createGatewayWorkerDispatchAdmission(loadWorkerPlacementSessionRuntimeModule),
+    createGatewayWorkerDispatchAdmission(),
     createWorkerPlacementInitialRecovery({
       ...params,
       isStopping: () =>
         stopped || params.environments.isStopping() || getGatewayRestartDrainSignal().aborted,
     }),
     publishPlacementChanges,
+    {
+      placements: params.placements,
+      environments: params.environments,
+      warn: params.warn,
+      redispatchPlacement: (...args) => redispatchPlacement(...args),
+    },
   );
   const redispatchPlacement = createWorkerPlacementRedispatch({
     placements: params.placements,
     dispatch: dispatchService.dispatch,
     resolveDevicePlacementRequirement,
   });
-  const prepareRequiredSession = createLazyRequiredWorkerSessionPreparer({
-    ...params,
-    getConfig: getRuntimeConfig,
-    redispatchPlacement,
-    dispatch: dispatchService,
-  });
+  const withRequiredSession: SessionPlacementAdmissionProvider["withRequiredSession"] = async (
+    ...args
+  ) => {
+    if (!getRuntimeConfig().cloudWorkers?.requiredProfile) {
+      return await args[1](() => {});
+    }
+    const { createRequiredWorkerSessionPreparation } = await loadRequiredWorkerPreparation();
+    return await createRequiredWorkerSessionPreparation({
+      getConfig: getRuntimeConfig,
+      dispatch: {
+        ensurePlacement: (request) =>
+          dispatchService.ensurePlacement({
+            ...request,
+            onTransition: (placement) => {
+              const context = params.getSessionChangeContext?.();
+              if (context) {
+                emitSessionsChanged(context, {
+                  reason: "dispatch",
+                  sessionKey: placement.sessionKey,
+                  agentId: placement.agentId,
+                });
+              }
+            },
+          }),
+      },
+    })(...args);
+  };
   const placementIdleSweep = createWorkerPlacementIdleSweep({
     placements: params.placements,
     environments: params.environments,
@@ -351,7 +383,7 @@ export function createGatewayWorkerPlacementRuntime(
     warn: params.warn,
   });
   const admissionProvider = createWorkerSessionTurnPlacementProvider({
-    prepareRequiredSession,
+    withRequiredSession,
     environments: params.environments,
     placements: params.placements,
     resolveWorkspace,
@@ -592,7 +624,7 @@ export function createGatewayWorkerPlacementRuntime(
     }
   };
   return {
-    dispatchService: Object.assign(dispatchService, { prepareRequiredSession }),
+    dispatchService: Object.assign(dispatchService, { withRequiredSession }),
     admissionProvider,
     diskSpace,
     runnerAvailability: {

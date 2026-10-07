@@ -74,3 +74,12 @@ export function requiredWorkerHelperError(
       }
     : undefined;
 }
+
+export function assertRequiredWorkerLocalExecution(
+  config: Pick<OpenClawConfig, "cloudWorkers">,
+  origin: "Gateway" | "Local CLI" | "Local" = "Local",
+): void {
+  if (config.cloudWorkers?.requiredProfile) {
+    throw new Error(`${origin} execution is disabled by the required worker profile policy.`);
+  }
+}

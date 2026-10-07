@@ -9,6 +9,7 @@ import type {
   WorkerDesktopObserveResult as ProtocolWorkerDesktopObserveResult,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { DevicePlacementRequirement } from "../../agents/harness/types.js";
+import type { SessionPlacementAdmissionProvider } from "../../agents/session-placement-admission.js";
 import type {
   WorkerDesktopApp,
   WorkerMachineOption,
@@ -208,7 +209,7 @@ export type WorkerPlacementDispatchRequest = WorkerSessionPlacementDispatchIdent
 
 export type WorkerPlacementDispatchAdmission = <T>(
   request: Pick<WorkerPlacementDispatchRequest, "sessionId" | "sessionKey" | "agentId">,
-  run: (signal?: AbortSignal) => Promise<T>,
+  run: (signal?: AbortSignal, assertSessionCurrent?: () => void) => Promise<T>,
   authorize?: () => void,
   signal?: AbortSignal,
 ) => Promise<T>;
@@ -254,13 +255,7 @@ export type WorkerPlacementReclaimSourceCheck = ((
 // runtime (it reaches agents/plugins and closes an import cycle through core).
 export type WorkerPlacementDispatchContract = {
   /** Server-owned placement under existing session creation/run authority, not manual dispatch. */
-  prepareRequiredSession?(
-    this: void,
-    identity: { sessionId: string; sessionKey?: string; agentId?: string },
-    assertCurrent?: () => void,
-    signal?: AbortSignal,
-    options?: { waitForReady: false },
-  ): Promise<void>;
+  withRequiredSession?: SessionPlacementAdmissionProvider["withRequiredSession"];
   getPendingDeviceDispatchCount?(deviceId: string, excludeSessionId?: string): number;
   getAdmittedDeviceSessionCounts?(excludeSessionId?: string): ReadonlyMap<string, number>;
   dispatch(

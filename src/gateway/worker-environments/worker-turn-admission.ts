@@ -8,6 +8,7 @@ import type {
 import { withSessionPlacementForcedTerminalSettlement } from "../../agents/session-placement-forced-terminal-settlement.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { getRuntimeConfig } from "../../config/config.js";
+import { assertRequiredWorkerLocalExecution } from "../../config/required-worker-profile.js";
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
@@ -42,7 +43,7 @@ type ActiveWorkerPlacement = Extract<WorkerSessionPlacementRecord, { state: "act
 export function createRequiredWorkerTurnAdmission(options: {
   placements: WorkerSessionPlacementStore;
   environments: Pick<WorkerEnvironmentService, "get">;
-  prepareRequiredSession?: SessionPlacementAdmissionProvider["prepareRequiredSession"];
+  withRequiredSession?: SessionPlacementAdmissionProvider["withRequiredSession"];
 }) {
   return {
     usesWorkerInference: (identity: Omit<LocalTurnPlacementClaim, "runId">) => {
@@ -61,26 +62,7 @@ export function createRequiredWorkerTurnAdmission(options: {
       );
     },
     assertLocalAllowed() {
-      if (getRuntimeConfig().cloudWorkers?.requiredProfile) {
-        throw new Error("Local execution is disabled by the required worker profile policy.");
-      }
-    },
-    async prepare(
-      claim: LocalTurnPlacementClaim,
-      inputTurn: SessionPlacementTurnParams,
-      assertRunCurrent?: () => void,
-    ) {
-      if (
-        getRuntimeConfig().cloudWorkers?.requiredProfile ||
-        inputTurn.config?.cloudWorkers?.requiredProfile
-      ) {
-        if (!options.prepareRequiredSession) {
-          throw new Error(
-            "Required worker placement is unavailable; repair the configured profile and retry.",
-          );
-        }
-        await options.prepareRequiredSession(claim, assertRunCurrent, inputTurn.abortSignal);
-      }
+      assertRequiredWorkerLocalExecution(getRuntimeConfig());
     },
     assertCurrent(claim: LocalTurnPlacementClaim) {
       const required = getRuntimeConfig().cloudWorkers?.requiredProfile;

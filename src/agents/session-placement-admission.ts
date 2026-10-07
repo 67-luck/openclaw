@@ -1,5 +1,7 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { registerReplyOperationSuccessorBarrier } from "../auto-reply/reply/reply-run-registry.js";
 import { getRuntimeConfig } from "../config/config.js";
+import { assertRequiredWorkerLocalExecution } from "../config/required-worker-profile.js";
 import type { SessionTranscriptRuntimeTarget } from "../config/sessions/session-accessor.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -55,11 +57,13 @@ export type PreparedSessionPlacementSandbox = Disposable & {
 };
 
 export type SessionPlacementAdmissionProvider = {
-  prepareRequiredSession?: (
+  withRequiredSession?: <T>(
     identity: Omit<LocalTurnPlacementClaim, "runId">,
+    task: (assertPlacementCurrent: () => void) => Promise<T>,
     assertCurrent?: () => void,
     signal?: AbortSignal,
-  ) => Promise<void>;
+    preparation?: { waitForReady: false },
+  ) => Promise<T>;
   usesWorkerInference?: (identity: Omit<LocalTurnPlacementClaim, "runId">) => boolean;
   resolveRuntimeOverride?: (
     identity: Omit<LocalTurnPlacementClaim, "runId">,
@@ -125,19 +129,45 @@ export async function resolveSessionPlacementRuntimeOverride(
   return runtime;
 }
 
-/** Prepare the real session before model/auth routing; never manufacture a helper session. */
-export async function prepareRequiredSessionPlacement(
+const requiredPlacementScope = resolveGlobalSingleton(
+  Symbol.for("openclaw.requiredSessionPlacementScope"),
+  () =>
+    new AsyncLocalStorage<{
+      identity: Omit<LocalTurnPlacementClaim, "runId">;
+      provider: SessionPlacementAdmissionProvider;
+      assertPlacementCurrent: () => void;
+    }>(),
+);
+
+/** Nested entry points consume this run's owner-held admission, never a cached permission. */
+export async function withRequiredSessionPlacement<T>(
   identity: Omit<LocalTurnPlacementClaim, "runId">,
-  options: { config?: OpenClawConfig; assertCurrent?: () => void; signal?: AbortSignal } = {},
-): Promise<void> {
+  options: { config?: OpenClawConfig; assertCurrent?: () => void; signal?: AbortSignal },
+  task: () => Promise<T>,
+): Promise<T> {
+  const inherited = requiredPlacementScope.getStore();
+  if (
+    inherited &&
+    inherited.identity.sessionId === identity.sessionId &&
+    inherited.identity.agentId === identity.agentId &&
+    inherited.identity.sessionKey === identity.sessionKey
+  ) {
+    options.signal?.throwIfAborted();
+    options.assertCurrent?.();
+    if (state.provider !== inherited.provider) {
+      throw createAbortError("session placement owner changed during required worker preparation");
+    }
+    inherited.assertPlacementCurrent();
+    return await task();
+  }
   const required =
     getRuntimeConfig().cloudWorkers?.requiredProfile ??
     options.config?.cloudWorkers?.requiredProfile;
   if (!required) {
-    return;
+    return await task();
   }
   const provider = state.provider;
-  if (!identity.sessionKey?.trim() || !provider?.prepareRequiredSession) {
+  if (!identity.sessionKey?.trim() || !provider?.withRequiredSession) {
     throw new Error(
       "Required worker execution needs a real session and an available Gateway placement owner; sessionless model helpers are unsupported.",
     );
@@ -150,8 +180,19 @@ export async function prepareRequiredSessionPlacement(
     }
   };
   assertCurrent();
-  await provider.prepareRequiredSession(identity, assertCurrent, options.signal);
-  assertCurrent();
+  return await provider.withRequiredSession(
+    identity,
+    async (assertPlacementCurrent) => {
+      assertCurrent();
+      assertPlacementCurrent();
+      return await requiredPlacementScope.run(
+        { identity: { ...identity }, provider, assertPlacementCurrent },
+        task,
+      );
+    },
+    assertCurrent,
+    options.signal,
+  );
 }
 
 export function sessionPlacementUsesWorkerInference(
@@ -203,12 +244,8 @@ export async function withSessionPlacementTurnAdmission(
   // Providers may execute locally or remotely; both must release queue ownership
   // only when their actual execution path has acquired its placement claim.
   const runAdmittedLocalTurn = async () => {
-    if (
-      getRuntimeConfig().cloudWorkers?.requiredProfile ||
-      params.config?.cloudWorkers?.requiredProfile
-    ) {
-      throw new Error("Gateway execution is disabled by the required worker profile policy.");
-    }
+    assertRequiredWorkerLocalExecution(getRuntimeConfig(), "Gateway");
+    assertRequiredWorkerLocalExecution(params.config ?? {}, "Gateway");
     const settle = resolveSessionPlacementForcedTerminalSettlement();
     const assertCurrent = resolveSessionPlacementTurnSettlementAssertion();
     if (params.replyOperation && settle) {
@@ -280,9 +317,7 @@ export async function withLocalSessionPlacementTurnSettlement(
   > = {},
 ): Promise<EmbeddedAgentRunResult> {
   const assertLocalAllowed = () => {
-    if (getRuntimeConfig().cloudWorkers?.requiredProfile) {
-      throw new Error("Local CLI execution is disabled by the required worker profile policy.");
-    }
+    assertRequiredWorkerLocalExecution(getRuntimeConfig(), "Local CLI");
   };
   assertLocalAllowed();
   const provider = state.provider;

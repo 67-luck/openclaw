@@ -42,8 +42,7 @@ export class PaletteSessionDraft implements ReactiveController {
   private readonly preferences: PaletteSessionPreferences;
   private readonly settings: PaletteSessionSettings;
   private rejectedOpen: (() => void) | undefined;
-  private coldSubmitReadSignal: AbortSignal | undefined;
-  private coldSubmitRequested = false;
+  private coldSubmit: { readSignal?: AbortSignal } | undefined;
   private owner: { gateway: ApplicationContext["gateway"]; url: string; scope: string } | undefined;
   private readonly connectMachine: ConnectMachineSetupState;
   private readonly subscriptions: SubscriptionsController;
@@ -104,7 +103,7 @@ export class PaletteSessionDraft implements ReactiveController {
   get messageLocked(): boolean {
     return (
       this.submitting ||
-      Boolean(this.coldSubmitReadSignal || this.draft?.submission.pendingPlacement.sessionKey)
+      Boolean(this.coldSubmit || this.draft?.submission.pendingPlacement.sessionKey)
     );
   }
   get hasPrompt(): boolean {
@@ -113,9 +112,7 @@ export class PaletteSessionDraft implements ReactiveController {
     );
   }
   get canSubmit(): boolean {
-    return (
-      !this.coldSubmitReadSignal && this.hasPrompt && Boolean(this.draft?.submission.canSubmit())
-    );
+    return !this.coldSubmit && this.hasPrompt && Boolean(this.draft?.submission.canSubmit());
   }
   get error(): string | null {
     const submission = this.draft?.submission;
@@ -191,8 +188,7 @@ export class PaletteSessionDraft implements ReactiveController {
     if (submitRequested && admitted === files.length) {
       // The loader accepted Send before the readers existed. Carry that one
       // intent across preparation, but never across dismissal or invalidation.
-      this.coldSubmitReadSignal = props.readSignal;
-      this.host.requestUpdate();
+      this.submitCold(props.readSignal);
     }
   }
 
@@ -252,8 +248,7 @@ export class PaletteSessionDraft implements ReactiveController {
       );
     }
     this.rejectedOpen = undefined;
-    this.coldSubmitReadSignal = undefined;
-    this.coldSubmitRequested = false;
+    this.coldSubmit = undefined;
     this.draft.place.resetDraft();
     this.draft.submission.resetDraft();
     this.draft.place.setAgentsHydrated(this.draft.agentsReady());
@@ -263,8 +258,7 @@ export class PaletteSessionDraft implements ReactiveController {
   }
 
   close() {
-    this.coldSubmitReadSignal = undefined;
-    this.coldSubmitRequested = false;
+    this.coldSubmit = undefined;
     const submission = this.draft?.submission;
     // A failed create or rejected turn retains the same retry/recovery draft.
     // Ordinary dismissal discards its previews immediately, not on next open.
@@ -287,18 +281,15 @@ export class PaletteSessionDraft implements ReactiveController {
 
   async submit(): Promise<void> {
     this.synchronizePresentationScope();
-    if (!this.read().open || this.coldSubmitReadSignal || !this.hasPrompt || !this.draft) {
+    if (!this.read().open || this.coldSubmit || !this.hasPrompt || !this.draft) {
       return;
     }
     await this.draft.submission.submit(undefined, true);
   }
 
-  submitCold() {
-    if (!this.draft?.gateway.placementPolicyReady) {
-      this.coldSubmitRequested = true;
-      return;
-    }
-    void this.submit();
+  submitCold(readSignal?: AbortSignal) {
+    this.coldSubmit = { readSignal };
+    this.host.requestUpdate();
   }
 
   hostUpdate() {
@@ -337,24 +328,26 @@ export class PaletteSessionDraft implements ReactiveController {
     draft.synchronizeSelections();
     draft.submission.resumeInterruptedSubmission();
     const attachmentDraft = draft.submission.attachmentDraft;
+    const pending = this.coldSubmit;
     if (
-      this.coldSubmitReadSignal &&
-      (this.coldSubmitReadSignal.aborted || attachmentDraft.reads.pendingReads === 0)
+      pending &&
+      (!pending.readSignal ||
+        attachmentDraft.reads.pendingReads === 0 ||
+        pending.readSignal.aborted)
     ) {
-      const ready =
-        !this.coldSubmitReadSignal.aborted &&
-        !attachmentDraft.reads
-          .project(attachmentDraft.attachments)
-          .some((entry) => entry.state === "error");
-      this.coldSubmitReadSignal = undefined;
-      this.host.requestUpdate();
-      if (ready) {
-        void this.submit();
+      const failed =
+        pending.readSignal &&
+        (pending.readSignal.aborted ||
+          attachmentDraft.reads
+            .project(attachmentDraft.attachments)
+            .some((entry) => entry.state === "error"));
+      if (failed || draft.gateway.placementPolicyReady) {
+        this.coldSubmit = undefined;
+        this.host.requestUpdate();
+        if (!failed) {
+          void this.submit();
+        }
       }
-    }
-    if (this.coldSubmitRequested && draft.gateway.placementPolicyReady) {
-      this.coldSubmitRequested = false;
-      void this.submit();
     }
     if (this.read().open) {
       void this.read().context?.agentIdentity.ensure(

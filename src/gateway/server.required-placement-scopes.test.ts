@@ -114,7 +114,7 @@ test.each([false, true])(
   },
 );
 
-test("required placement stops before provider setup when caller authority ends after its requested transition", async () => {
+test("required placement survives disconnect but stops setup when committed caller authority ends", async () => {
   const origin = "https://control.example.invalid";
   const admin = "admin@example.invalid";
   const writers = {
@@ -226,7 +226,9 @@ test("required placement stops before provider setup when caller authority ends 
     const createThenEndAuthority = async (
       email: string,
       endAuthority: (ws: WebSocket) => Promise<void>,
+      expectedSetupCalls: string[] = [],
     ) => {
+      setupCalls.length = 0;
       const ws = await connect(email, ["operator.sessions.write"]);
       const committed = createDeferredCore();
       const resume = createDeferredCore();
@@ -246,17 +248,22 @@ test("required placement stops before provider setup when caller authority ends 
         resume.resolve();
       }
       await settled.done.promise;
-      expect(setupCalls).toEqual([]);
+      expect(setupCalls).toEqual(expectedSetupCalls);
       return { ws, created };
     };
     try {
-      // Caller transport ends after the requested commit.
-      const disconnected = await createThenEndAuthority(writers.disconnect, async (ws) => {
-        const closed = createDeferredCore();
-        ws.once("close", () => closed.resolve());
-        ws.close();
-        await closed.promise;
-      });
+      // Ordinary mutations retain accepted authority across reconnects. This offline
+      // node reaches setup, then fails there; closing its socket must not revoke it.
+      const disconnected = await createThenEndAuthority(
+        writers.disconnect,
+        async (ws) => {
+          const closed = createDeferredCore();
+          ws.once("close", () => closed.resolve());
+          ws.close();
+          await closed.promise;
+        },
+        ["prepareProjectIntent"],
+      );
       await expect(disconnected.created).rejects.toThrow(/closed/);
 
       // A committed config patch removes the caller's operator scope.

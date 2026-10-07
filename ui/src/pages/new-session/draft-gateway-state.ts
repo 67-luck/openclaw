@@ -199,9 +199,7 @@ export class DraftGatewayState {
         const result = await requestPlaceCatalog(client, runtimeId);
         return {
           ...result,
-          profiles: isAdmin
-            ? result.profiles
-            : result.profiles.filter((profile) => profile.id === this.requiredProfileValue),
+          profiles: isAdmin ? result.profiles : [],
         };
       },
       onComplete: (placeCatalog) => {

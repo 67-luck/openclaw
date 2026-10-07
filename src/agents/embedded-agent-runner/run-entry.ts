@@ -1,3 +1,4 @@
+import { assertRequiredWorkerSelection } from "../../config/required-worker-profile.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import {
@@ -28,6 +29,7 @@ import {
   finalizeAcceptedContextEngineTurn,
   type ContextEngineTurnAttemptFacts,
 } from "../harness/context-engine-turn-attempt.js";
+import { resolveAgentHarnessPolicy } from "../harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { selectAgentHarness } from "../harness/selection.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
@@ -42,7 +44,11 @@ import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
 import { modelKey } from "../model-ref-shared.js";
 import { settleFailedRequesterRun, settleRequesterRun } from "../requester-run-settlement.js";
 import { resolveAgentRunAbortLifecycleFields } from "../run-termination.js";
-import { sessionPlacementUsesWorkerInference } from "../session-placement-admission.js";
+import {
+  resolveSessionPlacementRuntimeOverride,
+  sessionPlacementUsesWorkerInference,
+  withRequiredSessionPlacement,
+} from "../session-placement-admission.js";
 import {
   didEmbeddedCyberFailoverTargetCommitWork,
   EMBEDDED_CYBER_FAILOVER_TRIGGER_CODE,
@@ -56,7 +62,6 @@ import {
   classifyEmbeddedAgentRunResultForModelFallback,
   mergeEmbeddedAgentRunResultForModelFallbackExhaustion,
 } from "./result-fallback-classifier.js";
-import { prepareRunEntryPlacement } from "./run-entry-placement.js";
 import {
   buildRunEntryTerminal,
   canAdvanceContextEngineTurn,
@@ -164,7 +169,21 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
     abortSignal: params.abortSignal,
   };
   try {
-    const result = await runEmbeddedAgentEntryInternal(params);
+    assertRequiredWorkerSelection(params.selection.cfg, {
+      agentRuntime: params.harness.resolveRuntimeOverride(
+        params.selection.provider,
+        params.selection.model,
+      ),
+    });
+    const result = await withRequiredSessionPlacement(
+      params.identity,
+      {
+        config: params.selection.cfg,
+        assertCurrent: () => admission?.assertSourceCurrent(),
+        signal: params.abortSignal,
+      },
+      () => runEmbeddedAgentEntryInternal(params),
+    );
     // Placement and asynchronous terminal cleanup have finished. Only this
     // accepted logical result may release children retained across candidates.
     await settleRequesterRun(requester, result.result, () => admission?.assertSourceCurrent());
@@ -180,7 +199,26 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
   const operatorAuthority = readPreparedRunOperatorAuthority(params.preparedRunAdmission);
   const lifecycleGeneration = captureAgentRunLifecycleGeneration(params.identity.runId);
   const runContext = getAgentRunContext(params.identity.runId);
-  const resolveRuntimeOverride = await prepareRunEntryPlacement(params);
+  const placementRuntime = await resolveSessionPlacementRuntimeOverride(params.identity);
+  const resolveRuntimeOverride = (provider: string, model: string) => {
+    const requestedRuntime = params.harness.resolveRuntimeOverride(provider, model);
+    assertRequiredWorkerSelection(params.selection.cfg, { agentRuntime: requestedRuntime });
+    const policy = resolveAgentHarnessPolicy({
+      config: params.selection.cfg,
+      provider,
+      modelId: model,
+      agentId: params.identity.agentId,
+      sessionKey: params.harness.sessionKey,
+    });
+    if (params.selection.cfg.cloudWorkers?.requiredProfile) {
+      return policy.runtime;
+    }
+    return requestedRuntime || !placementRuntime
+      ? requestedRuntime
+      : policy.runtimeSource === "implicit"
+        ? placementRuntime
+        : undefined;
+  };
   params.abortSignal?.throwIfAborted();
   params.preparedRunAdmission?.assertSourceCurrent();
   assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);

@@ -576,7 +576,7 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
           requiredProfile,
           pendingWorktree: Boolean(preparedWorktree?.pendingWorktree),
           requestedProjectGitUrl,
-          prepare: context.workerPlacementDispatchService?.prepareRequiredSession,
+          prepare: context.workerPlacementDispatchService?.withRequiredSession,
           session,
           assertCurrent: commitGuard,
           signal,
