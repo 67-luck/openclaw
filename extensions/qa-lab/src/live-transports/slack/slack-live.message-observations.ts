@@ -210,7 +210,13 @@ async function waitForSlackChannelRunning(
             running: match.running,
           }
         : undefined;
-      if (lastStatus && isSlackChannelReadyForQa(lastStatus, mode)) {
+      if (
+        lastStatus?.running &&
+        lastStatus.restartPending !== true &&
+        lastStatus.lastError == null &&
+        lastStatus.connected !== false &&
+        (mode === "started" || lastStatus.connected === true)
+      ) {
         return lastStatus;
       }
     } catch {
@@ -235,11 +241,10 @@ export async function waitForSlackChannelStable(
   while (Date.now() - startedAt < timeoutMs) {
     const status = await waitForSlackChannelRunning(gateway, accountId, mode);
     const observedAt = Date.now();
-    readySince = resolveSlackChannelReadySince({
-      observedAt,
-      previousReadySince: readySince,
-      status,
-    });
+    readySince =
+      typeof status.lastConnectedAt === "number" && status.lastConnectedAt > 0
+        ? status.lastConnectedAt
+        : (readySince ?? observedAt);
     const readyForMs = observedAt - readySince;
     if (readyForMs >= SLACK_QA_READY_STABILITY_MS) {
       return;
@@ -251,34 +256,8 @@ export async function waitForSlackChannelStable(
   );
 }
 
-function isSlackChannelReadyForQa(
-  status: SlackChannelStatus | undefined,
-  mode: SlackChannelReadinessMode,
-): boolean {
-  if (
-    !status?.running ||
-    status.restartPending === true ||
-    status.lastError != null ||
-    status.connected === false
-  ) {
-    return false;
-  }
-  return mode === "started" || status.connected === true;
-}
-
-function resolveSlackChannelReadySince(params: {
-  observedAt: number;
-  previousReadySince: number | undefined;
-  status: SlackChannelStatus;
-}): number {
-  if (typeof params.status.lastConnectedAt === "number" && params.status.lastConnectedAt > 0) {
-    return params.status.lastConnectedAt;
-  }
-  return params.previousReadySince ?? params.observedAt;
-}
-
-function resolveSlackQaReadyTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
-  const raw = env.OPENCLAW_QA_TRANSPORT_READY_TIMEOUT_MS;
+function resolveSlackQaReadyTimeoutMs() {
+  const raw = process.env.OPENCLAW_QA_TRANSPORT_READY_TIMEOUT_MS;
   if (!raw) {
     return SLACK_QA_DEFAULT_READY_TIMEOUT_MS;
   }
