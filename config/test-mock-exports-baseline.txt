@@ -5467,7 +5467,6 @@
 ["src/cli/update-cli/update-command-service-drain.test.ts","../../gateway/local-http-probe.js","62b50e0fcdbaf45990a6c47a52dee25d8cc3542f2270dcf4da52199d60f7fc77",1]
 ["src/cli/update-cli/update-command-service-drain.test.ts","../../infra/gateway-lock-legacy.js","4b9a03c340ab816a4b8154ad0dbebd1d995069b03aa039970a08a5564073c6b3",1]
 ["src/cli/update-cli/update-command-service-drain.test.ts","../../infra/ports-inspect.js","b38b6dfbd988ace2ab12bae3c4a0a8cc7868079a2f36ac5993b503ed46ba2491",1]
-["src/cli/update-cli/update-command-service-drain.test.ts","../daemon-cli/restart-health-probe.js","b03ab0c0d1b13f1af8b011b04c93e3c3726135b667d1c189312a0f8ea477192b",1]
 ["src/cli/update-cli/update-command-service-drain.test.ts","./update-command-service-plan.js","32c9498fd83db1c0aaf4d0dbed532d8e49e4349a567964120f8034d26cc33bf1",1]
 ["src/cli/update-cli/update-command-service-inspection-settlement.test.ts","./schema-preflight.js","c84c97871827ae22de410bc57dcd988951e52eea717507a697e8ee7833034bb0",1]
 ["src/cli/update-cli/update-command-service-inspection-settlement.test.ts","./update-command-service.js","2b8ed57e38d72849b2dae4e499d68fd412dd7e9e2fc0f02e8aed5404e555cddf",1]
