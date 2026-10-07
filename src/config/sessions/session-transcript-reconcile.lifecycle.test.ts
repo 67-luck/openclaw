@@ -293,7 +293,7 @@ describe("session transcript reconcile worker lifecycle", () => {
         pendingTasks: 0,
       });
       const retainedLeases: string[] = [];
-      for (const options of agents) {
+      for (const [index, options] of agents.entries()) {
         const database = openOpenClawAgentDatabase(options);
         expect(
           database.db.prepare("SELECT message_id, text FROM session_transcript_fts").all(),
@@ -305,14 +305,21 @@ describe("session transcript reconcile worker lifecycle", () => {
         const plannerLeaseId = fence.plannerLeases.get(database.path);
         expect(plannerLeaseId).toMatch(/^[a-f0-9-]+$/u);
         expect(leases).not.toContain(plannerLeaseId);
+        const writerLeaseId = canonical.leases.get(database.path);
+        expect(writerLeaseId).toMatch(/^[a-f0-9-]+$/u);
+        // The executor owner controls idle retention; every retained lease still belongs to this store.
+        for (const lease of leases) {
+          expect([hostLeases[index], writerLeaseId]).toContain(lease);
+        }
         retainedLeases.push(...leases);
       }
       expect(retainedLeases.filter((lease) => hostLeases.includes(lease)).toSorted()).toEqual(
         hostLeases.toSorted(),
       );
-      const idleLeases = retainedLeases.filter((lease) => !hostLeases.includes(lease));
-      expect(idleLeases).toHaveLength(1);
-      expect([...canonical.leases.values()]).toContain(idleLeases[0]);
+      await closeOpenClawAgentDatabasesAsync();
+      for (const options of agents) {
+        expect(readAgentDatabaseLeaseIds(resolveOpenClawAgentSqlitePath(options), env)).toEqual([]);
+      }
     } finally {
       operationSpy.mockRestore();
       canonical.restore();
