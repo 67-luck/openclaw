@@ -1410,6 +1410,15 @@ class NodeRuntime internal constructor(
     val revision: Long,
   )
 
+  private enum class LocalMicOwner(
+    val suppressionReason: VoiceWakeSuppressionReason,
+    val busyMessage: String,
+  ) {
+    VoiceNote(VoiceWakeSuppressionReason.VoiceNote, "MIC_BUSY: voice note recording is active"),
+    Dictation(VoiceWakeSuppressionReason.Dictation, "MIC_BUSY: dictation is active"),
+    Camera(VoiceWakeSuppressionReason.Camera, "MIC_BUSY: camera audio recording is active"),
+  }
+
   private val voiceLifecycleEpoch = AtomicLong()
   private val voiceCaptureOwnershipEpoch = AtomicLong()
   private val talkPttCommandEpoch = AtomicLong()
@@ -1419,9 +1428,7 @@ class NodeRuntime internal constructor(
   // Otherwise stale PTT cleanup can pass its epoch check before a UI mode change.
   private val voiceCaptureOwnershipLock = Any()
   private var voiceWakeSuppressionRevision = 0L
-  private var voiceNoteOwnsMic = false
-  private var dictationOwnsMic = false
-  private var cameraAudioOwnsMic = false
+  private var localMicOwner: LocalMicOwner? = null
   private val voiceReplySpeechDepth = AtomicInteger(0)
   private val voiceCapturePreparationMutex = Mutex()
 
@@ -3683,55 +3690,19 @@ class NodeRuntime internal constructor(
 
   internal fun hasActiveGatewaySwitchAudio(): Boolean =
     synchronized(voiceCaptureOwnershipLock) {
-      voiceNoteOwnsMic || dictationOwnsMic || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
+      localMicOwner != null || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
     }
 
-  internal fun tryAcquireVoiceNoteMic(): Boolean {
-    val suppressionUpdate =
-      synchronized(voiceCaptureOwnershipLock) {
-        if (gatewayConnectionHandoff.value.pending || voiceNoteOwnsMic || dictationOwnsMic || !isVoiceCaptureModeActive(VoiceCaptureMode.Off)) return false
-        voiceNoteOwnsMic = true
-        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.VoiceNote, true)
-      }
-    applyVoiceWakeSuppression(suppressionUpdate)
-    return true
-  }
+  internal fun tryAcquireVoiceNoteMic(): Boolean = setLocalMicActive(LocalMicOwner.VoiceNote, true)
 
   internal fun releaseVoiceNoteMic() {
-    val suppressionUpdate =
-      synchronized(voiceCaptureOwnershipLock) {
-        voiceNoteOwnsMic = false
-        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.VoiceNote, false)
-      }
-    applyVoiceWakeSuppression(suppressionUpdate)
+    setLocalMicActive(LocalMicOwner.VoiceNote, false)
   }
 
-  internal fun tryAcquireDictationMic(): Boolean {
-    val suppressionUpdate =
-      synchronized(voiceCaptureOwnershipLock) {
-        if (
-          gatewayConnectionHandoff.value.pending ||
-          dictationOwnsMic ||
-          voiceNoteOwnsMic ||
-          cameraAudioOwnsMic ||
-          !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
-        ) {
-          return false
-        }
-        dictationOwnsMic = true
-        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.Dictation, true)
-      }
-    applyVoiceWakeSuppression(suppressionUpdate)
-    return true
-  }
+  internal fun tryAcquireDictationMic(): Boolean = setLocalMicActive(LocalMicOwner.Dictation, true)
 
   internal fun releaseDictationMic() {
-    val suppressionUpdate =
-      synchronized(voiceCaptureOwnershipLock) {
-        dictationOwnsMic = false
-        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.Dictation, false)
-      }
-    applyVoiceWakeSuppression(suppressionUpdate)
+    setLocalMicActive(LocalMicOwner.Dictation, false)
   }
 
   fun cancelMicCapture() {
@@ -3903,15 +3874,7 @@ class NodeRuntime internal constructor(
           ) {
             throw IllegalStateException("NODE_BACKGROUND_UNAVAILABLE: command requires foreground")
           }
-          if (voiceNoteOwnsMic) {
-            throw IllegalStateException("MIC_BUSY: voice note recording is active")
-          }
-          if (dictationOwnsMic) {
-            throw IllegalStateException("MIC_BUSY: dictation is active")
-          }
-          if (cameraAudioOwnsMic) {
-            throw IllegalStateException("MIC_BUSY: camera audio recording is active")
-          }
+          localMicOwner?.let { throw IllegalStateException(it.busyMessage) }
           if (!hasRecordAudioPermission()) {
             throw IllegalStateException("MIC_PERMISSION_REQUIRED: grant Microphone permission")
           }
@@ -4247,8 +4210,7 @@ class NodeRuntime internal constructor(
     var ownershipEpoch = 0L
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
-        if (mode != VoiceCaptureMode.Off && (gatewayConnectionHandoff.value.pending || voiceNoteOwnsMic || dictationOwnsMic)) return
-        if (mode != VoiceCaptureMode.Off && cameraAudioOwnsMic) return
+        if (mode != VoiceCaptureMode.Off && (gatewayConnectionHandoff.value.pending || localMicOwner != null)) return
         // Every mode command cancels queued PTT intent; only a real transition replaces the capture owner.
         talkPttCommandEpoch.incrementAndGet()
         val permissionDenied = mode.requiresMicrophonePermission && !hasRecordAudioPermission()
@@ -4363,23 +4325,27 @@ class NodeRuntime internal constructor(
     return createVoiceCaptureSuppressionUpdateLocked()
   }
 
-  internal fun setCameraAudioCaptureActive(active: Boolean): Boolean {
+  internal fun setCameraAudioCaptureActive(active: Boolean): Boolean = setLocalMicActive(LocalMicOwner.Camera, active)
+
+  private fun setLocalMicActive(
+    owner: LocalMicOwner,
+    active: Boolean,
+  ): Boolean {
     val suppressionUpdate =
       synchronized(voiceCaptureOwnershipLock) {
         if (active) {
           if (
-            cameraAudioOwnsMic ||
-            voiceNoteOwnsMic ||
-            dictationOwnsMic ||
+            (owner != LocalMicOwner.Camera && gatewayConnectionHandoff.value.pending) ||
+            localMicOwner != null ||
             !isVoiceCaptureModeActive(VoiceCaptureMode.Off)
           ) {
             return false
           }
-          cameraAudioOwnsMic = true
-        } else {
-          cameraAudioOwnsMic = false
+          localMicOwner = owner
+        } else if (localMicOwner == owner) {
+          localMicOwner = null
         }
-        createVoiceWakeSuppressionUpdateLocked(VoiceWakeSuppressionReason.Camera, active)
+        createVoiceWakeSuppressionUpdateLocked(owner.suppressionReason, active)
       }
     applyVoiceWakeSuppression(suppressionUpdate)
     return true
@@ -4453,7 +4419,7 @@ class NodeRuntime internal constructor(
   private fun isVoiceCaptureModeActive(mode: VoiceCaptureMode): Boolean =
     when (mode) {
       VoiceCaptureMode.Off -> {
-        !cameraAudioOwnsMic &&
+        localMicOwner != LocalMicOwner.Camera &&
           !externalAudioCaptureActive.value &&
           !micCapture.micEnabled.value &&
           !micCapture.micCooldown.value &&

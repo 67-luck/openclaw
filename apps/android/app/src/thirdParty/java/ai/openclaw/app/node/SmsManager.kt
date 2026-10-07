@@ -71,6 +71,37 @@ class SmsManager(
     val useMultipart: Boolean,
   )
 
+  internal class MixedByPhoneCandidates(
+    private val maxCandidates: Int,
+    private val reviewMode: Boolean,
+  ) {
+    private val messages = linkedMapOf<String, SmsMessage>()
+
+    fun add(
+      identityKey: String,
+      message: SmsMessage,
+    ) {
+      if (!reviewMode) {
+        if (maxCandidates <= 0) return
+        // Bounded replacement joins the end of a tie; review retains first-insertion order.
+        messages.remove(identityKey)
+      }
+      messages[identityKey] = message
+      if (!reviewMode && messages.size > maxCandidates) {
+        messages.entries
+          .sortedWith { left, right -> compareByPhoneCandidateOrder(left.value, right.value) }
+          .drop(maxCandidates)
+          .forEach { messages.remove(it.key) }
+      }
+    }
+
+    fun page(params: QueryParams): List<SmsMessage> =
+      messages.values
+        .sortedWith(::compareByPhoneCandidateOrder)
+        .drop(params.offset)
+        .take(params.limit)
+  }
+
   companion object {
     private const val DEFAULT_SMS_LIMIT = 25
     internal const val MAX_MIXED_BY_PHONE_CANDIDATE_WINDOW = 500
@@ -325,61 +356,6 @@ class SmsManager(
       rowId: Long,
       transportType: String?,
     ): String = "${transportType?.ifBlank { "unknown" } ?: "unknown"}:$rowId"
-
-    internal fun upsertTopDateCandidates(
-      candidates: MutableList<Pair<String, SmsMessage>>,
-      identityKey: String,
-      message: SmsMessage,
-      maxCandidates: Int,
-    ) {
-      if (maxCandidates <= 0) {
-        return
-      }
-
-      candidates.removeAll { existing -> existing.first == identityKey }
-      candidates.add(identityKey to message)
-      candidates.sortWith { left, right -> compareByPhoneCandidateOrder(left.second, right.second) }
-
-      while (candidates.size > maxCandidates) {
-        candidates.removeAt(candidates.lastIndex)
-      }
-    }
-
-    internal fun collectMixedByPhoneCandidate(
-      topCandidates: MutableList<Pair<String, SmsMessage>>,
-      materializedCandidates: MutableMap<String, SmsMessage>,
-      identityKey: String,
-      message: SmsMessage,
-      maxCandidates: Int,
-      reviewMode: Boolean,
-    ) {
-      if (reviewMode) {
-        materializedCandidates[identityKey] = message
-      } else {
-        upsertTopDateCandidates(topCandidates, identityKey, message, maxCandidates)
-      }
-    }
-
-    internal fun pageMixedByPhoneCandidates(
-      topCandidates: Collection<Pair<String, SmsMessage>>,
-      materializedCandidates: Map<String, SmsMessage>,
-      params: QueryParams,
-      reviewMode: Boolean,
-    ): List<SmsMessage> =
-      if (reviewMode) {
-        pageByPhoneCandidates(materializedCandidates.values, params)
-      } else {
-        pageByPhoneCandidates(topCandidates.map { it.second }, params)
-      }
-
-    internal fun pageByPhoneCandidates(
-      candidates: Collection<SmsMessage>,
-      params: QueryParams,
-    ): List<SmsMessage> =
-      candidates
-        .sortedWith(::compareByPhoneCandidateOrder)
-        .drop(params.offset)
-        .take(params.limit)
 
     internal fun buildSendPlan(
       message: String,
@@ -769,11 +745,7 @@ class SmsManager(
     val uri = "$MMS_SMS_BY_PHONE_BASE/${Uri.encode(phoneNumber)}".toUri()
     val projection = buildMixedByPhoneProjection()
 
-    val maxCandidates = params.offset + params.limit
-
-    val reviewMode = shouldUseConversationReviewByPhoneMode(params)
-    val topCandidates = mutableListOf<Pair<String, SmsMessage>>()
-    val materializedCandidates = linkedMapOf<String, SmsMessage>()
+    val candidates = MixedByPhoneCandidates(params.offset + params.limit, shouldUseConversationReviewByPhoneMode(params))
     val cursor = context.contentResolver.query(uri, projection, null, null, "date DESC")
     cursor?.use {
       val idIndex = it.getColumnIndex("_id")
@@ -851,23 +823,11 @@ class SmsManager(
             transportType = transportType,
           )
         val identityKey = buildMixedRowIdentity(id, transportType)
-        collectMixedByPhoneCandidate(
-          topCandidates = topCandidates,
-          materializedCandidates = materializedCandidates,
-          identityKey = identityKey,
-          message = message,
-          maxCandidates = maxCandidates,
-          reviewMode = reviewMode,
-        )
+        candidates.add(identityKey, message)
       }
     }
 
-    return pageMixedByPhoneCandidates(
-      topCandidates = topCandidates,
-      materializedCandidates = materializedCandidates,
-      params = params,
-      reviewMode = reviewMode,
-    )
+    return candidates.page(params)
   }
 
   private fun getMmsTextBody(messageId: Long): String? {
