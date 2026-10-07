@@ -591,12 +591,9 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
   await inOwnerContext(async () => {
     stop.push((await profiles.prepareUserProfileCatalog({ env })).release);
     await ensureSessionGroupCatalog();
-    for (;;) {
+    do {
       await refreshBatch();
-      if (disposed || !topologyDirty) {
-        return;
-      }
-    }
+    } while (!disposed && topologyDirty);
   }).catch((error: unknown) => {
     dispose();
     throw error;
