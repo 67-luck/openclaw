@@ -46,6 +46,7 @@ import {
   normalizeVisibleMessageLimit,
 } from "./session-accessor.sqlite-visible-cursor.js";
 import { assertSessionStoreReadCandidate } from "./session-store-read-candidates.js";
+import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
 import type { SessionArchiveInventoryScope } from "./session-transcript-inventory.types.js";
 import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
@@ -209,13 +210,16 @@ export function listTranscriptInstancesFromDatabase(params: {
 }
 
 /** Read retained archive identities through the same physical and logical session owner. */
-export function listSessionTranscriptArchivesReadOnly(scope: SessionArchiveInventoryScope) {
+export function listSessionTranscriptArchivesReadOnly(
+  scope: SessionArchiveInventoryScope,
+  preparedStoreTarget?: ResolvedSqliteStoreTarget,
+) {
   const selectors = [...new Set(scope.sessionIds ?? [])];
   const archiveNames = [...new Set(scope.archiveNames ?? [])];
   if (selectors.length === 0 && archiveNames.length === 0) {
     return [];
   }
-  const resolved = resolveSqliteReadScope(scope);
+  const resolved = resolveSqliteReadScope(scope, undefined, preparedStoreTarget);
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
       listTranscriptArchivesFromDatabase(

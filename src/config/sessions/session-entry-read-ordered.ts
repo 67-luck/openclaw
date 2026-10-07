@@ -53,8 +53,10 @@ export async function withOrderedSessionEntriesInWorker<T>(
   consume: (reads: readonly PreparedSessionEntryWorkerRead[]) => T,
   { readStore, onReadAdmitted }: { readStore: ReadSessionStore; onReadAdmitted?: () => void },
 ): Promise<T> {
+  const requests = inputs.map(captureSessionEntryWorkerRequest);
   const selected: Array<{
     input: SessionEntryWorkerRead;
+    request: ReturnType<typeof captureSessionEntryWorkerRequest>;
     owner: SessionHistoryWorkerDatabase;
     database: PreparedSessionEntryWorkerRead["database"];
     continuation: CanonicalSessionReaderContinuation | undefined;
@@ -63,8 +65,9 @@ export async function withOrderedSessionEntriesInWorker<T>(
   const enter = (index: number): Promise<T> => {
     const input = inputs[index];
     if (input) {
+      const request = requests[index]!;
       return readStore(input, async ({ reader, database, continuation, assertCurrent }) => {
-        selected.push({ input, owner: reader, database, continuation, assertCurrent });
+        selected.push({ input, request, owner: reader, database, continuation, assertCurrent });
         try {
           return await enter(index + 1);
         } finally {
@@ -135,10 +138,10 @@ export async function withOrderedSessionEntriesInWorker<T>(
           assertCurrent();
           onReadAdmitted?.();
           const reads: PreparedSessionEntryWorkerRead[] = [];
-          for (const { input: selectedInput, owner, database, continuation } of selected) {
+          for (const { request, owner, database, continuation } of selected) {
             assertCurrent();
             const result = await owner.readExactEntries({
-              ...captureSessionEntryWorkerRequest(selectedInput),
+              ...request,
               env: database.env,
               continuation,
             });

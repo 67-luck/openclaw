@@ -586,6 +586,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
                       return consume();
                     });
                   },
+                  params.preparedSharing?.selection,
                 );
               },
               withPreparedCurrent: <T>(

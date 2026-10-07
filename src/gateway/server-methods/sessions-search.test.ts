@@ -4,12 +4,14 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import {
   observeHostDataSql,
   isSessionEntryDataSql,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
+import { prepareSessionStoreTargetInventoryRead } from "../../config/sessions/session-store-target-runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
@@ -21,7 +23,8 @@ const templateStorePath = path.resolve("/stores/{agentId}.json");
 
 const searchSessionTranscriptsMock = vi.fn();
 const listSessionEntriesMock = vi.fn();
-const resolveExistingAgentSessionStoreTargetsSyncMock = vi.fn();
+const resolveExistingAgentSessionStoreTargetsSyncMock =
+  vi.fn<() => Array<{ agentId: string; storePath: string }>>();
 let realMetadataReads = false;
 
 vi.mock("../../config/sessions/session-transcript-search.js", () => ({
@@ -54,27 +57,33 @@ vi.mock("../../config/sessions/session-store-target-runtime.js", async (importOr
     await importOriginal<typeof import("../../config/sessions/session-store-target-runtime.js")>();
   return {
     ...actual,
-    prepareSessionStoreTargetInventoryRead: (
-      ...args: Parameters<typeof actual.prepareSessionStoreTargetInventoryRead>
-    ) =>
-      realMetadataReads
-        ? actual.prepareSessionStoreTargetInventoryRead(...args)
-        : {
-            withRead: (consume: (inventory: unknown, assertCurrent: () => void) => unknown) =>
-              consume(
-                {
-                  agents: [
-                    {
-                      result: {
-                        available: true,
-                        targets: resolveExistingAgentSessionStoreTargetsSyncMock(),
+    prepareSessionStoreTargetInventoryRead: vi.fn(
+      (...args: Parameters<typeof actual.prepareSessionStoreTargetInventoryRead>) =>
+        realMetadataReads
+          ? actual.prepareSessionStoreTargetInventoryRead(...args)
+          : {
+              withRead: (consume: (inventory: unknown, assertCurrent: () => void) => unknown) => {
+                const targets = resolveExistingAgentSessionStoreTargetsSyncMock();
+                return consume(
+                  {
+                    agents: [
+                      {
+                        result: {
+                          available: true,
+                          targets,
+                        },
+                        reads: targets.map((target) => ({
+                          target,
+                          database: { agentId: target.agentId, path: target.storePath },
+                        })),
                       },
-                    },
-                  ],
-                },
-                () => {},
-              ),
-          },
+                    ],
+                  },
+                  () => {},
+                );
+              },
+            },
+    ),
   };
 });
 
@@ -170,9 +179,10 @@ describe("sessions.search gateway method", () => {
     listSessionEntriesMock.mockReturnValue([]);
     resolveExistingAgentSessionStoreTargetsSyncMock.mockReset();
     resolveExistingAgentSessionStoreTargetsSyncMock.mockReturnValue([]);
+    vi.mocked(prepareSessionStoreTargetInventoryRead).mockClear();
   });
 
-  it("finds visible rows in a cold retired main store without an explicit key filter", async () => {
+  it("retains retired-store discovery through search and refuses visibility revoked during the wait", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const { viewer, other } = await useRestrictedSearchMetadata();
       const visibleKey = "agent:main:retained";
@@ -204,10 +214,52 @@ describe("sessions.search gateway method", () => {
         expect(respond).toHaveBeenCalledWith(true, {
           results: [expect.objectContaining({ sessionKey: visibleKey })],
         });
+        expect(prepareSessionStoreTargetInventoryRead).toHaveBeenCalledTimes(1);
         expect(sql.queries.filter(isSessionEntryDataSql)).toEqual([]);
       } finally {
         sql.restore();
       }
+
+      const entered = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      searchSessionTranscriptsMock.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return {
+          hits: [{ sessionKey: visibleKey, snippet: "revoked transcript content" }],
+          indexing: false,
+        };
+      });
+      const pending = callSearch(
+        { agentId: "main", query: "needle" },
+        ["operator.read"],
+        viewer.id,
+      );
+      try {
+        await awaitGateBeforeSettlement(
+          entered.promise,
+          pending,
+          "search never reached the transcript reader",
+        );
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey: visibleKey },
+          {
+            sessionId: visibleKey,
+            updatedAt: 2,
+            visibility: "shared",
+            createdActor: { type: "human", source: "profile", id: other.id },
+          },
+        );
+      } finally {
+        release.resolve();
+      }
+      const revoked = await pending;
+      expect(revoked).toHaveBeenCalledExactlyOnceWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "UNAVAILABLE" }),
+      );
+      expect(prepareSessionStoreTargetInventoryRead).toHaveBeenCalledTimes(2);
     });
   });
 

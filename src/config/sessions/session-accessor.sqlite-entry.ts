@@ -60,6 +60,7 @@ import {
   type ResolvedSqliteScope,
 } from "./session-accessor.sqlite-scope.js";
 import type { SessionEntryListScope, SessionEntryReadScope } from "./session-accessor.types.js";
+import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 import {
   assertCanonicalSessionKeyWrite,
   assertCanonicalSqliteSessionKeysCurrent,
@@ -198,8 +199,9 @@ export function listSessionTranscriptInstances(
   scope: Omit<SessionEntryListScope, "sessionKeys"> = {},
   options: SessionTranscriptInstanceListOptions = {},
   continuation?: CanonicalSessionReaderContinuation,
+  preparedStoreTarget?: ResolvedSqliteStoreTarget,
 ): SessionTranscriptInstance[] {
-  const resolved = resolveSqliteScope({ ...scope, sessionKey: "" });
+  const resolved = resolveSqliteScope({ ...scope, sessionKey: "" }, undefined, preparedStoreTarget);
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
       readWithCanonicalSessionReaderContinuation(database, continuation, () => {

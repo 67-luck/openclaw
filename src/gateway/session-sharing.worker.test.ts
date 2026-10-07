@@ -318,9 +318,19 @@ it.each([
     }
     const read = historyLane.pool.run.bind(historyLane.pool);
     let revoked = false;
+    let inventories = 0;
     let closing: Promise<void> | undefined;
     const spy = vi.spyOn(historyLane.pool, "run").mockImplementation(async (...args) => {
       const reply = await read(...args);
+      if (
+        reply.ok &&
+        typeof reply.value === "object" &&
+        reply.value !== null &&
+        "kind" in reply.value &&
+        reply.value.kind === "session-target-inventory"
+      ) {
+        inventories += 1;
+      }
       if (
         boundary.endsWith("before-consume") &&
         !revoked &&
@@ -358,6 +368,7 @@ it.each([
       }
       await expect(authorization.admittedInputAuthority!.withCurrent(effect)).rejects.toThrow();
       expect(effect).not.toHaveBeenCalled();
+      expect(inventories).toBe(0);
       if (boundary.endsWith("before-consume")) {
         expect(revoked).toBe(true);
       }

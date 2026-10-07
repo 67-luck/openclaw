@@ -761,6 +761,7 @@ async function recordMatchesTranscriptMessage(
           sessionKey,
           stateDir: stateDir ?? resolveStateDir(),
           assertCurrent: () => {},
+          purpose: "cleanup",
           onMissing: missing,
         },
         readIndex,

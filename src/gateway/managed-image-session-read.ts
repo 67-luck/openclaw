@@ -27,6 +27,7 @@ export async function withManagedImageSessionRead<T>(
     agentId: string;
     stateDir: string;
     assertCurrent: () => void;
+    purpose?: "cleanup";
     onMissing?: () => T;
   },
   consume: (scope: SessionTranscriptReadScope, assertCurrent: () => void) => Promise<T>,
@@ -81,7 +82,8 @@ export async function withManagedImageSessionRead<T>(
           try {
             exact = await reader.readExactEntries({
               sessionKeys: [sessionKey],
-              projection: "sharing",
+              projection: params.purpose === "cleanup" ? "exact" : "sharing",
+              ...(params.purpose === "cleanup" ? { snapshotFields: [] } : {}),
               env: prepared.env,
             });
           } catch (error) {

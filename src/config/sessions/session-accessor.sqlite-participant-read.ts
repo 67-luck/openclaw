@@ -4,14 +4,18 @@ import {
   type SessionParticipantRecord,
 } from "./session-accessor.sqlite-participant-projection.js";
 import { resolveSqliteReadScope, toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 
-export function listSessionParticipantsReadOnly(scope: {
-  agentId: string;
-  env?: NodeJS.ProcessEnv;
-  sessionKey?: string;
-  storePath?: string;
-}): Map<string, SessionParticipantRecord[]> {
-  const resolved = resolveSqliteReadScope(scope);
+export function listSessionParticipantsReadOnly(
+  scope: {
+    agentId: string;
+    env?: NodeJS.ProcessEnv;
+    sessionKey?: string;
+    storePath?: string;
+  },
+  preparedStoreTarget?: ResolvedSqliteStoreTarget,
+): Map<string, SessionParticipantRecord[]> {
+  const resolved = resolveSqliteReadScope(scope, undefined, preparedStoreTarget);
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
       participantRecordsBySessionKey(

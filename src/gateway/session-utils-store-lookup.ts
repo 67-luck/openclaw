@@ -42,7 +42,9 @@ import {
 } from "./session-utils-store-read.js";
 import {
   captureGatewaySessionReadSource,
+  captureGatewaySessionStoreSelection,
   withIncognitoGatewaySessionStoreTarget,
+  type GatewaySessionStoreSelection,
 } from "./session-utils-store-retained.js";
 import {
   resolveGatewaySessionStoreReadResults,
@@ -321,6 +323,7 @@ export async function withGatewaySessionStoreTarget<T>(
     membership: ReadonlyMap<string, readonly SessionMember[]>,
     assertCurrent: () => void,
     relatedTargets: readonly GatewaySessionStoreTargetWithStore[],
+    selection?: GatewaySessionStoreSelection,
   ) => T,
 ): Promise<T> {
   const normalized = {
@@ -474,6 +477,10 @@ export async function withGatewaySessionStoreTarget<T>(
               }
               assertCurrent();
               const target = plans[0]!.resolve();
+              const selection =
+                related.length === 0 && reads.length === 1
+                  ? captureGatewaySessionStoreSelection(inventory, target, normalized.key)
+                  : undefined;
               const memberships = new Map<string, readonly SessionMember[]>();
               for (const owner of prepared) {
                 if (owner.database.path === target.readSource?.path) {
@@ -488,6 +495,7 @@ export async function withGatewaySessionStoreTarget<T>(
                 memberships,
                 assertCurrent,
                 plans.slice(1).map((plan) => plan.resolve()),
+                selection,
               );
             },
             {

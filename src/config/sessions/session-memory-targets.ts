@@ -10,6 +10,7 @@ import type {
   MemorySessionTarget,
 } from "./session-memory-targets.types.js";
 import type { SessionParticipantIdentity } from "./session-participant-identity.js";
+import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 
 export function projectSessionMetadata(
   instance: SessionTranscriptInstance,
@@ -28,11 +29,13 @@ export function projectSessionMetadata(
 export function readMemorySessionMetadata(
   params: MemorySessionMetadataScope & { env?: NodeJS.ProcessEnv },
   continuation?: CanonicalSessionReaderContinuation,
+  preparedStoreTarget?: ResolvedSqliteStoreTarget,
 ): MemorySessionTarget | undefined {
   const instance = listSessionTranscriptInstances(
     params,
     { includeAllWindows: true, sessionId: params.sessionId },
     continuation,
+    preparedStoreTarget,
   ).find(
     (candidate) =>
       candidate.agentId === normalizeAgentId(params.agentId) &&
@@ -45,6 +48,7 @@ export function readMemorySessionMetadata(
 export function readMemorySessionTargets(
   params: MemorySessionSelectors & { env?: NodeJS.ProcessEnv },
   continuation?: CanonicalSessionReaderContinuation,
+  preparedStoreTarget?: ResolvedSqliteStoreTarget,
 ): MemorySessionTarget[] {
   const sessionIds = [...new Set(params.sessionIds ?? [])];
   const hookSources = [...new Set(params.hookSources ?? [])];
@@ -57,12 +61,13 @@ export function readMemorySessionTargets(
     throw new Error(`Invalid memory session date: ${params.since}`);
   }
   const resolvedSelectors = new Set<string>();
-  const participantRecords = listSessionParticipantsReadOnly(params);
+  const participantRecords = listSessionParticipantsReadOnly(params, preparedStoreTarget);
   const targets = new Map<string, MemorySessionTarget>();
   const instances = listSessionTranscriptInstances(
     params,
     { includeAllWindows: true },
     continuation,
+    preparedStoreTarget,
   )
     .filter((instance) => instance.agentId === normalizeAgentId(params.agentId))
     .toSorted(
@@ -89,7 +94,10 @@ export function readMemorySessionTargets(
       targets.set(instance.sessionId, projectSessionMetadata(instance, identities));
     }
   }
-  for (const archive of listSessionTranscriptArchivesReadOnly({ ...params, sessionIds })) {
+  for (const archive of listSessionTranscriptArchivesReadOnly(
+    { ...params, sessionIds },
+    preparedStoreTarget,
+  )) {
     resolvedSelectors.add(archive.sessionId);
     resolvedSelectors.add(archive.sessionKey);
     if (targets.has(archive.sessionId) || (since !== undefined && archive.createdAt < since)) {

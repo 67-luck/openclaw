@@ -609,7 +609,10 @@ serveOwnedWorkerTasks(
       if (request?.kind !== "close") {
         throw new Error("Session reader cleanup requires captured physical paths");
       }
-      releaseReadValidation?.(request.candidates);
+      releaseReadValidation?.(
+        request.candidates,
+        request.deleted ? undefined : request.retainedPaths,
+      );
       pruneClosedHistoryDatabaseScopes();
     },
   },

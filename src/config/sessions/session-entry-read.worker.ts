@@ -37,10 +37,6 @@ import { readSessionEntryReplacementState } from "./session-accessor.sqlite-repl
 import { resolveSqliteSessionKey } from "./session-accessor.sqlite-scope-helpers.js";
 import { resolveSqliteScope } from "./session-accessor.sqlite-scope.js";
 import {
-  hasSessionEntriesByStatus,
-  readSessionEntriesByStatus,
-} from "./session-accessor.sqlite-status.js";
-import {
   readLatestAssistantTextFromDatabase,
   readTranscriptHeaderFromDatabase,
 } from "./session-accessor.sqlite-transcript-metadata-read.js";
@@ -385,31 +381,14 @@ export function readExactSessionEntriesWithLifecycle(
       lifecycleTimestamps: {},
     };
   }
-  if (request.statusSelection) {
-    const { statuses, presenceOnly } = request.statusSelection;
-    const read = withOpenClawAgentDatabaseReadOnly(
-      (database) => ({
-        entries: presenceOnly ? [] : readSessionEntriesByStatus(database, statuses),
-        statusFound: presenceOnly ? hasSessionEntriesByStatus(database, statuses) : false,
-      }),
-      { ...request.database, env: request.env },
-    );
-    if (!read.found && !presenceOnly && read.reason !== "database-missing") {
-      throw new SessionMetadataUnavailableError(read.reason);
-    }
-    return {
-      kind: "session-exact-entries",
-      lifecycleTimestamps: {},
-      ...(read.found
-        ? read.value
-        : { entries: [], statusFound: read.reason !== "database-missing" }),
-    };
-  }
   const result = withOpenClawAgentDatabaseReadOnly(
     (database) =>
       request.projection === "list"
         ? {
             kind: "session-exact-entries" as const,
+            ...(request.expectedIdentity
+              ? { source: captureSessionEntryReadSource(database, request.expectedIdentity) }
+              : {}),
             entries: readSelectedSessionEntriesInDatabase(database, request.sessionKeys, {
               continuation: request.continuation,
             }),
@@ -417,6 +396,9 @@ export function readExactSessionEntriesWithLifecycle(
           }
         : withSqlitePostCommitPublications(database.db, () =>
             runSqliteDeferredTransactionSync(database.db, () => {
+              if (request.expectedIdentity) {
+                assertOpenClawAgentDatabaseIdentity(database, request.expectedIdentity);
+              }
               assertCanonicalSqliteSessionKeysCurrent(database);
               if (request.projection === "creation") {
                 const { identity, canonicalPath } = readOpenClawAgentDatabaseIdentity(database);
@@ -624,6 +606,9 @@ export function readExactSessionEntriesWithLifecycle(
   }
   if (result.reason !== "database-missing") {
     throw new SessionMetadataUnavailableError(result.reason);
+  }
+  if (request.expectedIdentity?.key.startsWith("file:")) {
+    throw new Error("Session entry read lost its captured physical owner");
   }
   return {
     kind: "session-exact-entries",

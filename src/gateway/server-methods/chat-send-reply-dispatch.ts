@@ -88,6 +88,7 @@ export function createChatSendReplyDispatch(params: {
   onCommandBlock?: (text: string) => void;
   isRunCurrent?: () => boolean;
   abortSignal?: AbortSignal;
+  assertWorkCurrent?: () => void;
   getReplyDispatchRun?: () => ReplyDispatchRun | undefined;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   logGateway: GatewayRequestContext["logGateway"];
@@ -99,7 +100,7 @@ export function createChatSendReplyDispatch(params: {
   // Extract scalar transcript bindings from borrowed entries; reread after asynchronous work.
   const sessionLoadOptions = { ...session.sessionLoadOptions, clone: false };
   const { notePreparedSession, readCurrentSession, captureTranscriptStart } =
-    createChatReplySessionReader(session);
+    createChatReplySessionReader(session, params.assertWorkCurrent);
   let assistantTranscriptRewriteState: ReturnType<typeof captureTranscriptStart>;
   let agentRunId = clientRunId;
   let agentTranscriptLifecycleRevision: string | undefined;

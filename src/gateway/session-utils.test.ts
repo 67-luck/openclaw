@@ -353,7 +353,6 @@ describe("gateway session utils", () => {
       entry: {
         sessionId: context.sessionId,
         updatedAt: 1,
-        status: "running",
         lastRunId: runId,
         modelProvider: "anthropic",
         model: "claude-sonnet-4-6",

@@ -9,27 +9,22 @@ import {
   validateSessionsSearchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionStorePathCore } from "../../config/sessions.js";
+import { retainSessionLineageReadSource } from "../../config/sessions/combined-store-lineage-read.js";
 import type { SessionEntrySummary } from "../../config/sessions/session-accessor.types.js";
 import { SessionTranscriptColdError } from "../../config/sessions/session-cold-storage-state.js";
 import { withSessionStoreReaderInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import { captureSessionStoreCandidateIdentities } from "../../config/sessions/session-store-read-candidates.js";
 import { prepareSessionStoreTargetInventory } from "../../config/sessions/session-store-target-inventory.js";
 import { prepareSessionStoreTargetInventoryRead } from "../../config/sessions/session-store-target-runtime.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
-import { readSqliteNativeMutationRevision } from "../../infra/sqlite-schema-facts.js";
 import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import {
   isIncognitoSessionKey,
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
-import { sessionChanges } from "../../sessions/session-row-changes.js";
-import {
-  prepareSessionRowPublicationScope,
-  sessionChangeAffectsStoredRow,
-} from "../../sessions/session-row-facts.js";
-import { getOpenClawAgentDatabaseIfOpen } from "../../state/openclaw-agent-db.js";
 import { errorShapeFromError } from "../error-shape.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
@@ -67,7 +62,6 @@ type SearchStoreSource = Parameters<Parameters<typeof withSessionStoreReaderInWo
 type SearchStore = {
   target: { agentId: string; storePath: string };
   source: SearchStoreSource;
-  identity: string;
 };
 type PreparedSearchRequest = {
   agentId: string;
@@ -76,7 +70,6 @@ type PreparedSearchRequest = {
   limit?: number;
   sessionKeys?: string[];
   database: { agentId: string; path: string };
-  identity: string;
 };
 
 /** Keep selected physical readers alive through synchronous response publication. */
@@ -84,55 +77,49 @@ async function withSessionSearchStores<T>(
   cfg: OpenClawConfig,
   agentId: string,
   configured: boolean,
-  consume: (stores: SearchStore[]) => Promise<T>,
+  consume: (stores: SearchStore[], assertCurrent: () => void) => Promise<T>,
 ): Promise<T> {
   const stores: SearchStore[] = [];
   const read = (
-    targets: Array<{ agentId: string; storePath: string }>,
+    targets: Array<
+      SearchStore["target"] &
+        Pick<Parameters<typeof withSessionStoreReaderInWorker>[0], "preparedSource">
+    >,
     assertDiscoveryCurrent: () => void,
   ): Promise<T> => {
     const enter = (index: number): Promise<T> => {
-      const target = targets[index];
-      if (!target) {
-        assertDiscoveryCurrent();
-        return consume(stores);
-      }
-      return withSessionStoreReaderInWorker(target, async (source) => {
-        const identity = JSON.stringify(readDatabasePathIdentitySync(source.database.path));
-        const native = getOpenClawAgentDatabaseIfOpen(source.database);
-        const revision = native && readSqliteNativeMutationRevision(native.db);
-        const publication = prepareSessionRowPublicationScope([
-          target.storePath,
-          source.database.path,
-        ]);
-        let changed = false;
-        const stop = sessionChanges.subscribeFacts((change) => {
-          changed ||= sessionChangeAffectsStoredRow(change, {
-            ...publication,
-            agentId,
-            sessionKeys: "all" in change ? [] : [change.sessionKey],
-          });
-        });
+      const selected = targets[index];
+      if (!selected) {
         const assertCurrent = () => {
           assertDiscoveryCurrent();
-          source.assertCurrent();
-          if (
-            changed ||
-            JSON.stringify(readDatabasePathIdentitySync(source.database.path)) !== identity ||
-            getOpenClawAgentDatabaseIfOpen(source.database) !== native ||
-            (native &&
-              (native.db.isTransaction || readSqliteNativeMutationRevision(native.db) !== revision))
-          ) {
-            throw new Error(
-              "Session search metadata changed while preparing visibility; retry the request",
-            );
-          }
+          stores.forEach(({ source }) => source.assertCurrent());
         };
-        stores.push({ target, source: { ...source, assertCurrent }, identity });
+        assertCurrent();
+        return consume(stores, assertCurrent);
+      }
+      const { preparedSource, ...target } = selected;
+      return withSessionStoreReaderInWorker({ ...target, preparedSource }, async (source) => {
+        const identity = JSON.stringify(readDatabasePathIdentitySync(source.database.path));
+        const witness = retainSessionLineageReadSource(
+          source.database,
+          undefined,
+          () => {
+            assertDiscoveryCurrent();
+            source.assertCurrent();
+            if (JSON.stringify(readDatabasePathIdentitySync(source.database.path)) !== identity) {
+              throw new Error("Session search physical source changed; retry the request");
+            }
+          },
+          target,
+        );
+        stores.push({
+          target,
+          source: { ...source, assertCurrent: () => witness.assertCurrent() },
+        });
         try {
           return await enter(index + 1);
         } finally {
-          stop();
+          witness.release();
           stores.pop();
         }
       });
@@ -146,13 +133,30 @@ async function withSessionSearchStores<T>(
     );
   }
   const inventory = prepareSessionStoreTargetInventory(cfg, [agentId]);
+  const identities = captureSessionStoreCandidateIdentities(inventory.candidates);
   return prepareSessionStoreTargetInventoryRead(inventory).withRead(
     async (result, assertCurrent) => {
       const source = result.agents[0];
       if (source && !source.result.available && source.result.reason !== "database-missing") {
         throw new Error(`Session stores for agent ${agentId} are unavailable`);
       }
-      return read(source?.result.available ? source.result.targets : [], assertCurrent);
+      return read(
+        (source?.reads ?? []).map(({ target, database }) => {
+          const identity = identities.get(database.path);
+          return {
+            ...target,
+            preparedSource: identity?.key.startsWith("file:")
+              ? {
+                  ...database,
+                  databaseIdentity: identity.key.slice(5),
+                  databaseBirthtime: identity.birthtime,
+                  assertCurrent,
+                }
+              : undefined,
+          };
+        }),
+        assertCurrent,
+      );
     },
   );
 }
@@ -194,24 +198,17 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       }
       return;
     }
-    const prepareSearch = async <T>(consume: (requests: PreparedSearchRequest[]) => T) => {
+    const selectSearch = () => {
       sessionMutationAuthorization?.assertCurrent();
       const cfg = context.getRuntimeConfig();
-      const policyConfig = context.getCommittedRuntimeConfig?.() ?? cfg;
       const scope = resolveSessionSearchScope(cfg, params);
       if (!scope.ok) {
         respond(false, undefined, scope.error);
         return undefined;
       }
-      const { agentId, configured, requestedAgentId, sessionKeys } = scope;
+      const { configured, requestedAgentId } = scope;
       const selectedStore = cfg.session?.store;
       const selectedScope = JSON.stringify(scope);
-      const restrictIncognito =
-        Boolean(gatewayClientSessionCreator(client)) && !isGatewayAdmin(client);
-      const roleVisibilityFilter = hasOperatorBoundary(client, policyConfig)
-        ? createSessionListEntryFilter({ client, cfg: policyConfig })
-        : undefined;
-      const restrictVisibility = restrictIncognito || Boolean(roleVisibilityFilter);
       if (requestedAgentId && !params.sessionKeys && configured) {
         respond(
           false,
@@ -220,6 +217,22 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         );
         return undefined;
       }
+      return { cfg, scope, selectedStore, selectedScope };
+    };
+    const prepareSearch = async <T>(
+      selection: NonNullable<ReturnType<typeof selectSearch>>,
+      stores: SearchStore[],
+      consume: (requests: PreparedSearchRequest[]) => T,
+    ) => {
+      const { cfg, scope, selectedStore, selectedScope } = selection;
+      const { agentId, configured, requestedAgentId, sessionKeys } = scope;
+      const policyConfig = context.getCommittedRuntimeConfig?.() ?? cfg;
+      const restrictIncognito =
+        Boolean(gatewayClientSessionCreator(client)) && !isGatewayAdmin(client);
+      const roleVisibilityFilter = hasOperatorBoundary(client, policyConfig)
+        ? createSessionListEntryFilter({ client, cfg: policyConfig })
+        : undefined;
+      const restrictVisibility = restrictIncognito || Boolean(roleVisibilityFilter);
       const scopedSessionKeys = configured
         ? sessionKeys
         : sessionKeys?.filter((sessionKey) => {
@@ -229,153 +242,171 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 : resolveSessionStoreAgentId(cfg, sessionKey);
             return sessionAgentId === agentId;
           });
-      return withSessionSearchStores(cfg, agentId, configured, async (stores) => {
-        const requests: PreparedSearchRequest[] = [];
-        const entries = new Map<string, SessionEntrySummary["entry"]>();
-        const snapshots: SessionEntrySummary[][] = [];
-        for (const { source } of stores) {
-          const rows = !restrictVisibility
-            ? []
-            : scopedSessionKeys
-              ? (
-                  await source.reader.readExactEntries({
-                    sessionKeys: scopedSessionKeys,
-                    projection: "sharing",
-                    env: source.database.env,
-                    continuation: source.continuation,
-                  })
-                ).entries
-              : await source.reader.readEntries(
-                  {
-                    agentId: source.logicalAgentId,
-                    storePath: source.database.path,
-                    env: source.database.env,
-                    projection: "list",
-                    clone: false,
-                  },
-                  source.continuation,
-                );
-          snapshots.push(rows);
-          for (const { sessionKey, entry } of rows) {
-            const parsed = parseAgentSessionKey(sessionKey);
-            if (parsed && normalizeAgentId(parsed.agentId) !== agentId) {
-              continue;
-            }
-            if (roleVisibilityFilter && entries.has(sessionKey)) {
-              throw new Error(`Session lookup found duplicate rows for "${sessionKey}"`);
-            }
-            entries.set(sessionKey, entry);
-          }
-        }
-        sessionMutationAuthorization?.assertCurrent();
-        if (
-          context.getRuntimeConfig() !== cfg ||
-          (context.getCommittedRuntimeConfig?.() ?? cfg) !== policyConfig ||
-          cfg.session?.store !== selectedStore ||
-          JSON.stringify(resolveSessionSearchScope(cfg, params)) !== selectedScope
-        ) {
-          throw new Error(
-            "Session search configuration changed while preparing visibility; retry the request",
-          );
-        }
-        const currentFilter = hasOperatorBoundary(client, policyConfig)
-          ? createSessionListEntryFilter({ client, cfg: policyConfig })
-          : undefined;
-        if (
-          (!roleVisibilityFilter && currentFilter) ||
-          (!restrictVisibility &&
-            Boolean(gatewayClientSessionCreator(client)) &&
-            !isGatewayAdmin(client))
-        ) {
-          throw new Error(
-            "Session search visibility changed while preparing metadata; retry the request",
-          );
-        }
-        const canSearch = (sessionKey: string) => {
-          if (
-            isIncognitoSessionKey(sessionKey) &&
-            !canAccessIncognitoSession({ cfg, client: client ?? null, sessionKey, agentId })
-          ) {
-            return false;
-          }
-          const entry = entries.get(sessionKey);
-          return !currentFilter || Boolean(entry && currentFilter(sessionKey, entry));
-        };
-        for (const [index, { target, source, identity }] of stores.entries()) {
-          source.assertCurrent();
-          const targetSessionKeys = (
-            scopedSessionKeys ??
-            (restrictVisibility
-              ? snapshots[index]!.map(({ sessionKey }) => sessionKey).filter((sessionKey) => {
-                  const parsed = parseAgentSessionKey(sessionKey);
-                  return !parsed || normalizeAgentId(parsed.agentId) === agentId;
+      const requests: PreparedSearchRequest[] = [];
+      const entries = new Map<string, SessionEntrySummary["entry"]>();
+      const snapshots: SessionEntrySummary[][] = [];
+      for (const { source } of stores) {
+        const rows = !restrictVisibility
+          ? []
+          : scopedSessionKeys
+            ? (
+                await source.reader.readExactEntries({
+                  sessionKeys: scopedSessionKeys,
+                  projection: "sharing",
+                  env: source.database.env,
+                  continuation: source.continuation,
                 })
-              : undefined)
-          )?.filter(canSearch);
-          if (targetSessionKeys?.length === 0) {
+              ).entries
+            : await source.reader.readEntries(
+                {
+                  agentId: source.logicalAgentId,
+                  storePath: source.database.path,
+                  env: source.database.env,
+                  projection: "list",
+                  clone: false,
+                },
+                source.continuation,
+              );
+        snapshots.push(rows);
+        for (const { sessionKey, entry } of rows) {
+          const parsed = parseAgentSessionKey(sessionKey);
+          if (parsed && normalizeAgentId(parsed.agentId) !== agentId) {
             continue;
           }
-          requests.push({
-            ...target,
-            query,
-            limit: configured ? params.limit : 25,
-            ...(targetSessionKeys ? { sessionKeys: targetSessionKeys } : {}),
-            database: { agentId: source.database.agentId, path: source.database.path },
-            identity,
-          });
+          if (roleVisibilityFilter && entries.has(sessionKey)) {
+            throw new Error(`Session lookup found duplicate rows for "${sessionKey}"`);
+          }
+          entries.set(sessionKey, entry);
         }
-        return consume(requests);
-      });
+      }
+      sessionMutationAuthorization?.assertCurrent();
+      if (
+        context.getRuntimeConfig() !== cfg ||
+        (context.getCommittedRuntimeConfig?.() ?? cfg) !== policyConfig ||
+        cfg.session?.store !== selectedStore ||
+        JSON.stringify(resolveSessionSearchScope(cfg, params)) !== selectedScope
+      ) {
+        throw new Error(
+          "Session search configuration changed while preparing visibility; retry the request",
+        );
+      }
+      const currentFilter = hasOperatorBoundary(client, policyConfig)
+        ? createSessionListEntryFilter({ client, cfg: policyConfig })
+        : undefined;
+      if (
+        (!roleVisibilityFilter && currentFilter) ||
+        (!restrictVisibility &&
+          Boolean(gatewayClientSessionCreator(client)) &&
+          !isGatewayAdmin(client))
+      ) {
+        throw new Error(
+          "Session search visibility changed while preparing metadata; retry the request",
+        );
+      }
+      const canSearch = (sessionKey: string) => {
+        if (
+          isIncognitoSessionKey(sessionKey) &&
+          !canAccessIncognitoSession({ cfg, client: client ?? null, sessionKey, agentId })
+        ) {
+          return false;
+        }
+        const entry = entries.get(sessionKey);
+        return !currentFilter || Boolean(entry && currentFilter(sessionKey, entry));
+      };
+      for (const [index, { target, source }] of stores.entries()) {
+        source.assertCurrent();
+        const targetSessionKeys = (
+          scopedSessionKeys ??
+          (restrictVisibility
+            ? snapshots[index]!.map(({ sessionKey }) => sessionKey).filter((sessionKey) => {
+                const parsed = parseAgentSessionKey(sessionKey);
+                return !parsed || normalizeAgentId(parsed.agentId) === agentId;
+              })
+            : undefined)
+        )?.filter(canSearch);
+        if (targetSessionKeys?.length === 0) {
+          continue;
+        }
+        requests.push({
+          ...target,
+          query,
+          limit: configured ? params.limit : 25,
+          ...(targetSessionKeys ? { sessionKeys: targetSessionKeys } : {}),
+          database: { agentId: source.database.agentId, path: source.database.path },
+        });
+      }
+      return consume(requests);
     };
     try {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const requests = await prepareSearch((requests) => requests);
-        if (!requests) {
+        const selection = selectSearch();
+        if (!selection) {
           return;
         }
-        const targetResults = await Promise.all(
-          requests.map(({ database, identity: _identity, ...request }) =>
-            searchSessionTranscripts(request, database),
-          ),
-        );
-        // Current configuration, identity, and sharing must authorize the whole result page.
-        const completed = await prepareSearch((current) => {
-          if (JSON.stringify(current) !== JSON.stringify(requests)) {
-            return false;
-          }
-          const archivedTranscriptsExcluded = targetResults.reduce(
-            (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
-            0,
-          );
-          const limit = params.limit ?? 10;
-          const sortedHits = targetResults
-            .flatMap((result) => result.hits)
-            .toSorted(
-              (left, right) =>
-                right.score - left.score ||
-                right.timestamp - left.timestamp ||
-                left.messageId.localeCompare(right.messageId),
+        const completed = await withSessionSearchStores(
+          selection.cfg,
+          selection.scope.agentId,
+          selection.scope.configured,
+          async (stores, assertCurrent) => {
+            const requests = await prepareSearch(selection, stores, (requests) => requests);
+            assertCurrent();
+            const targetResults = await Promise.all(
+              requests.map(({ database, ...request }) =>
+                searchSessionTranscripts(request, database),
+              ),
             );
-          const seenHits = new Set<string>();
-          const hits = sortedHits.filter((hit) => {
-            const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
-            if (seenHits.has(identity)) {
+            assertCurrent();
+            const current = selectSearch();
+            if (!current) {
+              return true;
+            }
+            if (
+              current.selectedStore !== selection.selectedStore ||
+              current.selectedScope !== selection.selectedScope
+            ) {
               return false;
             }
-            seenHits.add(identity);
-            return true;
-          });
-          respond(true, {
-            results: hits.slice(0, limit),
-            ...(archivedTranscriptsExcluded ? { archivedTranscriptsExcluded } : {}),
-            ...(targetResults.some((result) => result.indexing) ? { indexing: true } : {}),
-            ...(targetResults.some((result) => result.truncated) || hits.length > limit
-              ? { truncated: true }
-              : {}),
-          });
-          return true;
-        });
-        if (completed !== false) {
+            // Re-read current visibility while retaining the original physical sources.
+            return prepareSearch(current, stores, (currentRequests) => {
+              assertCurrent();
+              if (JSON.stringify(currentRequests) !== JSON.stringify(requests)) {
+                return false;
+              }
+              const archivedTranscriptsExcluded = targetResults.reduce(
+                (count, result) => count + (result.archivedTranscriptsExcluded ?? 0),
+                0,
+              );
+              const limit = params.limit ?? 10;
+              const sortedHits = targetResults
+                .flatMap((result) => result.hits)
+                .toSorted(
+                  (left, right) =>
+                    right.score - left.score ||
+                    right.timestamp - left.timestamp ||
+                    left.messageId.localeCompare(right.messageId),
+                );
+              const seenHits = new Set<string>();
+              const hits = sortedHits.filter((hit) => {
+                const identity = `${hit.sessionKey}\u0000${hit.sessionId}\u0000${hit.messageId}`;
+                if (seenHits.has(identity)) {
+                  return false;
+                }
+                seenHits.add(identity);
+                return true;
+              });
+              respond(true, {
+                results: hits.slice(0, limit),
+                ...(archivedTranscriptsExcluded ? { archivedTranscriptsExcluded } : {}),
+                ...(targetResults.some((result) => result.indexing) ? { indexing: true } : {}),
+                ...(targetResults.some((result) => result.truncated) || hits.length > limit
+                  ? { truncated: true }
+                  : {}),
+              });
+              return true;
+            });
+          },
+        );
+        if (completed) {
           return;
         }
       }

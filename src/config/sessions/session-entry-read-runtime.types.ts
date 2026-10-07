@@ -1,5 +1,6 @@
 import type { DatabasePathIdentity } from "../../infra/sqlite-worker-identity.js";
 import type { SessionEntryReadScope } from "./session-accessor.types.js";
+import type { CapturedSessionEntryReadSource } from "./session-entry-read-source.types.js";
 import type {
   SessionExactEntriesWorkerResult,
   SessionExactEntriesWorkerSelection,
@@ -10,6 +11,11 @@ export type SessionStoreWorkerReadScope = {
   agentId: string;
   storePath: string;
   env?: NodeJS.ProcessEnv;
+  /** Borrow physical selection from its live owner; rows still come from a fresh read. */
+  preparedSource?: CapturedSessionEntryReadSource & {
+    databaseIdentity: string;
+    assertCurrent: () => void;
+  };
 };
 
 export type SessionEntryWorkerRead = SessionStoreWorkerReadScope &
