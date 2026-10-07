@@ -5630,10 +5630,12 @@ describe("gateway server chat", () => {
     });
   });
 
-  test("chat.history advances past a replay boundary that cannot fit all projected siblings", async () => {
+  test("chat.history keeps older messages reachable past an oversized source row", async () => {
     await withGatewayChatHarness(async ({ ws, createSessionDir }) => {
       await prepareMainHistoryHarness({ ws, createSessionDir });
       const projectedSiblingCount = 70;
+      const projectedMessageId = "history-sibling-group";
+      const maxBytes = 512 * 1024;
       const captured: Extract<DiagnosticEventPayload, { type: "payload.large" }>[] = [];
       const unsubscribe = onDiagnosticEvent((event) => {
         if (event.type === "payload.large" && event.surface === "gateway.chat.history") {
@@ -5642,8 +5644,15 @@ describe("gateway server chat", () => {
       });
       try {
         await writeMainSessionTranscript([
-          createTextTranscriptEvent("user", "reachable older message", { timestamp: Date.now() }),
+          createTextTranscriptEvent("user", "reachable older message", {
+            id: "history-older-message",
+            parentId: null,
+            timestamp: Date.now(),
+          }),
           JSON.stringify({
+            type: "message",
+            id: projectedMessageId,
+            parentId: "history-older-message",
             message: {
               role: "assistant",
               // Replay metadata repeats the text; keep each row below the per-message byte cap.
@@ -5662,7 +5671,9 @@ describe("gateway server chat", () => {
         ]);
 
         type HistoryPage = {
-          messages?: Array<{ __openclaw?: { seq?: number } }>;
+          messages?: Array<{
+            __openclaw?: { id?: string; seq?: number; truncated?: boolean; reason?: string };
+          }>;
           nextOffset?: number;
           hasMore?: boolean;
         };
@@ -5673,40 +5684,54 @@ describe("gateway server chat", () => {
             limit: projectedSiblingCount + 1,
             offset: 0,
             maxChars: 100_000,
+            maxBytes,
           }),
         );
         expect(firstPage.ok).toBe(true);
-        const firstPageSequences = firstPage.payload?.messages?.map(readOpenClawSeq) ?? [];
-        expect(firstPageSequences.length).toBeGreaterThan(0);
-        expect(firstPageSequences.every((seq) => seq === 2)).toBe(true);
-        expect(firstPage.payload?.hasMore).toBe(true);
-        expect(firstPage.payload?.nextOffset).toBeGreaterThan(0);
+        expect(firstPage.payload?.messages?.length).toBeGreaterThan(0);
+        expect(firstPage.payload?.messages).toContainEqual(
+          expect.objectContaining({
+            __openclaw: expect.objectContaining({
+              id: projectedMessageId,
+              seq: 2,
+              truncated: true,
+              reason: "oversized",
+            }),
+          }),
+        );
         expect(
           captured.some((event) => event.action === "truncated" && (event.count ?? 0) > 0),
         ).toBe(true);
 
-        let offset = expectDefined(firstPage.payload?.nextOffset, "second page offset");
-        const olderMessages: unknown[] = [];
+        let page = firstPage;
+        let offset = 0;
+        let complete = false;
+        const messages: unknown[] = [];
         for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
-          const page = await rpcReq<HistoryPage>(
-            ws,
-            "chat.history",
-            makeMainSessionParams({
-              limit: 2,
-              offset,
-            }),
-          );
           expect(page.ok).toBe(true);
-          olderMessages.push(...(page.payload?.messages ?? []));
+          const pageMessages = page.payload?.messages ?? [];
+          expect(Buffer.byteLength(JSON.stringify(pageMessages))).toBeLessThanOrEqual(maxBytes);
+          messages.push(...pageMessages);
           const nextOffset = page.payload?.nextOffset;
           if (nextOffset === undefined) {
             expect(page.payload?.hasMore).toBe(false);
+            complete = true;
             break;
           }
+          expect(page.payload?.hasMore).toBe(true);
           expect(nextOffset).toBeGreaterThan(offset);
           offset = nextOffset;
+          page = await rpcReq<HistoryPage>(
+            ws,
+            "chat.history",
+            makeMainSessionParams({ limit: 2, offset, maxBytes }),
+          );
         }
+        expect(complete).toBe(true);
+        const olderMessages = messages.filter((message) => readOpenClawSeq(message) === 1);
+        expect(olderMessages).toHaveLength(1);
         expect(JSON.stringify(olderMessages)).toContain("reachable older message");
+        expect(messages.filter((message) => readOpenClawSeq(message) === 2)).toHaveLength(1);
       } finally {
         unsubscribe();
       }

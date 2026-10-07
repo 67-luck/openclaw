@@ -482,7 +482,11 @@ async function resetGatewayTestRuntimeOnly() {
   resetConfigRuntimeState();
   invalidateSessionSharingSnapshot();
   resetTestPluginRegistry();
+  const sessionStorePath = testState.sessionStorePath;
   resetGatewayMutableTestFixtures();
+  // A suite fixture owns this physical store until its explicit disposal.
+  // Publishing a temporary default would revoke its retained execution owner.
+  testState.sessionStorePath = sessionStorePath;
   clearSessionStoreCacheForTest();
   await persistTestSessionConfig();
   resetSystemEventsForTest();

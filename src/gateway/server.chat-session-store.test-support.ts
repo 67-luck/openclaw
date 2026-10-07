@@ -25,7 +25,6 @@ function createPersistentChatSessionStore() {
     },
     async reset(this: void) {
       await resetPersistentGatewaySessionStore(directory);
-      testState.sessionStorePath = undefined;
     },
     async dispose(this: void) {
       await releaseSessionTestDirectories(directories.dirs);
