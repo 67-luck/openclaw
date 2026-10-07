@@ -16,7 +16,7 @@ import {
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { recordSessionParticipant } from "../../config/sessions/session-accessor.sqlite-participants.native.js";
 import {
-  historyLane,
+  projectionLane,
   rotateDatabaseWorkers,
 } from "../../config/sessions/session-transcript-worker-resources.js";
 import { hasOpenClawAgentDatabaseAsyncResources } from "../../state/openclaw-agent-db-resources.js";
@@ -680,7 +680,7 @@ it.each([
           });
           expect(changed.respond).not.toHaveBeenCalled();
           // Retire cached readers without releasing request-owned registrations.
-          await rotateDatabaseWorkers(historyLane);
+          await rotateDatabaseWorkers(projectionLane);
           expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
           return;
         }
@@ -690,7 +690,7 @@ it.each([
         expect(fresh.mock.calls).toEqual(control.respond.mock.calls);
         expect(changed.error).toBeUndefined();
         expect(changed.respond.mock.calls).toEqual(control.respond.mock.calls);
-        await rotateDatabaseWorkers(historyLane);
+        await rotateDatabaseWorkers(projectionLane);
         expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
       } finally {
         release?.();
