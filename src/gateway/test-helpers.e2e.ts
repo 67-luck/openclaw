@@ -310,8 +310,10 @@ export async function startGatewayWithClient(
     clearConfigCache();
     clearSessionStoreCacheForTest();
 
-    const port =
-      params.port ?? params.portClaim?.port ?? (listener = await reserveGatewayTestListener()).port;
+    if (params.portClaim || params.port === undefined) {
+      listener = await reserveGatewayTestListener(params.portClaim);
+    }
+    const port = listener?.port ?? params.port;
     const start = () =>
       startGatewayServer(port, {
         bind: "loopback",
