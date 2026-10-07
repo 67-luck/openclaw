@@ -131,10 +131,10 @@ export function createWorkerPlacementMoveService(options: {
           // Existing durable decisions own retries. Prepare only a new intent, outside
           // the synchronous commit, so both branches publish their owner before yielding.
           if (request.abandonSource) {
-            const { placement, move } = await options.placements.getWithMoveAsync(
+            const { placement, move: existingMove } = await options.placements.getWithMoveAsync(
               request.sessionId,
             );
-            if (!move) {
+            if (!existingMove) {
               options.validateAbandonSource(request, placement);
               const claim = placement ? projectWorkerSessionTurnClaim(placement) : undefined;
               if (claim && prepareNew) {

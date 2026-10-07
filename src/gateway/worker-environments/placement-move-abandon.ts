@@ -104,7 +104,7 @@ export function createWorkerPlacementMoveAbandonment(
     authorize?: WorkerPlacementAuthorization,
     expectedSource?: WorkerPlacementCancellationTarget,
   ): Promise<Extract<WorkerDispatchPlacement, { state: "local" }>> => {
-    const failed = await options.workspaceOperations.run(intent.source.environmentId, async () => {
+    const fenced = await options.workspaceOperations.run(intent.source.environmentId, async () => {
       const { placement: current, move } = await placements.getWithMoveAsync(request.sessionId);
       authorize?.();
       if (
@@ -171,14 +171,14 @@ export function createWorkerPlacementMoveAbandonment(
       return failed;
     });
     authorize?.();
-    if (failed?.state !== "failed") {
+    if (fenced?.state !== "failed") {
       throw new Error(`Session ${request.sessionKey} abandonment did not fence its remote owner`);
     }
     const local = await placements.completeAbandonedPlacementMoveSourceToLocal(
       {
         operationId: intent.operationId,
         sessionId: intent.sessionId,
-        expectedGeneration: failed.generation,
+        expectedGeneration: fenced.generation,
         expectedRecoveryError: FORCED_WORKER_ABANDONMENT_ERROR,
       },
       { assertCurrent: authorize },
