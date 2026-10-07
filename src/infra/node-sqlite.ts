@@ -124,15 +124,14 @@ function assertSafeSqliteRuntime(sqlite: typeof import("node:sqlite")): void {
   let version: string;
   let extensions: boolean;
   try {
-    const row = database.prepare("SELECT sqlite_version() AS version").get() as
-      | { version?: unknown }
-      | undefined;
+    const row = database
+      .prepare(
+        "SELECT sqlite_version() AS version, sqlite_compileoption_used('OMIT_LOAD_EXTENSION') AS omitted",
+      )
+      .get() as { version?: unknown; omitted?: unknown } | undefined;
     version = typeof row?.version === "string" ? row.version : "unknown";
     assertSqliteWalResetSafeVersion(version, process.versions.node);
-    const capabilities = database
-      .prepare("SELECT sqlite_compileoption_used('OMIT_LOAD_EXTENSION') AS omitted")
-      .get();
-    extensions = capabilities?.omitted === 0;
+    extensions = row?.omitted === 0;
   } finally {
     database.close();
   }
