@@ -205,43 +205,52 @@ describe("server-runtime-services", () => {
     },
   );
 
-  it("waits for active startup recovery before its stop handle settles", async () => {
-    vi.useFakeTimers();
-    let resolveRecovery: (() => void) | undefined;
-    hoisted.recoverPendingDeliveries.mockImplementationOnce(async () => {
-      await new Promise<void>((resolve) => {
-        resolveRecovery = resolve;
+  it.each(["neither", "legacy", "recovery"] as const)(
+    "joins legacy diagnostics and current recovery before stop when %s fails",
+    async (failing) => {
+      vi.useFakeTimers();
+      const legacy = createDeferredCore<number>();
+      const recovery = createDeferredCore();
+      hoisted.countPendingDeliveryQueueEntries.mockReturnValueOnce(legacy.promise);
+      hoisted.recoverPendingDeliveries.mockImplementationOnce(async () => {
+        await recovery.promise;
+        return { recovered: 0, failed: 0, skippedMaxRetries: 0, deferredBackoff: 0 };
       });
-      return {
-        recovered: 0,
-        failed: 0,
-        skippedMaxRetries: 0,
-        deferredBackoff: 0,
-      };
-    });
-
-    const { services } = activateScheduledServicesForTest();
-    await vi.dynamicImportSettled();
-    expect(hoisted.recoverPendingDeliveries).toHaveBeenCalledOnce();
-    expect(hoisted.drainPendingDeliveries).not.toHaveBeenCalled();
-
-    let stopped = false;
-    const stopPromise = services.stopDeliveryRecovery().then(() => {
-      stopped = true;
-    });
-    await Promise.resolve();
-    expect(stopped).toBe(false);
-    expect(getActiveGatewayRootWorkCount()).toBe(1);
-
-    if (!resolveRecovery) {
-      throw new Error("Expected outbound startup recovery resolver to be initialized");
-    }
-    resolveRecovery();
-    await stopPromise;
-    expect(stopped).toBe(true);
-    expect(getActiveGatewayRootWorkCount()).toBe(0);
-    services.heartbeatRunner.stop();
-  });
+      const { services, log } = activateScheduledServicesForTest();
+      let stopPromise: Promise<void> | undefined;
+      try {
+        await vi.dynamicImportSettled();
+        expect(hoisted.recoverPendingDeliveries).toHaveBeenCalledOnce();
+        expect(hoisted.drainPendingDeliveries).not.toHaveBeenCalled();
+        const failure = new Error(`${failing} failed`);
+        if (failing === "legacy") {
+          legacy.reject(failure);
+        } else if (failing === "recovery") {
+          recovery.reject(failure);
+        }
+        let stopped = false;
+        stopPromise = services.stopDeliveryRecovery().then(() => {
+          stopped = true;
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        expect(stopped).toBe(false);
+        expect(getActiveGatewayRootWorkCount()).toBe(1);
+        legacy.resolve(0);
+        recovery.resolve();
+        await stopPromise;
+        expect(stopped).toBe(true);
+        expect(getActiveGatewayRootWorkCount()).toBe(0);
+        if (failing !== "neither") {
+          expect(log.error).toHaveBeenCalledWith(`Delivery recovery failed: ${String(failure)}`);
+        }
+      } finally {
+        legacy.resolve(0);
+        recovery.resolve();
+        await (stopPromise ?? services.stopDeliveryRecovery());
+        services.heartbeatRunner.stop();
+      }
+    },
+  );
 
   it("warns but holds shutdown until outbound recovery settles", async () => {
     vi.useFakeTimers();
