@@ -52,14 +52,14 @@ export function createWorkerPlacementMoveAbandonment(
           ? { sessionId, ownerEpoch: environment.ownerEpoch }
           : undefined;
       try {
-        return await environments.destroy(environmentId, abandonment, () =>
-          forceAbandonWorkerEnvironment({
+        return await environments.destroy(environmentId, abandonment, async () => {
+          await forceAbandonWorkerEnvironment({
             placements,
             environmentId,
             resolveWorkspace: options.resolveWorkspace,
             onCleanupError,
-          }),
-        );
+          });
+        });
       } catch (error) {
         const current = environments.get(environmentId);
         if (!current || !isUnavailableEnvironment(current)) {
@@ -104,7 +104,7 @@ export function createWorkerPlacementMoveAbandonment(
     authorize?: WorkerPlacementAuthorization,
     expectedSource?: WorkerPlacementCancellationTarget,
   ): Promise<Extract<WorkerDispatchPlacement, { state: "local" }>> => {
-    await options.workspaceOperations.run(intent.source.environmentId, async () => {
+    const failed = await options.workspaceOperations.run(intent.source.environmentId, async () => {
       const { placement: current, move } = await placements.getWithMoveAsync(request.sessionId);
       authorize?.();
       if (
@@ -127,12 +127,12 @@ export function createWorkerPlacementMoveAbandonment(
       ) {
         throw new Error(`Session ${request.sessionKey} abandonment source changed before teardown`);
       }
-      await forceAbandonWorkerEnvironment({
+      const failedPlacements = await forceAbandonWorkerEnvironment({
         placements,
         environmentId: intent.source.environmentId,
         resolveWorkspace: options.resolveWorkspace,
       });
-      const failed = await placements.getAsync(request.sessionId);
+      const failed = failedPlacements.get(request.sessionId);
       if (!isForceAbandonedWorkerPlacement(failed)) {
         throw new Error(`Session ${request.sessionKey} abandonment did not fence its remote owner`);
       }
@@ -167,8 +167,9 @@ export function createWorkerPlacementMoveAbandonment(
           authorize: assertCurrent,
         });
       }
+      // The completion transaction compares this acknowledged generation after teardown.
+      return failed;
     });
-    const failed = await placements.getAsync(request.sessionId);
     authorize?.();
     if (failed?.state !== "failed") {
       throw new Error(`Session ${request.sessionKey} abandonment did not fence its remote owner`);

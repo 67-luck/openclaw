@@ -718,6 +718,7 @@ it.each(["missing", "local"] as const)(
     });
     const sweep = coordinated.reconcileActive();
     await entered.promise;
+    expect(placements.get(REQUEST.sessionId)?.state).toBe(state === "local" ? "local" : undefined);
     let dispatchSettled = false;
     const dispatch = coordinated
       .dispatch(REQUEST)
@@ -734,9 +735,6 @@ it.each(["missing", "local"] as const)(
         cancellationEntered.promise,
         stopping,
         "Stop settled before entering local chat cancellation with inspection held",
-      );
-      expect(placements.get(REQUEST.sessionId)?.state).toBe(
-        state === "local" ? "local" : undefined,
       );
       expect(cancel).toHaveBeenCalledOnce();
       expect(controller.controller.signal.aborted).toBe(false);

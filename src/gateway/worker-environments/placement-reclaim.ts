@@ -253,7 +253,6 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
                     }
                   };
                   assertCurrent();
-                  reauthorize?.();
                   const quiescence = await tunnel.quiesceWorkspace(current.remoteWorkspaceDir);
                   try {
                     assertCurrent();
@@ -287,7 +286,6 @@ export function createWorkerPlacementReclaim(options: WorkerPlacementReclaimOpti
                     if (reconciliation.changed && !wasAccepted()) {
                       throw new Error("Cloud worker stop did not commit its reconciled workspace");
                     }
-                    reauthorize?.();
                     assertCurrent();
                     await placements.acceptWorkspaceResult(reclaimClaim, reauthorize);
                     const recordedStagedResultRef = (

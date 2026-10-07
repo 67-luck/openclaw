@@ -131,8 +131,7 @@ export function createGatewayWorkerPlacementReclaimBarriers(
       target.storeKeys,
     );
     const revision = entry?.lifecycleRevision ?? null;
-    const assertCurrent = () => {
-      authorize?.();
+    const assertTargetCurrent = () => {
       const current = resolveTarget();
       const currentEntry = sessionRuntime.resolveCanonicalSessionEntryFromStoreKeys(
         current.store,
@@ -150,6 +149,20 @@ export function createGatewayWorkerPlacementReclaimBarriers(
         );
       }
     };
+    const assertCurrent = Object.assign(
+      () => {
+        authorize?.();
+        assertTargetCurrent();
+      },
+      {
+        // Transport waits keep caller custody; both write grants reread the session target.
+        assertWorkerLifetime: () => (authorize?.assertWorkerLifetime ?? authorize)?.(),
+        assertWorkerGrant: () => {
+          (authorize?.assertWorkerGrant ?? authorize)?.();
+          assertTargetCurrent();
+        },
+      },
+    );
     const placement = await params.placements.getAsync(sessionId);
     assertCurrent();
     beforeDrain?.();
