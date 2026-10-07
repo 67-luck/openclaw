@@ -98,10 +98,10 @@ export const placementLifecycleOperations = {
   ),
   "workerPlacements.cancelMove": operation(
     "workerPlacements.cancelMove",
-    (runtime, input: MoveInput<"cancelPlacementMove">) => {
-      createPlacementMoveOps(runtime).cancelPlacementMove(input);
-      return { sessionId: input.sessionId };
-    },
+    (runtime, input: MoveInput<"cancelPlacementMove">) => ({
+      sessionId: input.sessionId,
+      changed: createPlacementMoveOps(runtime).cancelPlacementMove(input),
+    }),
   ),
   "workerPlacements.completeMoveSource": operation(
     "workerPlacements.completeMoveSource",

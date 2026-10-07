@@ -478,7 +478,7 @@ describe("worker session placement moves", () => {
         sessionId: SESSION.sessionId,
         expectedLocalGeneration: begun.placement.generation,
       }),
-    ).rejects.toThrow("changed before placement move cancellation");
+    ).resolves.toBe(false);
     expect(store.getPlacementMove(SESSION.sessionId)).toEqual(begun.intent);
 
     const observed: Array<string | null | undefined> = [];
