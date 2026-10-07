@@ -307,18 +307,26 @@ it("cancels a contended persistent admission without claiming the reply or poiso
 });
 
 it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
-  "keeps successors behind physical claim release after %s while another agent is idle",
+  "keeps successors behind executor eviction after %s when idle capacity is full",
   async (ending) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const activePath = path.join(state.sessionsDir(), "agent.sqlite");
-      const idlePath = path.join(state.sessionsDir("other"), "agent.sqlite");
       const activeKey = "agent:main:completion-close";
-      const idleKey = "agent:other:completion-idle";
       const activeSessionId = "completion-active-session";
-      const idleSessionId = "completion-idle-session";
+      const idleTargets = Array.from({ length: 4 }, (_, index) => {
+        const agentId = `other-${index}`;
+        return {
+          agentId,
+          storePath: path.join(state.sessionsDir(agentId), "agent.sqlite"),
+          sessionKey: `agent:${agentId}:completion-idle`,
+          sessionId: `completion-idle-session-${index}`,
+        };
+      });
       for (const [storePath, sessionKey, sessionId] of [
         [activePath, activeKey, activeSessionId],
-        [idlePath, idleKey, idleSessionId],
+        ...idleTargets.map(
+          (target) => [target.storePath, target.sessionKey, target.sessionId] as const,
+        ),
       ] as const) {
         replaceSessionEntrySync({ storePath, sessionKey }, { sessionId, updatedAt: 1 });
         await closeOpenClawAgentDatabaseByPathAsync(storePath);
@@ -326,7 +334,7 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
       const shared = openOpenClawStateDatabase({ env: state.env });
       const leases = shared.db.prepare("SELECT lease_id FROM agent_database_leases WHERE path = ?");
       let active: Admission | undefined;
-      let idle: Admission | undefined;
+      const idleAdmissions: Array<{ admission: Admission; sessionKey: string }> = [];
       const work = new AsyncWorkScope();
       try {
         active = await work.run(() =>
@@ -339,21 +347,24 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
             resetTriggered: false,
           }),
         );
-        idle = await admitReplyTurn({
-          storePath: idlePath,
-          sessionKey: idleKey,
-          agentId: "other",
-          sessionId: idleSessionId,
-          expectedSessionId: idleSessionId,
-          kind: "visible",
-          resetTriggered: false,
-        });
-        if (active.status !== "owned" || !active.databaseClaim || idle.status !== "owned") {
-          throw new Error("Fixture requires two admitted persistent reply owners");
+        for (const target of idleTargets) {
+          const admission = await admitReplyTurn({
+            ...target,
+            expectedSessionId: target.sessionId,
+            kind: "visible",
+            resetTriggered: false,
+          });
+          idleAdmissions.push({ admission, sessionKey: target.sessionKey });
+          expect(admission.status).toBe("owned");
+          await completeAdmission(admission, target.sessionKey);
         }
-        await completeAdmission(idle, idleKey);
+        if (active.status !== "owned" || !active.databaseClaim) {
+          throw new Error("Fixture requires an admitted persistent reply owner");
+        }
         expect(leases.all(activePath)).toHaveLength(1);
-        expect(leases.all(idlePath)).toHaveLength(1);
+        for (const { storePath } of idleTargets) {
+          expect(leases.all(storePath)).toHaveLength(1);
+        }
 
         const holder = holdStateDatabaseWriteTransaction(shared.path, 10_000);
         await holder.ready;
@@ -412,11 +423,15 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
             sql.restore();
           }
         }
-        expect(leases.all(activePath)).toEqual([]);
-        expect(leases.all(idlePath)).toHaveLength(1);
+        expect(leases.all(activePath)).toHaveLength(1);
+        for (const [index, { storePath }] of idleTargets.entries()) {
+          expect(leases.all(storePath)).toHaveLength(index === 0 ? 0 : 1);
+        }
       } finally {
         await completeAdmission(active, activeKey);
-        await completeAdmission(idle, idleKey);
+        for (const { admission, sessionKey } of idleAdmissions) {
+          await completeAdmission(admission, sessionKey);
+        }
         await work.drain();
       }
     });
