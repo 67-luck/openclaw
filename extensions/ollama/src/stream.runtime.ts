@@ -61,6 +61,10 @@ import {
   resolveOllamaConfiguredThink,
   supportsNativeOllamaMax,
 } from "./stream-compat.js";
+import {
+  detectFencedOllamaToolCall,
+  formatFencedOllamaToolCallDiagnostic,
+} from "./fenced-tool-call-diagnostic.js";
 import { OLLAMA_INCOMPLETE_STREAM_ERROR } from "./stream-contract.js";
 import { checkNdjsonRecordCap } from "./stream-ndjson-cap.js";
 import type { OllamaLocalService } from "./stream-registration.js";
@@ -1167,6 +1171,15 @@ function createRawOllamaStreamFn(
             ...toolCallNameOptions,
             sanitizeVisibleContent: false,
           });
+          if (accumulatedToolCalls.length === 0) {
+            const fencedToolCall = detectFencedOllamaToolCall(
+              accumulatedVisibleContent,
+              availableToolNames,
+            );
+            if (fencedToolCall) {
+              throw new Error(formatFencedOllamaToolCallDiagnostic(fencedToolCall.name));
+            }
+          }
           closeThinkingBlock();
           closeTextBlock();
 
