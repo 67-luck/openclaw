@@ -1555,8 +1555,8 @@ released synchronous SDK reader and pairing request/approval mutations retain
 their native paths, so their shared SQL sites remain T1. No schema, retention,
 durability, or update migration changes.
 
-Durable transcript write locks retain the existing history reader and agent writer
-through callback settlement. Reads carry exact stored bytes and row sequences;
+Durable transcript write locks retain the canonical agent writer for reads and
+callback settlement. Reads carry exact stored bytes and row sequences;
 the writer rechecks those snapshots, pending-input custody, and prepared source
 predicates in its synchronous transaction. Each append has its own acknowledged
 receipt, and successful callback notifications publish before writer release.
