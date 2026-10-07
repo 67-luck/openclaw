@@ -1,6 +1,5 @@
 import { isSenderIdAllowed } from "openclaw/plugin-sdk/allow-from";
 import {
-  type BuildChannelInboundEventContextParams,
   type BuildChannelInboundEventContextAsyncParams,
   type BuiltChannelInboundEventContext,
   formatMediaPlaceholderText,
@@ -8,9 +7,6 @@ import {
   formatInboundMediaUnavailableText,
   resolveEnvelopeFormatOptions,
   toLocationContext,
-  type NormalizedLocation,
-  type InboundEventKind,
-  type GroupThreadMentionFacts,
 } from "openclaw/plugin-sdk/channel-inbound";
 import { normalizeCommandBody } from "openclaw/plugin-sdk/command-surface";
 import type {
@@ -28,6 +24,7 @@ import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coe
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { NormalizedAllowFrom } from "./bot-access.js";
 import { normalizeAllowFrom } from "./bot-access.js";
+import type { resolveTelegramInboundBody } from "./bot-message-context.body.js";
 import type {
   TelegramMediaRef,
   TelegramMessageContextOptions,
@@ -65,10 +62,6 @@ import type { TelegramReplyChainEntry } from "./message-cache-codec.js";
 import { TELEGRAM_REPLY_CHAIN_MAX_DEPTH } from "./message-cache.js";
 import { resolveTelegramPromptMediaPath } from "./prompt-media-path.js";
 import { buildTelegramConversationId } from "./topic-conversation.js";
-
-type TelegramMentionFacts = NonNullable<
-  NonNullable<BuildChannelInboundEventContextParams["access"]>["mentions"]
->;
 
 type TelegramInboundContextPayload = BuiltChannelInboundEventContext & {
   From: string;
@@ -242,24 +235,12 @@ export async function buildTelegramInboundContextPayload(params: {
   dmThreadId?: number;
   threadSpec: TelegramThreadSpec;
   route: ResolvedAgentRoute;
-  rawBody: string;
-  bodyText: string;
-  historyKey?: string;
+  bodyResult: NonNullable<Awaited<ReturnType<typeof resolveTelegramInboundBody>>>;
   historyLimit: number;
   dmHistoryLimit: number;
   groupConfig?: TelegramGroupConfig | TelegramDirectConfig;
   topicConfig?: TelegramTopicConfig;
-  effectiveWasMentioned: boolean;
-  inboundEventKind: InboundEventKind;
   groupRequireMention: boolean;
-  mentionFacts: TelegramMentionFacts;
-  groupThread?: GroupThreadMentionFacts;
-  commandSource?: "native" | "text";
-  nativeCommandBody?: string;
-  stickerCacheHit?: boolean;
-  audioTranscribedMediaIndex?: number;
-  commandAuthorized: boolean;
-  locationData?: NormalizedLocation;
   options?: TelegramMessageContextOptions;
   dmAllowFrom?: Array<string | number>;
   effectiveGroupAllow?: NormalizedAllowFrom;
@@ -296,29 +277,32 @@ export async function buildTelegramInboundContextPayload(params: {
     dmThreadId,
     threadSpec,
     route,
-    rawBody,
-    bodyText,
-    historyKey,
     historyLimit,
     dmHistoryLimit,
     groupConfig,
     topicConfig,
-    effectiveWasMentioned,
-    inboundEventKind,
     groupRequireMention,
-    mentionFacts,
-    commandSource,
-    nativeCommandBody,
-    stickerCacheHit,
-    audioTranscribedMediaIndex,
-    commandAuthorized,
-    locationData,
     options,
     dmAllowFrom,
     effectiveGroupAllow,
     topicName,
     sessionRuntime: sessionRuntimeOverride,
   } = params;
+  const {
+    rawBody,
+    bodyText,
+    historyKey = "",
+    effectiveWasMentioned,
+    inboundEventKind,
+    mentionFacts,
+    groupThread,
+    commandSource,
+    nativeCommandBody,
+    stickerCacheHit,
+    audioTranscribedMediaIndex,
+    commandAuthorized,
+    locationData,
+  } = params.bodyResult;
   const replyTarget = describeReplyTarget(msg);
   const bufferedMessages = options?.bufferedMessages ?? [];
   const hasMultiMessageBatch = bufferedMessages.length > 1;
@@ -773,7 +757,7 @@ export async function buildTelegramInboundContextPayload(params: {
     },
     contextVisibility: contextVisibilityMode,
     extra: {
-      GroupThread: params.groupThread,
+      GroupThread: groupThread,
       BotUsername: primaryCtx.me?.username ?? undefined,
       AmbientTranscriptWatermarkKey: ambientTranscriptWatermarkKey,
       AmbientTranscriptBody: options?.ambientTranscriptBody,
