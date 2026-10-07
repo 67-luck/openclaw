@@ -82,6 +82,58 @@ it("reuses retained physical selection while reading fresh rows and keeping its 
           }),
         ).toThrow("Agent database changed during repair admission");
       }
+      const alternateEnv = {
+        ...state.env,
+        OPENCLAW_STATE_DIR: state.path("alternate-state"),
+      };
+      const alternate = openOpenClawAgentDatabase({ agentId: "main", env: alternateEnv });
+      const alternateKey = "agent:main:redirected-selection";
+      writeSessionEntry(alternate, alternateKey, { sessionId: "redirected", updatedAt: 1 });
+      const alternateHeld = retainOpenClawAgentDatabaseReadOnly({
+        agentId: alternate.agentId,
+        path: alternate.path,
+        env: alternateEnv,
+      });
+      if (!alternateHeld.found) {
+        throw new Error("Expected the alternate physical owner");
+      }
+      try {
+        const alternateIdentity = readOpenClawAgentDatabaseIdentity(alternateHeld.database);
+        if (typeof alternateIdentity.identity !== "string") {
+          throw new Error("Expected an alternate durable physical identity");
+        }
+        const later = {
+          ...input,
+          sessionKeys: [...input.sessionKeys],
+          env: { ...input.env },
+          preparedSource: { ...input.preparedSource },
+        };
+        const reading = withSessionEntriesFromStoresInWorker([input, later], ([first, second]) => {
+          expect(first!.result.entries[0]?.entry.sessionId).toBe("original");
+          expect(second!.database.path).toBe(database.path);
+          expect(second!.database.env.OPENCLAW_STATE_DIR).toBe(state.env.OPENCLAW_STATE_DIR);
+          expect(second!.result.entries).toEqual([
+            expect.objectContaining({
+              sessionKey,
+              entry: expect.objectContaining({ sessionId: "original" }),
+            }),
+          ]);
+        });
+        // The first worker read has yielded; the later descriptor must already be captured.
+        later.storePath = alternate.path;
+        later.sessionKeys.splice(0, later.sessionKeys.length, alternateKey);
+        later.env.OPENCLAW_STATE_DIR = alternateEnv.OPENCLAW_STATE_DIR;
+        Object.assign(later.preparedSource, {
+          agentId: alternate.agentId,
+          path: alternate.path,
+          databaseIdentity: alternateIdentity.identity,
+          databaseBirthtime: alternateIdentity.birthtime,
+          assertCurrent: alternateHeld.claim.assertCurrent,
+        });
+        await reading;
+      } finally {
+        alternateHeld.claim.release();
+      }
       peer
         .prepare(
           "UPDATE session_nodes SET entry_json = json_set(entry_json, '$.label', ?) WHERE session_key = ?",

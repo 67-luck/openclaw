@@ -63,6 +63,16 @@ function traceSqlExecutions(
           return (sql: string) => {
             return new Proxy(target.prepare(sql), {
               get(statement, method) {
+                if (method === "iterate") {
+                  return function* (...args: Parameters<typeof statement.iterate>) {
+                    const rows = statement.iterate(...args);
+                    statements.push(sql);
+                    for (const row of rows) {
+                      observe(row);
+                      yield row;
+                    }
+                  };
+                }
                 if (method === "get" || method === "all") {
                   return (...args: unknown[]) => {
                     statements.push(sql);
@@ -515,12 +525,16 @@ describe("repairCanonicalSqliteIndexes", () => {
         repairCanonicalSqliteIndexes(db, "test database", CANONICAL_SCHEMA);
 
         expect(
-          db.prepare("SELECT sql FROM main.sqlite_schema WHERE name = 'idx_records_identity'").get(),
+          db
+            .prepare("SELECT sql FROM main.sqlite_schema WHERE name = 'idx_records_identity'")
+            .get(),
         ).toEqual({
           sql: expect.stringContaining("tenant_id COLLATE NOCASE"),
         });
         expect(
-          db.prepare("SELECT sql FROM temp.sqlite_schema WHERE name = 'idx_records_identity'").get(),
+          db
+            .prepare("SELECT sql FROM temp.sqlite_schema WHERE name = 'idx_records_identity'")
+            .get(),
         ).toEqual({
           sql: "CREATE UNIQUE INDEX idx_records_identity ON temp_records(id)",
         });

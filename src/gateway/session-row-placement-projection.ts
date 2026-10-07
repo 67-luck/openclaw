@@ -53,8 +53,9 @@ type PlacementReadBatch = {
 export function createSessionRowPlacementProjection(
   reader: Pick<WorkerSessionPlacementStore, "readProjection"> | undefined,
   prepareReadFacts: () => Promise<void> | undefined,
-  env: NodeJS.ProcessEnv = captureSessionTranscriptStorageEnvironment(process.env),
+  inputEnv: NodeJS.ProcessEnv = process.env,
 ) {
+  const env = captureSessionTranscriptStorageEnvironment(inputEnv);
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const resident = new Map<string, SessionRowPlacementFacts>();
   const registered = new Set<string>();

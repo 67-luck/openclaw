@@ -56,6 +56,17 @@ exact canonical audit definitions from admitted schema facts, retaining structur
 validation for other supported shapes. Schemas, stored bytes, retention, and update
 behavior are unchanged.
 
+Runtime canonical-session readiness carries the pending work's captured physical
+source into the existing reclamation worker. The worker rereads current rows and
+certifies them in synchronous transactions, retaining the existing FIFO, live host
+grants, and acknowledged validation publication. Startup and Doctor keep their
+native readiness probe; runtime does not reopen a caller-thread reader after a wait.
+
+Canonical index inspection reuses one complete current catalog snapshot through
+the existing table-contract reader. Fingerprint comparison, unexpected uniqueness
+rejection, integrity checks, and atomic repair retain their original contracts.
+This changes neither canonical definitions nor repair and update policy.
+
 Inventory classifications describe counted operations, not whole-module runtime
 safety. Reviewed mixed modules use named operation paths, optionally narrowed to
 a variable initializer, rather than line numbers. Initializer exceptions exclude

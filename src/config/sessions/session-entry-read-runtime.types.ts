@@ -22,7 +22,7 @@ export type SessionEntryWorkerRead = SessionStoreWorkerReadScope &
   SessionExactEntriesWorkerSelection & {
     lifecycleSessionKey?: string;
     snapshotFields?: readonly SessionEntrySnapshotField[];
-    projection?: "full" | "sharing" | "list" | "exact";
+    projection?: "full" | "sharing" | "list" | "exact" | "worktree";
     includeMembers?: boolean;
     includeParticipantRecords?: boolean;
     includeAuthorization?: boolean;
