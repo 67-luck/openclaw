@@ -235,9 +235,10 @@ enum GatewayEnvironment {
                     """)
             }
 
+            let gatewayLabel = gatewayBin != nil ? "global" : "local"
             let gatewayVersionText = installedRaw ?? "unknown"
             let gatewayLabelText = gatewayBin != nil
-                ? "(global)"
+                ? "(\(gatewayLabel))"
                 : " (local: \(projectEntrypoint ?? "unknown"))"
             return GatewayEnvironmentStatus(
                 kind: .ok,

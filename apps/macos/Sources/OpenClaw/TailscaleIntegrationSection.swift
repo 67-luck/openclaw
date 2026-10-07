@@ -149,10 +149,14 @@ struct TailscaleIntegrationSection: View {
     }
 
     private var tailscaleModeFooter: String {
-        let description = self.tailscaleMode.description
-        return self.tailscaleMode == .serve && !self.requireCredentialsForServe
-            ? "\(description) Serve uses Tailscale identity headers; no password required."
-            : description
+        switch self.tailscaleMode {
+        case .off, .funnel:
+            self.tailscaleMode.description
+        case .serve:
+            self.requireCredentialsForServe
+                ? self.tailscaleMode.description
+                : "\(self.tailscaleMode.description) Serve uses Tailscale identity headers; no password required."
+        }
     }
 
     private var statusColor: Color {
