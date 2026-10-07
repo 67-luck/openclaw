@@ -47,6 +47,10 @@ import {
   OLLAMA_CLOUD_PROVIDER_ID,
   OLLAMA_DEFAULT_BASE_URL,
 } from "./defaults.js";
+import {
+  detectFencedOllamaToolCall,
+  formatFencedOllamaToolCallDiagnostic,
+} from "./fenced-tool-call-diagnostic.js";
 import { normalizeOllamaWireModelId } from "./model-id.js";
 import { applyOllamaThinkingFloor } from "./model-reasoning.js";
 import { resolveOllamaBaseUrlForRun } from "./provider-base-url.js";
@@ -61,10 +65,6 @@ import {
   resolveOllamaConfiguredThink,
   supportsNativeOllamaMax,
 } from "./stream-compat.js";
-import {
-  detectFencedOllamaToolCall,
-  formatFencedOllamaToolCallDiagnostic,
-} from "./fenced-tool-call-diagnostic.js";
 import { OLLAMA_INCOMPLETE_STREAM_ERROR } from "./stream-contract.js";
 import { checkNdjsonRecordCap } from "./stream-ndjson-cap.js";
 import type { OllamaLocalService } from "./stream-registration.js";

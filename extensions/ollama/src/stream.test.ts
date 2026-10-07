@@ -392,9 +392,7 @@ describe("createOllamaStreamFn thinking events", () => {
     expect(events.find((event) => event.type === "error")).toMatchObject({
       type: "error",
       error: {
-        errorMessage: expect.stringContaining(
-          "returned tool \"exec\" as fenced PowerShell text",
-        ),
+        errorMessage: expect.stringContaining('returned tool "exec" as fenced PowerShell text'),
       },
     });
   });
