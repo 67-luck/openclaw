@@ -265,6 +265,9 @@ export async function prepareGitHubPublicationWorkspaceOwner(params: Publication
   );
   context.admission.assertCurrent();
   const workspaceId = loaded.entry.repositoryWorkspaceId;
+  if (!workspaceId && !loaded.entry.worktree?.id) {
+    throw new GitHubPublicationSessionChangedError();
+  }
   const identity = { ...params, lifecycleRevision: loaded.entry.lifecycleRevision ?? null };
   const readWorktree = preparePublicationWorktreeRead(loaded, context);
   const prepared = workspaceId

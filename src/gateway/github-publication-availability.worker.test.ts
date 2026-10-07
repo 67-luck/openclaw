@@ -98,6 +98,18 @@ it.each([true, false])(
   },
 );
 
+it("rejects an unbound session without dispatching a worktree read", async () => {
+  const worker = await import("../state/openclaw-state-worker-store.js");
+  const execute = vi.spyOn(worker, "executeOpenClawStateWorker");
+  mocks.session.mockReturnValue({
+    canonicalKey: session.sessionKey,
+    agentId: session.agentId,
+    entry: { sessionId: session.sessionId, lifecycleRevision: "lifecycle" },
+  });
+  expect(await prepareGitHubPublicationAvailability(session)).toBe(false);
+  expect(execute).not.toHaveBeenCalled();
+});
+
 it("rejects a worktree retired while publication identity is prepared", async () => {
   mocks.identity.mockImplementationOnce(async () => {
     await updateRegistryWorktree(process.env, worktree.id, { removedAt: 2 });
