@@ -339,13 +339,9 @@ describe("gateway agent handler chat.abort integration", () => {
     const finalResponse = respond.mock.calls.find(
       (call: unknown[]) => (call[1] as { status?: unknown } | undefined)?.status === "timeout",
     );
-    expectRecordFields(requireValue(finalResponse, "terminal response missing")[1], {
-      runId,
-      status: "timeout",
-      stopReason: "rpc",
-      timeoutPhase: "queue",
-      providerStarted: false,
-    });
+    const terminal = requireValue(finalResponse, "terminal response missing")[1];
+    expectRecordFields(terminal, { runId, status: "timeout", stopReason: "rpc" });
+    expectRecordFields(terminal, { timeoutPhase: "queue", providerStarted: false });
   });
 
   it("keeps selected-global alias scope when aborting during pre-accept setup", async () => {
