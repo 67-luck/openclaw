@@ -145,6 +145,7 @@ export function createWorkerWorkspaceRecoveryPreparer(options: {
           lifecycleRevision: preparedEntry.lifecycleRevision,
           activeWriterRunId: preparedEntry.activeWriterRunId,
         }),
+        "read",
       );
       assertCurrent();
       resolved.assertCurrent(options.getConfig());
@@ -297,11 +298,7 @@ export async function resolveWorkerPlacementSessionTarget(params: {
     if (
       target.storePath !== expected.storePath ||
       target.canonicalKey !== expected.canonicalKey ||
-      target.agentId !== expected.agentId
-    ) {
-      throw targetChangedError();
-    }
-    if (
+      target.agentId !== expected.agentId ||
       !entry ||
       entry.sessionId !== params.sessionId ||
       entry.lifecycleRevision !== initialIdentity.lifecycleRevision ||
