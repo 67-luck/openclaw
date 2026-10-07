@@ -1,9 +1,12 @@
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
+import { WebSocket } from "ws";
 import type { HelloOk } from "../../packages/gateway-protocol/src/schema/frames.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeConfigFile } from "../config/config.js";
 import type { GatewayAuthConfig } from "../config/types.gateway.js";
+import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import * as sessionChangeEvent from "./server-methods/session-change-event.js";
 import {
   connectReq,
   CONTROL_UI_CLIENT,
@@ -13,10 +16,15 @@ import {
   testState,
   withGatewayServer,
 } from "./server.auth.test-helpers.js";
+import * as placementDispatchStore from "./worker-environments/placement-dispatch-store.js";
+import * as workerEnvironmentService from "./worker-environments/service.js";
 
 installGatewayTestHooks({ scope: "suite" });
 const temps = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 test.each([false, true])(
   "session writers read only requested placement policy over authenticated RPC (required=%s)",
@@ -105,3 +113,172 @@ test.each([false, true])(
     });
   },
 );
+
+test("required placement stops before provider setup when caller authority ends after its requested transition", async () => {
+  const origin = "https://control.example.invalid";
+  const admin = "admin@example.invalid";
+  const writers = {
+    disconnect: "disconnect@example.invalid",
+    scope: "scope@example.invalid",
+    profile: "profile@example.invalid",
+  };
+  const auth: GatewayAuthConfig = {
+    mode: "trusted-proxy",
+    identityScopes: {
+      [admin]: ["operator.admin"],
+      ...Object.fromEntries(
+        Object.values(writers).map((email) => [email, ["operator.sessions.write"]]),
+      ),
+    },
+    trustedProxy: {
+      userHeader: "x-forwarded-user",
+      requiredHeaders: ["x-forwarded-proto"],
+      allowLoopback: true,
+      allowUsers: [admin, ...Object.values(writers)],
+    },
+  };
+  testState.gatewayAuth = auth;
+  testState.gatewayControlUi = { allowedOrigins: [origin] };
+  await writeConfigFile({
+    gateway: { auth, trustedProxies: ["127.0.0.1"], controlUi: { allowedOrigins: [origin] } },
+    cloudWorkers: {
+      requiredProfile: "dedicated",
+      profiles: {
+        dedicated: { provider: "device", settings: { device: "paired", inference: "worker" } },
+      },
+    },
+  });
+  vi.stubEnv("OPENCLAW_TEST_MINIMAL_GATEWAY", "0");
+
+  // Observe the production service's provider-side setup entry points without replacing them.
+  const setupCalls: string[] = [];
+  const createService = workerEnvironmentService.createWorkerEnvironmentService;
+  vi.spyOn(workerEnvironmentService, "createWorkerEnvironmentService").mockImplementation(
+    (options) => {
+      const service = createService(options);
+      const { prepareProjectIntent, createWithRequest } = service;
+      service.prepareProjectIntent = (...args) => {
+        setupCalls.push("prepareProjectIntent");
+        return prepareProjectIntent(...args);
+      };
+      service.createWithRequest = (...args) => {
+        setupCalls.push("createWithRequest");
+        return createWithRequest(...args);
+      };
+      return service;
+    },
+  );
+  // Hold dispatch after its durable requested commit. The requested acknowledgment is reported
+  // on resume, leaving the post-acknowledgment recheck as the only fence before setup I/O.
+  let hold: { committed: Deferred<void>; resume: Promise<void> } | undefined;
+  const startDispatch = placementDispatchStore.startWorkerPlacementDispatch;
+  vi.spyOn(placementDispatchStore, "startWorkerPlacementDispatch").mockImplementation(
+    async (...args) => {
+      const placement = await startDispatch(...args);
+      const current = hold;
+      hold = undefined;
+      if (current && placement.state === "requested") {
+        current.committed.resolve();
+        await current.resume;
+      }
+      return placement;
+    },
+  );
+  // The requested acknowledgment and the failed dispatch's final transition each publish once.
+  let settled: { remaining: number; done: Deferred<void> } | undefined;
+  const emitSessionsChanged = sessionChangeEvent.emitSessionsChanged;
+  vi.spyOn(sessionChangeEvent, "emitSessionsChanged").mockImplementation((...args) => {
+    if (args[1].reason === "dispatch" && settled && --settled.remaining === 0) {
+      settled.done.resolve();
+    }
+    emitSessionsChanged(...args);
+  });
+
+  await withGatewayServer(async ({ port }) => {
+    const connect = async (email: string, scopes: string[]) => {
+      const ws = await openWs(port, {
+        origin,
+        "x-forwarded-user": email,
+        "x-forwarded-for": "203.0.113.50",
+        "x-forwarded-proto": "https",
+      });
+      const connected = await connectReq(ws, {
+        prePairDevice: true,
+        client: CONTROL_UI_CLIENT,
+        browserOrigin: origin,
+        skipDefaultAuth: true,
+        scopes,
+        deviceIdentityPath: path.join(temps.make("required-placement-"), "device.sqlite"),
+      });
+      expect(connected.ok, JSON.stringify(connected.error)).toBe(true);
+      return ws;
+    };
+    const adminWs = await connect(admin, ["operator.admin"]);
+    const commitConfigPatch = async (patch: Record<string, unknown>) => {
+      const current = await rpcReq<{ hash: string }>(adminWs, "config.get", {});
+      expect(current.ok, JSON.stringify(current.error)).toBe(true);
+      const patched = await rpcReq(adminWs, "config.patch", {
+        baseHash: current.payload?.hash,
+        ...patch,
+      });
+      expect(patched.ok, JSON.stringify(patched.error)).toBe(true);
+    };
+    const createThenEndAuthority = async (
+      email: string,
+      endAuthority: (ws: WebSocket) => Promise<void>,
+    ) => {
+      const ws = await connect(email, ["operator.sessions.write"]);
+      const committed = createDeferredCore();
+      const resume = createDeferredCore();
+      hold = { committed, resume: resume.promise };
+      settled = { remaining: 2, done: createDeferredCore() };
+      const created = rpcReq(ws, "sessions.create", {});
+      void created.catch(() => {});
+      try {
+        await Promise.race([
+          committed.promise,
+          created.then(() => {
+            throw new Error("sessions.create settled before its requested placement committed");
+          }),
+        ]);
+        await endAuthority(ws);
+      } finally {
+        resume.resolve();
+      }
+      await settled.done.promise;
+      expect(setupCalls).toEqual([]);
+      return { ws, created };
+    };
+    try {
+      // Caller transport ends after the requested commit.
+      const disconnected = await createThenEndAuthority(writers.disconnect, async (ws) => {
+        const closed = createDeferredCore();
+        ws.once("close", () => closed.resolve());
+        ws.close();
+        await closed.promise;
+      });
+      await expect(disconnected.created).rejects.toThrow(/closed/);
+
+      // A committed config patch removes the caller's operator scope.
+      const revoked = await createThenEndAuthority(writers.scope, async () => {
+        await commitConfigPatch({
+          raw: JSON.stringify({ gateway: { auth: { identityScopes: { [writers.scope]: null } } } }),
+          replacePaths: [`gateway.auth.identityScopes.${writers.scope}`],
+        });
+      });
+      await expect(revoked.created).rejects.toThrow(/gateway policy changed/);
+
+      // A committed config patch removes the required profile while the caller stays connected.
+      const unprofiled = await createThenEndAuthority(writers.profile, async () => {
+        await commitConfigPatch({
+          raw: JSON.stringify({ cloudWorkers: { requiredProfile: null } }),
+        });
+      });
+      await unprofiled.created;
+      expect(unprofiled.ws.readyState).toBe(WebSocket.OPEN);
+      unprofiled.ws.close();
+    } finally {
+      adminWs.close();
+    }
+  });
+});
