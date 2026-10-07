@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { ChatMetadataSnapshotUnavailableError } from "../gateway/server-methods/chat-metadata-facts.js";
 import { createGatewayChatMetadataRuntime } from "../gateway/server-methods/chat-metadata-runtime.js";
 import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
 import { unregisterResolvedAgentDir } from "./agent-dir-registry.js";
 import { resolveAgentDir } from "./agent-scope-config.js";
 import { resolveLegacyInheritedAuthDir } from "./legacy-inherited-auth-dir.js";
@@ -23,6 +24,19 @@ import {
 import { usePreparedCatalogWorkerFixtures } from "./test-helpers/prepared-model-catalog-worker-fixture.js";
 
 const { makeTempDir, retireAfterTest } = usePreparedCatalogWorkerFixtures();
+
+async function runFixtureTasks<T>(tasks: Array<() => Promise<T>>) {
+  // Retained executors need broker slots while the 64-agent roster is prepared.
+  const { results, firstError, hasError } = await runTasksWithConcurrency({
+    tasks,
+    limit: 32,
+    errorMode: "stop",
+  });
+  if (hasError) {
+    throw firstError;
+  }
+  return results;
+}
 
 describe("chat metadata with published model owners", () => {
   it.each([{ shape: "entries", count: 64 }] as const)(
@@ -83,8 +97,11 @@ describe("chat metadata with published model owners", () => {
         });
         return entry;
       };
-      const configured = await Promise.all(
-        Array.from({ length: count }, (_, index) => add(index === 0 ? "main" : `agent-${index}`)),
+      const configured = await runFixtureTasks(
+        Array.from(
+          { length: count },
+          (_, index) => () => add(index === 0 ? "main" : `agent-${index}`),
+        ),
       );
       const published = new Map<string, PreparedModelRuntimeSnapshot>();
       const publish = async (entry: Awaited<ReturnType<typeof add>>, force = false) => {
@@ -108,7 +125,7 @@ describe("chat metadata with published model owners", () => {
         );
         return snapshot;
       };
-      await Promise.all(configured.map((entry) => publish(entry)));
+      await runFixtureTasks(configured.map((entry) => () => publish(entry)));
       let builds = 0;
       // Projection leaves are supplied below; the real roster and published-owner chain is retained.
       const context = {} as GatewayRequestContext;
