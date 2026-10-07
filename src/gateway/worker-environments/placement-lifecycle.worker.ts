@@ -18,6 +18,7 @@ import {
   type WorkerSessionPlacementRetirement,
 } from "./placement-retirement.js";
 import {
+  find,
   readWorkerPlacementsInDatabase,
   readWorkerPlacementsForReconcileInDatabase,
   updateTransition,
@@ -127,7 +128,12 @@ export const placementLifecycleOperations = {
   "workerPlacements.retire": operation(
     "workerPlacements.retire",
     (runtime, input: WorkerSessionPlacementRetirement) => {
-      const retired = retireWorkerSessionPlacement(runtime.read(), input, { allowMissing: true });
+      const db = runtime.read();
+      const retired = retireWorkerSessionPlacement(db, input, { onlyIfCurrent: true });
+      // Orphan reconciliation may retire the row while this command is queued.
+      if (!retired && find(db, input.sessionId)) {
+        throw new Error(`Worker session placement ${input.sessionId} changed before retirement`);
+      }
       return retired
         ? { sessionId: input.sessionId, retired: input.expectedState }
         : { sessionId: input.sessionId, changed: false };

@@ -15,7 +15,7 @@ export type WorkerSessionPlacementRetirement = {
 export function retireWorkerSessionPlacement(
   db: DatabaseSync,
   input: WorkerSessionPlacementRetirement,
-  options: { allowMissing?: boolean } = {},
+  options: { onlyIfCurrent?: boolean } = {},
 ): boolean {
   const sessionId = required(input.sessionId, "session id");
   if (!RETIRABLE_PLACEMENT_STATES.some((state) => state === input.expectedState)) {
@@ -35,17 +35,7 @@ export function retireWorkerSessionPlacement(
       .where("turn_claim_owner_epoch", "is", null),
   );
   if (result.numAffectedRows !== 1n) {
-    // Orphan reconciliation may retire the row while another retirement is queued.
-    if (
-      options.allowMissing &&
-      executeSqliteQuerySync(
-        db,
-        query(db)
-          .selectFrom("worker_session_placements")
-          .select("session_id")
-          .where("session_id", "=", sessionId),
-      ).rows.length === 0
-    ) {
+    if (options.onlyIfCurrent) {
       return false;
     }
     throw new Error(`Worker session placement ${sessionId} changed before retirement`);
