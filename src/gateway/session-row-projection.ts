@@ -388,9 +388,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     configuredAgentIds = new Set(listAgentIds(cfg)),
     readRow = rowReads.readResidentSessionRow,
     preparedDatabaseFacts?: records.PreparedSessionRowDatabaseFacts,
-    repositoryWorkspace?: Parameters<
-      typeof rowReads.readResidentSessionRow
-    >[0]["repositoryWorkspace"],
+    repositoryWorkspace?: records.Inputs["preparedRepositoryWorkspace"],
   ) {
     const databaseFacts = preparedDatabaseFacts ?? row.retainedDatabaseFacts;
     if (!row.entry || (!databaseFacts && !isIncognitoSessionKey(row.key))) {
@@ -591,9 +589,12 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
   await inOwnerContext(async () => {
     stop.push((await profiles.prepareUserProfileCatalog({ env })).release);
     await ensureSessionGroupCatalog();
-    do {
+    for (;;) {
       await refreshBatch();
-    } while (!disposed && topologyDirty);
+      if (disposed || !topologyDirty) {
+        return;
+      }
+    }
   }).catch((error: unknown) => {
     dispose();
     throw error;

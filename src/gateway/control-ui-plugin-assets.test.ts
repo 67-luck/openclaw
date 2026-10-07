@@ -589,8 +589,8 @@ describe("native Control UI browser assets", () => {
             activateFixture();
             const entry = (await listControlUiPluginCatalog()).plugins[0]!;
             const profile = ensureProfileForEmail("reader@example.test");
-            const prepared = createDeferred<void>();
-            const resume = createDeferred<void>();
+            const prepared = createDeferred();
+            const resume = createDeferred();
             const prepare = userProfileCatalog.prepareUserProfileCatalog;
             const preparation = vi
               .spyOn(userProfileCatalog, "prepareUserProfileCatalog")
