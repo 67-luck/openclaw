@@ -64,6 +64,7 @@ it.for([
     );
     const readClaim = observer.prepare(
       `SELECT current_session_id AS sessionId, status,
+        json_extract(entry_json, '$.lifecycleRunId') AS lifecycleRunId,
         json_extract(entry_json, '$.restartRecoveryDeliveryRunId') AS runId,
         json_extract(entry_json, '$.restartRecoveryDeliverySourceRunId') AS sourceRunId
        FROM session_nodes WHERE session_key = ?`,
@@ -103,7 +104,9 @@ it.for([
       expect(acknowledged).toEqual({
         claim: {
           sessionId: fixture.scope.sessionId,
-          status: "running",
+          // #165733: admission clears the prior outcome; the run registry owns liveness.
+          status: null,
+          lifecycleRunId: fixture.params.idempotencyKey,
           runId: fixture.params.idempotencyKey,
           sourceRunId: fixture.params.idempotencyKey,
         },
