@@ -70,6 +70,7 @@ import {
 } from "./provider-browser-auth.js";
 import type { ControlUiRootState } from "./server-control-ui-root.js";
 import {
+  getNativeHookRelayModule,
   getControlUiModule,
   getControlUiPluginAssetsModule,
   getCanvasServeModule,
@@ -419,6 +420,9 @@ export function createGatewayHttpServer(opts: {
         clientIp: ingressAttribution.rateLimit.subject.key,
         rateLimiter: joinRateLimiter,
       };
+      addAdmittedStage(scopedRequestPath.startsWith("/__openclaw__/native-hook"), async () =>
+        (await getNativeHookRelayModule()).handleNativeHookRelayHttpRequest(transferRequest),
+      );
       addAdmittedStage(
         classifyWorkerBootstrapArtifactTransferPath(scopedRequestPath) !== "outside",
         () =>

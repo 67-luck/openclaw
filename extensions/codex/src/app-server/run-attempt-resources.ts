@@ -565,6 +565,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
   const requester = buildCodexHookRequester(params);
   const buildNativeHookRelayFinalConfigPatch = async (
     decision: CodexThreadFinalConfigPatchDecision,
+    relayClient: CodexAppServerClient,
   ) => {
     state.nativeSpawnAdmissionInstalled = false;
     const previousRelay = state.nativeHookRelay;
@@ -633,6 +634,12 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
               getCodexInferenceThreadQualification(state.client, threadId),
           }
         : undefined,
+      remoteCallback: appServer.nativeHookRelay && {
+        config: appServer.nativeHookRelay,
+        client: relayClient,
+        timeoutMs: appServer.requestTimeoutMs,
+        onCleanupFailure: (error) => reportCodexBackgroundCleanupFailure(params, error),
+      },
       assertCurrent: connection.assertLegacyCurrent,
       onPreToolUseFailure: (failure) => {
         const projector = projectorRef.current;
