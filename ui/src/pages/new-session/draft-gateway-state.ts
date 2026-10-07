@@ -187,7 +187,6 @@ export class DraftGatewayState {
         if (!client) {
           return initialState;
         }
-        this.placementPolicyReadyValue = false;
         const policy = await requestSessionPlacement(client);
         signal.throwIfAborted();
         this.requiredProfileValue = policy.requiredProfile;

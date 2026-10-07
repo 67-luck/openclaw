@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { openFromForeground, scenario } from "./command-palette.test-support.ts";
+import { scenario } from "./command-palette.test-support.ts";
 import {
   createNewSessionPageE2eSuite,
   installMockGateway,
@@ -34,7 +34,11 @@ suite.define(() => {
           await page.locator(".new-session-page__message").fill("Inspect my workspace");
           submit = page.getByRole("button", { name: "Start session", exact: true });
         } else {
-          const { input, palette } = await openFromForeground(page, suite.server.baseUrl);
+          await page.goto(suite.server.baseUrl + "new");
+          await page.keyboard.press("ControlOrMeta+K");
+          const palette = page.locator("openclaw-command-palette");
+          const input = palette.locator(".cmd-palette__input");
+          await input.waitFor({ state: "visible" });
           await input.fill("Inspect my workspace");
           submit = palette.locator(".cmd-palette__create");
         }

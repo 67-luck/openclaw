@@ -43,6 +43,7 @@ export class PaletteSessionDraft implements ReactiveController {
   private readonly settings: PaletteSessionSettings;
   private rejectedOpen: (() => void) | undefined;
   private coldSubmitReadSignal: AbortSignal | undefined;
+  private coldSubmitRequested = false;
   private owner: { gateway: ApplicationContext["gateway"]; url: string; scope: string } | undefined;
   private readonly connectMachine: ConnectMachineSetupState;
   private readonly subscriptions: SubscriptionsController;
@@ -252,6 +253,7 @@ export class PaletteSessionDraft implements ReactiveController {
     }
     this.rejectedOpen = undefined;
     this.coldSubmitReadSignal = undefined;
+    this.coldSubmitRequested = false;
     this.draft.place.resetDraft();
     this.draft.submission.resetDraft();
     this.draft.place.setAgentsHydrated(this.draft.agentsReady());
@@ -262,6 +264,7 @@ export class PaletteSessionDraft implements ReactiveController {
 
   close() {
     this.coldSubmitReadSignal = undefined;
+    this.coldSubmitRequested = false;
     const submission = this.draft?.submission;
     // A failed create or rejected turn retains the same retry/recovery draft.
     // Ordinary dismissal discards its previews immediately, not on next open.
@@ -288,6 +291,14 @@ export class PaletteSessionDraft implements ReactiveController {
       return;
     }
     await this.draft.submission.submit(undefined, true);
+  }
+
+  submitCold() {
+    if (!this.draft?.gateway.placementPolicyReady) {
+      this.coldSubmitRequested = true;
+      return;
+    }
+    void this.submit();
   }
 
   hostUpdate() {
@@ -340,6 +351,10 @@ export class PaletteSessionDraft implements ReactiveController {
       if (ready) {
         void this.submit();
       }
+    }
+    if (this.coldSubmitRequested && draft.gateway.placementPolicyReady) {
+      this.coldSubmitRequested = false;
+      void this.submit();
     }
     if (this.read().open) {
       void this.read().context?.agentIdentity.ensure(

@@ -296,6 +296,7 @@ export function createControlUiMockResponses(
     cases: responseCases,
     sequence: responseSequence,
     matches: paramsMatch,
+    matchesExact: valuesEqual,
     search: scopedSearchResponse,
     resetSequence: (method: string) => methodResponseSequenceIndexes.delete(method),
   };
