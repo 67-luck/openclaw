@@ -311,6 +311,7 @@ describe("session transcript reconcile worker lifecycle", () => {
         hostLeases.toSorted(),
       );
       const idleLeases = retainedLeases.filter((lease) => !hostLeases.includes(lease));
+      // Planner leases are released while the four most recent canonical executors stay idle.
       expect(idleLeases).toHaveLength(4);
       for (const lease of idleLeases) {
         expect([...canonical.leases.values()]).toContain(lease);

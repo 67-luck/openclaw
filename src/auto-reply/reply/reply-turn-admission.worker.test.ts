@@ -13,6 +13,10 @@ import { createAgentRunRestartAbortError } from "../../agents/run-termination.js
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import * as nodeSqlite from "../../infra/node-sqlite.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
+import {
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+} from "../../process/gateway-work-admission.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db.js";
 import * as agentWriteAdmission from "../../state/openclaw-agent-write-admission.js";
@@ -30,6 +34,7 @@ beforeEach(() => {
 
 afterEach(() => {
   testing.resetReplyRunRegistry();
+  resetGatewayWorkAdmission();
   vi.restoreAllMocks();
 });
 
@@ -307,26 +312,18 @@ it("cancels a contended persistent admission without claiming the reply or poiso
 });
 
 it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
-  "keeps successors behind executor eviction after %s when idle capacity is full",
+  "keeps successors behind physical claim release after %s during executor drain",
   async (ending) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const activePath = path.join(state.sessionsDir(), "agent.sqlite");
+      const idlePath = path.join(state.sessionsDir("other"), "agent.sqlite");
       const activeKey = "agent:main:completion-close";
+      const idleKey = "agent:other:completion-idle";
       const activeSessionId = "completion-active-session";
-      const idleTargets = Array.from({ length: 4 }, (_, index) => {
-        const agentId = `other-${index}`;
-        return {
-          agentId,
-          storePath: path.join(state.sessionsDir(agentId), "agent.sqlite"),
-          sessionKey: `agent:${agentId}:completion-idle`,
-          sessionId: `completion-idle-session-${index}`,
-        };
-      });
+      const idleSessionId = "completion-idle-session";
       for (const [storePath, sessionKey, sessionId] of [
         [activePath, activeKey, activeSessionId],
-        ...idleTargets.map(
-          (target) => [target.storePath, target.sessionKey, target.sessionId] as const,
-        ),
+        [idlePath, idleKey, idleSessionId],
       ] as const) {
         replaceSessionEntrySync({ storePath, sessionKey }, { sessionId, updatedAt: 1 });
         await closeOpenClawAgentDatabaseByPathAsync(storePath);
@@ -334,7 +331,7 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
       const shared = openOpenClawStateDatabase({ env: state.env });
       const leases = shared.db.prepare("SELECT lease_id FROM agent_database_leases WHERE path = ?");
       let active: Admission | undefined;
-      const idleAdmissions: Array<{ admission: Admission; sessionKey: string }> = [];
+      let idle: Admission | undefined;
       const work = new AsyncWorkScope();
       try {
         active = await work.run(() =>
@@ -347,24 +344,21 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
             resetTriggered: false,
           }),
         );
-        for (const target of idleTargets) {
-          const admission = await admitReplyTurn({
-            ...target,
-            expectedSessionId: target.sessionId,
-            kind: "visible",
-            resetTriggered: false,
-          });
-          idleAdmissions.push({ admission, sessionKey: target.sessionKey });
-          expect(admission.status).toBe("owned");
-          await completeAdmission(admission, target.sessionKey);
+        idle = await admitReplyTurn({
+          storePath: idlePath,
+          sessionKey: idleKey,
+          agentId: "other",
+          sessionId: idleSessionId,
+          expectedSessionId: idleSessionId,
+          kind: "visible",
+          resetTriggered: false,
+        });
+        if (active.status !== "owned" || !active.databaseClaim || idle.status !== "owned") {
+          throw new Error("Fixture requires two admitted persistent reply owners");
         }
-        if (active.status !== "owned" || !active.databaseClaim) {
-          throw new Error("Fixture requires an admitted persistent reply owner");
-        }
+        await completeAdmission(idle, idleKey);
         expect(leases.all(activePath)).toHaveLength(1);
-        for (const { storePath } of idleTargets) {
-          expect(leases.all(storePath)).toHaveLength(1);
-        }
+        expect(leases.all(idlePath)).toHaveLength(1);
 
         const holder = holdStateDatabaseWriteTransaction(shared.path, 10_000);
         await holder.ready;
@@ -377,6 +371,8 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
         const opened = vi.spyOn(nodeSqlite, "openNodeSqliteDatabase");
         let successor: ReturnType<typeof waitForReplyRunSuccessorAdmission> | undefined;
         try {
+          // Drain forces physical retirement even when both executors fit in the idle cache.
+          markGatewayRestartDraining();
           if (ending !== "complete") {
             active.operation.setPhase("running");
             active.operation.attachBackend({
@@ -423,15 +419,12 @@ it.each(["complete", "user-abort", "restart-abort", "frozen-restart"] as const)(
             sql.restore();
           }
         }
-        expect(leases.all(activePath)).toHaveLength(1);
-        for (const [index, { storePath }] of idleTargets.entries()) {
-          expect(leases.all(storePath)).toHaveLength(index === 0 ? 0 : 1);
-        }
+        expect(leases.all(activePath)).toEqual([]);
+        await closeOpenClawAgentDatabaseByPathAsync(idlePath);
+        expect(leases.all(idlePath)).toEqual([]);
       } finally {
         await completeAdmission(active, activeKey);
-        for (const { admission, sessionKey } of idleAdmissions) {
-          await completeAdmission(admission, sessionKey);
-        }
+        await completeAdmission(idle, idleKey);
         await work.drain();
       }
     });
