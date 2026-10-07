@@ -124,7 +124,7 @@ export function createPlacementLifecycleWorkerOps(runtime: {
           return;
         }
         published = true;
-        if (receipt.retired) {
+        if (captured.type === "workerPlacements.retire") {
           runtime.onRetired(receipt.sessionId);
         }
         if (

@@ -127,8 +127,10 @@ export const placementLifecycleOperations = {
   "workerPlacements.retire": operation(
     "workerPlacements.retire",
     (runtime, input: WorkerSessionPlacementRetirement) => {
-      retireWorkerSessionPlacement(runtime.read(), input);
-      return { sessionId: input.sessionId, retired: input.expectedState };
+      const retired = retireWorkerSessionPlacement(runtime.read(), input, { allowMissing: true });
+      return retired
+        ? { sessionId: input.sessionId, retired: input.expectedState }
+        : { sessionId: input.sessionId, changed: false };
     },
   ),
   "workerPlacements.bindPrepared": operation(
