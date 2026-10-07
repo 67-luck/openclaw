@@ -5,7 +5,11 @@ import {
   prepareSqliteQuerySync,
 } from "../infra/kysely-sync.js";
 import { collectSqliteSchemaIssues } from "../infra/sqlite-schema-contract.js";
-import { getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
+import {
+  getAdmittedSqliteSchemaFacts,
+  getSqliteReadScopeRevision,
+  type SqliteReadScopeRevision,
+} from "../infra/sqlite-schema-facts.js";
 import { SqliteSchemaMismatchError } from "../infra/sqlite-schema-issues.js";
 import {
   createNewerSqliteSchemaVersionError,
@@ -19,14 +23,25 @@ import type { DB } from "./openclaw-state-db.generated.js";
 // Read-only clients need schema admission without loading updater publication policy.
 export const CONTENT_VERSION_KEY = "state.schema.contentVersion";
 type StateSchemaVersionDatabase = Pick<DB, "config_machine_state">;
-const contentVersionQuery = createSqliteQueryCache((db) =>
-  prepareSqliteQuerySync<void, Pick<DB["config_machine_state"], "value_json">>(db, () =>
+type ContentVersionRow = Pick<DB["config_machine_state"], "value_json">;
+const contentVersionQuery = createSqliteQueryCache((db) => {
+  const query = prepareSqliteQuerySync<void, ContentVersionRow>(db, () =>
     getNodeSqliteKysely<StateSchemaVersionDatabase>(db)
       .selectFrom("config_machine_state")
       .select("value_json")
       .where("state_key", "=", CONTENT_VERSION_KEY),
-  ),
-);
+  );
+  let last: { revision: SqliteReadScopeRevision; row: ContentVersionRow | undefined } | undefined;
+  return () => {
+    const revision = getSqliteReadScopeRevision(db);
+    if (revision && last?.revision === revision) {
+      return last.row;
+    }
+    const row = query().rows[0];
+    last = revision && getSqliteReadScopeRevision(db) === revision ? { revision, row } : undefined;
+    return row;
+  };
+});
 
 /** Content and its marker commit together, even while older readers retain their version floor. */
 export function readStateSchemaContentVersion(db: DatabaseSync, published?: number): number {
@@ -38,7 +53,7 @@ function readContentVersion(db: DatabaseSync, published: number): number {
   if (!tableExists(db, "config_machine_state")) {
     return published;
   }
-  const row = contentVersionQuery(db)().rows[0];
+  const row = contentVersionQuery(db)();
   if (!row) {
     return published;
   }

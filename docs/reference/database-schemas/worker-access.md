@@ -34,6 +34,11 @@ their native owner. Canonical comparison contracts return through the existing
 schema-contract cache; version facts stay within their unchanged snapshot. Each
 request rereads stored facts. Schemas, stored bytes, and update behavior are unchanged.
 
+Shared-state readers reuse the content-version marker at their admitted connection
+revision. Existing foreign-commit probes, local mutations, rollback, and schema or
+snapshot changes invalidate that row. Unadmitted and authorizer-controlled reads
+still query SQLite, and each caller applies its own published-version floor.
+
 Reusable SQLite inspection children launch in the detached lifecycle context,
 after the caller captures the runtime generation, transport, environment, and
 working directory. Their process callbacks and idle queue tail must not retain
