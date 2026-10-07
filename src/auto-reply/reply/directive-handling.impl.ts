@@ -96,11 +96,11 @@ export async function handleDirectiveOnly(
     return { text: errorText, isError: true };
   };
   const acknowledgeIgnoredDirective = (
-    reply: ReplyPayload,
+    reply: ReplyPayload | string,
     ignoredDirective: IgnoredSessionDirectiveFlag,
   ) =>
     acknowledgeIgnoredSessionDirective({
-      reply,
+      reply: typeof reply === "string" ? { text: reply } : reply,
       directives,
       ignoredDirective,
       persistenceState: params.persistenceState,
@@ -110,7 +110,7 @@ export async function handleDirectiveOnly(
   const delegatedTraceAllowed = (params.gatewayClientScopes ?? []).includes("operator.admin");
   if (directives.hasTraceDirective && !params.senderIsOwner && !delegatedTraceAllowed) {
     return acknowledgeIgnoredDirective(
-      { text: "❌ /trace is restricted to owners and gateway clients with operator.admin scope." },
+      "❌ /trace is restricted to owners and gateway clients with operator.admin scope.",
       "hasTraceDirective",
     );
   }
@@ -234,42 +234,31 @@ export async function handleDirectiveOnly(
         level: currentThinkLevel ?? "off",
       });
       return acknowledgeIgnoredDirective(
-        {
-          text: withOptions(
-            `Current thinking level: ${level}.`,
-            `default, ${formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog, thinkingRuntime)}`,
-          ),
-        },
+        withOptions(
+          `Current thinking level: ${level}.`,
+          `default, ${formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog, thinkingRuntime)}`,
+        ),
         "hasThinkDirective",
       );
     }
     return acknowledgeIgnoredDirective(
-      {
-        text: `Unrecognized thinking level "${directives.rawThinkLevel}". Valid levels: default, ${formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog, thinkingRuntime)}.`,
-      },
+      `Unrecognized thinking level "${directives.rawThinkLevel}". Valid levels: default, ${formatThinkingLevels(resolvedProvider, resolvedModel, ", ", thinkingCatalog, thinkingRuntime)}.`,
       "hasThinkDirective",
     );
   }
   if (directives.hasVerboseDirective && !directives.verboseLevel) {
     return acknowledgeIgnoredDirective(
-      {
-        text: directives.rawVerboseLevel
-          ? `Unrecognized verbose level "${directives.rawVerboseLevel}". Valid levels: off, on, full.`
-          : withOptions(`Current verbose level: ${currentVerboseLevel ?? "off"}.`, "on, full, off"),
-      },
+      directives.rawVerboseLevel
+        ? `Unrecognized verbose level "${directives.rawVerboseLevel}". Valid levels: off, on, full.`
+        : withOptions(`Current verbose level: ${currentVerboseLevel ?? "off"}.`, "on, full, off"),
       "hasVerboseDirective",
     );
   }
   if (directives.hasTraceDirective && !directives.traceLevel) {
     return acknowledgeIgnoredDirective(
-      {
-        text: directives.rawTraceLevel
-          ? `Unrecognized trace level "${directives.rawTraceLevel}". Valid levels: off, on, raw.`
-          : withOptions(
-              `Current trace level: ${sessionEntry.traceLevel ?? "off"}.`,
-              "on, off, raw",
-            ),
-      },
+      directives.rawTraceLevel
+        ? `Unrecognized trace level "${directives.rawTraceLevel}". Valid levels: off, on, raw.`
+        : withOptions(`Current trace level: ${sessionEntry.traceLevel ?? "off"}.`, "on, off, raw"),
       "hasTraceDirective",
     );
   }
@@ -286,71 +275,59 @@ export async function handleDirectiveOnly(
         fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
       });
       return acknowledgeIgnoredDirective(
-        {
-          text: isFastStatus
-            ? statusText
-            : withOptions(
-                statusText,
-                formatFastModeCommandOptions({
-                  fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
-                }),
-              ),
-        },
+        isFastStatus
+          ? statusText
+          : withOptions(
+              statusText,
+              formatFastModeCommandOptions({
+                fastAutoOnSeconds: fastModeState.fastAutoOnSeconds,
+              }),
+            ),
         "hasFastDirective",
       );
     }
     return acknowledgeIgnoredDirective(
-      {
-        text: `Unrecognized fast mode "${directives.rawFastMode}". Valid levels: on, off, ultrafast, auto, default, status.`,
-      },
+      `Unrecognized fast mode "${directives.rawFastMode}". Valid levels: on, off, ultrafast, auto, default, status.`,
       "hasFastDirective",
     );
   }
   if (directives.hasReasoningDirective && !directives.reasoningLevel) {
     return acknowledgeIgnoredDirective(
-      {
-        text: directives.rawReasoningLevel
-          ? `Unrecognized reasoning level "${directives.rawReasoningLevel}". Valid levels: on, off, stream.`
-          : withOptions(
-              `Current reasoning level: ${currentReasoningLevel ?? "off"}.`,
-              "on, off, stream",
-            ),
-      },
+      directives.rawReasoningLevel
+        ? `Unrecognized reasoning level "${directives.rawReasoningLevel}". Valid levels: on, off, stream.`
+        : withOptions(
+            `Current reasoning level: ${currentReasoningLevel ?? "off"}.`,
+            "on, off, stream",
+          ),
       "hasReasoningDirective",
     );
   }
   if (directives.hasElevatedDirective) {
     if (!directives.elevatedLevel && directives.rawElevatedLevel) {
       return acknowledgeIgnoredDirective(
-        {
-          text: `Unrecognized elevated level "${directives.rawElevatedLevel}". Valid levels: off, on, ask, full.`,
-        },
+        `Unrecognized elevated level "${directives.rawElevatedLevel}". Valid levels: off, on, ask, full.`,
         "hasElevatedDirective",
       );
     }
     if (!elevatedEnabled || !elevatedAllowed) {
       return acknowledgeIgnoredDirective(
-        {
-          text: formatElevatedUnavailableText({
-            runtimeSandboxed: runtimeIsSandboxed,
-            failures: params.elevatedFailures,
-            sessionKey: params.sessionKey,
-          }),
-        },
+        formatElevatedUnavailableText({
+          runtimeSandboxed: runtimeIsSandboxed,
+          failures: params.elevatedFailures,
+          sessionKey: params.sessionKey,
+        }),
         "hasElevatedDirective",
       );
     }
     if (!directives.elevatedLevel) {
       const level = currentElevatedLevel ?? "off";
       return acknowledgeIgnoredDirective(
-        {
-          text: [
-            withOptions(`Current elevated level: ${level}.`, "on, off, ask, full"),
-            shouldHintDirectRuntime ? ELEVATED_RUNTIME_HINT : null,
-          ]
-            .filter(Boolean)
-            .join("\n"),
-        },
+        [
+          withOptions(`Current elevated level: ${level}.`, "on, off, ask, full"),
+          shouldHintDirectRuntime ? ELEVATED_RUNTIME_HINT : null,
+        ]
+          .filter(Boolean)
+          .join("\n"),
         "hasElevatedDirective",
       );
     }
@@ -358,7 +335,7 @@ export async function handleDirectiveOnly(
   if (directives.hasExecDirective) {
     const invalidExecMessage = resolveInvalidExecDirectiveMessage(directives);
     if (invalidExecMessage) {
-      return acknowledgeIgnoredDirective({ text: invalidExecMessage }, "hasExecDirective");
+      return acknowledgeIgnoredDirective(invalidExecMessage, "hasExecDirective");
     }
     const unexpectedExecArguments = maybeHandleUnexpectedDirectiveArguments(directives);
     if (unexpectedExecArguments) {
@@ -374,12 +351,10 @@ export async function handleDirectiveOnly(
       });
       const nodeLabel = execDefaults.node ? `node=${execDefaults.node}` : "node=(unset)";
       return acknowledgeIgnoredDirective(
-        {
-          text: withOptions(
-            `Current exec defaults: host=${renderExecTargetLabel(execDefaults.host)}, effective=${execDefaults.effectiveHost}, security=${execDefaults.security}, ask=${execDefaults.ask}, ${nodeLabel}.`,
-            "host=auto|sandbox|gateway|node, security=deny|allowlist|full, ask=off|on-miss|always, node=<id>",
-          ),
-        },
+        withOptions(
+          `Current exec defaults: host=${renderExecTargetLabel(execDefaults.host)}, effective=${execDefaults.effectiveHost}, security=${execDefaults.security}, ask=${execDefaults.ask}, ${nodeLabel}.`,
+          "host=auto|sandbox|gateway|node, security=deny|allowlist|full, ask=off|on-miss|always, node=<id>",
+        ),
         "hasExecDirective",
       );
     }
