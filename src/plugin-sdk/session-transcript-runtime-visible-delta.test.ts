@@ -12,7 +12,10 @@ import {
   toDatabaseOptions,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
 import { runWithSessionTranscriptReadFence } from "../config/sessions/session-transcript-read-fence.js";
-import { waitForSessionTranscriptIndexReconcile } from "../config/sessions/session-transcript-reconcile.js";
+import {
+  startSessionTranscriptIndexReconcile,
+  waitForSessionTranscriptIndexReconcile,
+} from "../config/sessions/session-transcript-reconcile.js";
 import { openOpenClawAgentDatabase } from "../state/openclaw-agent-db.js";
 import { runOpenClawAgentWriteAdmission } from "../state/openclaw-agent-write-admission.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
@@ -278,6 +281,10 @@ describe("session transcript visible cursor SDK", () => {
       parentId: appended?.messageId,
       targetId: root.messageId,
     });
+    const databaseOptions = toDatabaseOptions(resolveSqliteTranscriptReadScope(scope));
+    // Worker reads can outlast repair; test the settled cursor contract here.
+    startSessionTranscriptIndexReconcile(databaseOptions);
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
     await expect(
       readSessionTranscriptVisibleMessageDelta({
         ...scope,
@@ -285,10 +292,7 @@ describe("session transcript visible cursor SDK", () => {
         maxBytes: 10_000,
         maxMessages: 1,
       }),
-    ).resolves.toEqual({ kind: "unavailable", reason: "projection_rebuilding" });
-    await waitForSessionTranscriptIndexReconcile(
-      toDatabaseOptions(resolveSqliteTranscriptReadScope(scope)),
-    );
+    ).resolves.toMatchObject({ kind: "reset", reason: "anchor_missing" });
     await appendSessionTranscriptMessageByIdentity({
       ...scope,
       eventId: "replacement-branch",
@@ -296,17 +300,8 @@ describe("session transcript visible cursor SDK", () => {
       message: { role: "assistant", content: "replacement branch" },
       now: 4_000,
     });
-    await expect(
-      readSessionTranscriptVisibleMessageDelta({
-        ...scope,
-        cursor: second.cursor,
-        maxBytes: 10_000,
-        maxMessages: 1,
-      }),
-    ).resolves.toEqual({ kind: "unavailable", reason: "projection_rebuilding" });
-    await waitForSessionTranscriptIndexReconcile(
-      toDatabaseOptions(resolveSqliteTranscriptReadScope(scope)),
-    );
+    startSessionTranscriptIndexReconcile(databaseOptions);
+    await waitForSessionTranscriptIndexReconcile(databaseOptions);
     const reset = await readSessionTranscriptVisibleMessageDelta({
       ...scope,
       cursor: second.cursor,

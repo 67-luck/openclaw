@@ -5,8 +5,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/hooks/bundled/session-memory/handler-auto-reset.test.ts",
   "src/hooks/bundled/session-memory/handler-admission.test.ts",
   "src/auto-reply/reply/session-hooks-context.test.ts",
-  "src/gateway/server-methods.session-scoped-reads.test.ts",
-  "src/gateway/server-methods.session-turn-authority.test.ts",
   "src/plugin-sdk/session-transcript-lock.native.test.ts",
   "src/gateway/worker-environments/worker-turn-transcript-target.test.ts",
   "src/state/openclaw-agent-db.worker-admission.test.ts",
