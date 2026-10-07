@@ -36,17 +36,16 @@ import {
   prepareGatewaySkillAuthoring,
   invalidateSkillAuthoringForOtherRequester,
 } from "../skill-library-authoring.js";
-import {
-  terminalizeRestartSafeChatAdmission,
-  type RestartSafeChatTerminalState,
-} from "./chat-restart-recovery.js";
 import { startChatDispatch } from "./chat-send-agent-dispatch.js";
 import {
   bindChatSendPreparedMediaCustody,
   prepareChatSendAttachments,
 } from "./chat-send-attachments.js";
 import { readChatSendDiagnostics, startChatSendDiagnostics } from "./chat-send-diagnostics.js";
-import { handleChatSendSetupError } from "./chat-send-dispatch-errors.js";
+import {
+  createChatSendRestartRecoverySettlement,
+  handleChatSendSetupError,
+} from "./chat-send-dispatch-errors.js";
 import type { ChatSendExternalAuthorityAdmission } from "./chat-send-external-authority-contract.js";
 import {
   createChatSendMessageInjectionStarter,
@@ -208,26 +207,17 @@ async function handleChatSendWithOptions(
     : undefined;
 
   const admissionStartedAt = Date.now();
-  let admittedSource = readSource;
-  const terminalizeRestartSafeAdmission = async (
-    terminalState: RestartSafeChatTerminalState,
-  ): Promise<boolean> => {
-    if (!admittedSource) {
-      return false;
-    }
-    return await terminalizeRestartSafeChatAdmission({
+  const { onCommittedSource, terminalizeRestartSafeAdmission } =
+    createChatSendRestartRecoverySettlement({
+      agentId: session.agentId,
       admittedSessionId,
+      canonicalKey,
       clientRunId,
-      target: {
-        agentId: session.agentId,
-        storePath,
-        readSource: admittedSource,
-        target: { canonicalKey, storeKeys: [...storeKeys] },
-      },
+      readSource,
       startedAt: admissionStartedAt,
-      ...terminalState,
+      storeKeys,
+      storePath,
     });
-  };
   let pendingStageAttempted = false;
   let replyAdmissionTicket: ReturnType<typeof reserveReplyAdmissionTicket>;
   try {
@@ -259,8 +249,7 @@ async function handleChatSendWithOptions(
       warn: (message) => context.logGateway.warn(message),
       mentionInbox: context.mentionInbox,
       assertOriginalInputCommit: assertInputAdmissionCurrent,
-      // A new Goal can create the store. Retain its acknowledged identity before publication.
-      onCommittedSource: (source) => (admittedSource ??= source),
+      onCommittedSource,
       goalCommitGuard,
     });
     const {

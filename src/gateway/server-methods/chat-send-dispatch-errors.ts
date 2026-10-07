@@ -4,6 +4,7 @@ import { describeFailoverError } from "../../agents/failover-error.js";
 import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
+import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
@@ -17,7 +18,10 @@ import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-a
 import { formatForLog } from "../ws-log.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import { broadcastChatError } from "./chat-broadcast.js";
-import type { RestartSafeChatTerminalState } from "./chat-restart-recovery.js";
+import {
+  terminalizeRestartSafeChatAdmission,
+  type RestartSafeChatTerminalState,
+} from "./chat-restart-recovery.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
 import {
   classifyAcceptedChatSendFailure,
@@ -28,6 +32,50 @@ import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { hasTrackedActiveSessionRun } from "./session-active-runs.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type { GatewayRequestContext, RespondFn } from "./types.js";
+
+export function createChatSendRestartRecoverySettlement(
+  params: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "storePath"> &
+    Pick<PreparedChatSendSession["sessionTarget"], "canonicalKey" | "storeKeys" | "readSource"> & {
+      admittedSessionId: string;
+      startedAt: number;
+    },
+) {
+  const {
+    agentId,
+    admittedSessionId,
+    canonicalKey,
+    clientRunId,
+    readSource,
+    startedAt,
+    storeKeys,
+    storePath,
+  } = params;
+  let admittedSource = readSource;
+  const terminalizeRestartSafeAdmission = async (
+    terminalState: RestartSafeChatTerminalState,
+  ): Promise<boolean> => {
+    if (!admittedSource) {
+      return false;
+    }
+    return await terminalizeRestartSafeChatAdmission({
+      admittedSessionId,
+      clientRunId,
+      target: {
+        agentId,
+        storePath,
+        readSource: admittedSource,
+        target: { canonicalKey, storeKeys: [...storeKeys] },
+      },
+      startedAt,
+      ...terminalState,
+    });
+  };
+  return {
+    // A new Goal can create the store. Retain its acknowledged identity before publication.
+    onCommittedSource: (source: CapturedSessionEntryReadSource) => (admittedSource ??= source),
+    terminalizeRestartSafeAdmission,
+  };
+}
 
 export function formatReturnedAgentErrors(messages: string[]): string | undefined {
   const [primary, ...additional] = [...new Set(messages)];
