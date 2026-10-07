@@ -134,6 +134,14 @@ retires older sealed Doctor captures and reports each removal; incomplete captur
 and update captures are never retired automatically, so take a verified backup
 when you need a long-term copy.
 
+On Linux filesystems that reject native no-replace rename, fs-safe uses exclusive
+hard-link publication followed by source removal in native `auto` mode. Existing
+captures are never overwritten; native `require` mode still refuses unsupported
+publication. If publication stops with both names present, OpenClaw retains the
+capture as incomplete evidence. A remaining `manifest.json.partial` prevents
+reuse or automatic retirement even when `manifest.json` contains complete JSON.
+Keep both names for manual inspection; their presence does not authorize restoration.
+
 These captures are evidence for manual recovery. Active writers can change state
 during capture; an observed change leaves the capture incomplete and produces a
 warning. The set is not an atomic snapshot across active stores. Missing,
