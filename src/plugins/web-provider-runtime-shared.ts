@@ -7,9 +7,11 @@ import type { PluginManifestRecord } from "./manifest-registry.js";
 import { hasExplicitPluginIdScope, normalizePluginIdScope } from "./plugin-scope.js";
 import type { PluginRegistry } from "./registry.js";
 import { getActivePluginRegistryWorkspaceDir } from "./runtime.js";
+import { getPluginRuntimeGatewayRequestScope } from "./runtime/gateway-request-scope.js";
 import {
   buildPluginRuntimeLoadOptions,
   createPluginRuntimeLoaderLogger,
+  getPluginRuntimeLoadContext,
 } from "./runtime/load-context.js";
 
 export type ResolvePluginWebProvidersParams = {
@@ -118,6 +120,16 @@ export function resolvePluginWebProviders<TEntry>(
     return deps.mapRegistryProviders({ registry, onlyPluginIds: pluginIds });
   }
 
+  const scopedContext = getPluginRuntimeLoadContext(
+    getPluginRuntimeGatewayRequestScope()?.pluginRegistry,
+  );
+  // Per-turn projections retain the scoped owner's executable plugin generation.
+  const preparedContext =
+    scopedContext?.env === env &&
+    (!params.manifestRecords || params.manifestRecords === scopedContext.manifestRegistry?.plugins)
+      ? scopedContext
+      : undefined;
+
   const shouldFilterProviders =
     params.config !== undefined ||
     params.onlyPluginIds !== undefined ||
@@ -128,6 +140,7 @@ export function resolvePluginWebProviders<TEntry>(
       ...params,
       workspaceDir,
       env,
+      manifestRecords: params.manifestRecords ?? preparedContext?.manifestRegistry?.plugins,
     });
   const discoveredPluginIds = normalizePluginIdScope(
     deps.resolveCandidatePluginIds({
@@ -158,10 +171,13 @@ export function resolvePluginWebProviders<TEntry>(
       autoEnabledReasons,
       workspaceDir,
       env,
-      logger: createPluginRuntimeLoaderLogger(),
+      logger: preparedContext?.logger ?? createPluginRuntimeLoaderLogger(),
       manifestRegistry: params.manifestRecords
         ? { plugins: [...params.manifestRecords], diagnostics: [] }
-        : undefined,
+        : preparedContext?.manifestRegistry,
+      installRecords: preparedContext?.installRecords,
+      preferBuiltPluginArtifacts: preparedContext?.preferBuiltPluginArtifacts,
+      expectedSourceDigests: preparedContext?.expectedSourceDigests,
     },
     {
       cache: true,
