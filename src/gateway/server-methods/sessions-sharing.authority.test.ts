@@ -4,7 +4,7 @@ import { awaitGateBeforeSettlement } from "../../../test/helpers/promise.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.entry.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import {
-  listSessionMembersInWorker,
+  readSessionMembersInWorker,
   removeSessionMember,
 } from "../../config/sessions/session-sharing-store.js";
 import { addSessionMember } from "../../config/sessions/session-sharing-store.native.js";
@@ -13,6 +13,7 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
+import { SessionMutationFactsUnavailableError } from "../session-sharing-preparation.js";
 import {
   initializeSessionReadContext,
   identifiedClient,
@@ -105,7 +106,7 @@ it("refuses revoked managers and dirty membership at the worker commit grant", a
         await initializeSessionReadContext(requestContext);
         const projection = getSessionRowProjection(requestContext)!;
         const target = projection.sharingTarget({ key: sessionKey, agentId: "main" })!;
-        const before = await listSessionMembersInWorker(scope);
+        const before = await readSessionMembersInWorker(scope);
         const createAdmission = admission.createSqliteWorkerOperationAdmission;
         let reachedCommit = false;
         const gate = vi
@@ -153,7 +154,7 @@ it("refuses revoked managers and dirty membership at the worker commit grant", a
         } finally {
           gate.mockRestore();
         }
-        expect(await listSessionMembersInWorker(scope)).toEqual(before);
+        expect(await readSessionMembersInWorker(scope)).toEqual(before);
       }
     }
   });
@@ -197,8 +198,8 @@ it("keeps the original session bound while membership preparation yields", async
     } finally {
       release.resolve();
     }
-    expect(await outcome).toMatchObject({ message: "session changed before sharing mutation" });
-    expect(await listSessionMembersInWorker(scope)).toMatchObject([
+    expect(await outcome).toBeInstanceOf(SessionMutationFactsUnavailableError);
+    expect((await readSessionMembersInWorker(scope)).members).toMatchObject([
       { identityId: "guest", addedBy: "replacement-owner" },
     ]);
     expect(requestContext.broadcast).not.toHaveBeenCalled();

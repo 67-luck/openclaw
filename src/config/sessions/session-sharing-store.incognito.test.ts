@@ -28,7 +28,7 @@ import {
 import { recordSessionParticipantInWorker } from "./session-sharing-store.async.js";
 import {
   addSessionMember,
-  listSessionMembersInWorker,
+  readSessionMembersInWorker,
   removeSessionMember,
 } from "./session-sharing-store.js";
 import { listSessionSuggestions } from "./session-suggestion-store.read.js";
@@ -178,7 +178,7 @@ it.each(["members", "suggestions"] as const)(
         borrowed.sessions.withSharedState(async () => {
           const value =
             kind === "members"
-              ? await listSessionMembersInWorker(captured)
+              ? await readSessionMembersInWorker(captured)
               : await listSessionSuggestions(captured);
           disclosed(value);
         }),
@@ -267,7 +267,7 @@ it("publishes actor membership, owner, participant and category changes through 
   try {
     await withIncognitoSessionActor(actor, async () => {
       await addSessionMember(scope, { identityId: "alice", addedBy: "creator", addedAt: 1 });
-      expect(await listSessionMembersInWorker(scope)).toEqual([
+      expect((await readSessionMembersInWorker(scope)).members).toEqual([
         { identityId: "alice", addedBy: "creator", addedAt: 1 },
       ]);
       await assignSessionOwnerInWorker(scope, {
@@ -284,7 +284,7 @@ it("publishes actor membership, owner, participant and category changes through 
       ).toBe("inserted");
       expect(await updateSessionGroupCategoriesInWorker({ scope, from: entry.category })).toBe(1);
       await removeSessionMember(scope, "alice");
-      expect(await listSessionMembersInWorker(scope)).toEqual([]);
+      expect((await readSessionMembersInWorker(scope)).members).toEqual([]);
       const current = await actor.sessions.read(authority, { sessionKey: scope.sessionKey });
       expect(current.entry).toMatchObject({ owner: { actor: { type: "human", id: "alice" } } });
       expect(current.entry?.category).toBeUndefined();

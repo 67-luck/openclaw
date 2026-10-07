@@ -197,7 +197,7 @@ it("keeps readers usable after refusing a foreign sharing key", async () => {
       type: "session.members.read",
       input: { sessionKey },
     }),
-  ).toEqual([]);
+  ).toMatchObject({ entry: { sessionId: expect.any(String) }, members: [] });
   expect(
     await actor.sessions.sideData(authority, {
       type: "session.progressCard.get",
