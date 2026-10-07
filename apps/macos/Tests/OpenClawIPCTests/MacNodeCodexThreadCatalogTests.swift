@@ -256,6 +256,34 @@ struct MacNodeCodexThreadCatalogTests {
             maxLineBytes: maxLineBytes).data
     }
 
+    private func withClient<T>(
+        _ operation: (CodexAppServerThreadClient) async throws -> T) async rethrows -> T
+    {
+        let client = CodexAppServerThreadClient()
+        do {
+            let result = try await operation(client)
+            await client.shutdown()
+            return result
+        } catch {
+            await client.shutdown()
+            throw error
+        }
+    }
+
+    private func listCatalog(
+        paramsJSON: String?,
+        executable: String,
+        arguments: [String]? = nil,
+        clearEnv: [String] = []) async throws -> String
+    {
+        var appServer: [String: Any] = ["command": executable, "clearEnv": clearEnv]
+        appServer["args"] = arguments ?? ["app-server", "--listen", "stdio://"]
+        let root = self.codexRoot(appServer: appServer)
+        return try await self.withClient { client in
+            try await MacNodeCodexThreadCatalog.list(paramsJSON: paramsJSON, loadRoot: { root }, client: client)
+        }
+    }
+
     @Test func `normalizes App Server metadata and drops sensitive thread fields`() throws {
         let raw: [String: Any] = [
             "data": [[
@@ -405,11 +433,10 @@ struct MacNodeCodexThreadCatalogTests {
         #expect(resolved.cwd == nil)
         #expect(resolved.clearEnv == [clearEnvSentinel])
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
+        let payload = try await self.listCatalog(
             paramsJSON: nil,
             executable: resolved.executable,
             arguments: resolved.arguments,
-            cwd: resolved.cwd,
             clearEnv: resolved.clearEnv)
         let response = try #require(
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
@@ -655,9 +682,11 @@ struct MacNodeCodexThreadCatalogTests {
         let revoked = self.codexRoot(pluginPolicy: ["deny": ["codex"]])
         var loadCount = 0
 
-        let payload = try await MacNodeCodexThreadCatalog.list(paramsJSON: nil) {
-            loadCount += 1
-            return loadCount == 1 ? enabled : revoked
+        let payload = try await self.withClient { client in
+            try await MacNodeCodexThreadCatalog.list(paramsJSON: nil, loadRoot: {
+                loadCount += 1
+                return loadCount == 1 ? enabled : revoked
+            }, client: client)
         }
         let response = try #require(
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
@@ -797,7 +826,7 @@ struct MacNodeCodexThreadCatalogTests {
             sleep 1
             """#)
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
+        let payload = try await self.listCatalog(
             paramsJSON: #"{"agentId":"gateway-owner","cursor":" cursor ","limit":25,"searchTerm":" oNe ","cwd":" /work "}"#,
             executable: fake.executable.path)
         let response = try #require(
@@ -985,7 +1014,7 @@ struct MacNodeCodexThreadCatalogTests {
         done
         """#)
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
+        let payload = try await self.listCatalog(
             paramsJSON: #"{"limit":3,"searchTerm":"target"}"#,
             executable: fake.executable.path)
         let response = try #require(
@@ -1036,7 +1065,7 @@ struct MacNodeCodexThreadCatalogTests {
         done
         """#)
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
+        let payload = try await self.listCatalog(
             paramsJSON: #"{"limit":40,"searchTerm":"target"}"#,
             executable: fake.executable.path)
         let response = try #require(
@@ -1071,7 +1100,7 @@ struct MacNodeCodexThreadCatalogTests {
         done
         """#)
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
+        let payload = try await self.listCatalog(
             paramsJSON: #"{"limit":40,"searchTerm":"target"}"#,
             executable: fake.executable.path)
         let response = try #require(
@@ -1509,10 +1538,13 @@ extension MacNodeCodexThreadCatalogTests {
         """#)
         defer { withExtendedLifetime(fake) {} }
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
-            paramsJSON: #"{"limit":50}"#,
-            executable: fake.executable.path,
-            timeoutSeconds: 10)
+        let data = try await self.withClient { client in
+            try await self.requestEmptyList(
+                client: client, executable: fake.executable, timeoutSeconds: 10, maxLineBytes: 5 * 1024 * 1024)
+        }
+        let payload = try MacNodeCodexThreadCatalog.normalize(
+            listResultData: data,
+            sourceHomeId: Self.fixtureSourceHomeId)
         let decoded = try #require(
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
         #expect((decoded["sessions"] as? [Any])?.count == 50)
@@ -1539,10 +1571,13 @@ extension MacNodeCodexThreadCatalogTests {
         """#)
         defer { withExtendedLifetime(fake) {} }
 
-        let payload = try await MacNodeCodexThreadCatalog.list(
-            paramsJSON: #"{"limit":100}"#,
-            executable: fake.executable.path,
-            timeoutSeconds: 10)
+        let data = try await self.withClient { client in
+            try await self.requestEmptyList(
+                client: client, executable: fake.executable, timeoutSeconds: 10, maxLineBytes: 5 * 1024 * 1024)
+        }
+        let payload = try MacNodeCodexThreadCatalog.normalize(
+            listResultData: data,
+            sourceHomeId: Self.fixtureSourceHomeId)
         let decoded = try #require(
             JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any])
         #expect((decoded["sessions"] as? [Any])?.count == 100)
@@ -1660,7 +1695,7 @@ extension MacNodeCodexThreadCatalogTests {
         ]
         for (paramsJSON, expected) in cases {
             do {
-                _ = try await MacNodeCodexThreadCatalog.list(
+                _ = try await self.listCatalog(
                     paramsJSON: paramsJSON,
                     executable: "/path/that/must/not/launch")
                 Issue.record("expected invalid params for \(paramsJSON)")
@@ -1717,10 +1752,9 @@ extension MacNodeCodexThreadCatalogTests {
         """#)
         defer { withExtendedLifetime(oversized) {} }
         do {
-            _ = try await MacNodeCodexThreadCatalog.list(
-                paramsJSON: nil,
-                executable: oversized.executable.path,
-                maxLineBytes: 128)
+            _ = try await self.withClient { client in
+                try await self.requestEmptyList(client: client, executable: oversized.executable, maxLineBytes: 128)
+            }
             Issue.record("expected oversized App Server response to fail")
         } catch let error as MacNodeCodexThreadCatalog.CatalogError {
             #expect(error == .responseTooLarge)
@@ -1733,10 +1767,9 @@ extension MacNodeCodexThreadCatalogTests {
         """#)
         defer { withExtendedLifetime(stalled) {} }
         do {
-            _ = try await MacNodeCodexThreadCatalog.list(
-                paramsJSON: nil,
-                executable: stalled.executable.path,
-                timeoutSeconds: 0.05)
+            _ = try await self.withClient { client in
+                try await self.requestEmptyList(client: client, executable: stalled.executable, timeoutSeconds: 0.05)
+            }
             Issue.record("expected stalled App Server response to time out")
         } catch let error as MacNodeCodexThreadCatalog.CatalogError {
             #expect(error == .timedOut)
@@ -1754,7 +1787,7 @@ extension MacNodeCodexThreadCatalogTests {
         defer { withExtendedLifetime(fake) {} }
 
         do {
-            _ = try await MacNodeCodexThreadCatalog.list(
+            _ = try await self.listCatalog(
                 paramsJSON: nil,
                 executable: fake.executable.path)
             Issue.record("expected fake App Server error")
@@ -1868,7 +1901,7 @@ extension MacNodeCodexThreadCatalogTests {
         printf '%s\n' "$request" > "${0}.unexpected-request"
         """#)
         await #expect(throws: MacNodeCodexThreadCatalog.CatalogError.appServerUnavailable) {
-            try await MacNodeCodexThreadCatalog.list(paramsJSON: nil, executable: fake.executable.path)
+            try await self.listCatalog(paramsJSON: nil, executable: fake.executable.path)
         }
         #expect(!FileManager.default.fileExists(atPath: fake.executable.path + ".unexpected-request"))
     }
