@@ -85,7 +85,7 @@ describe("world-readable session publication management", () => {
         token: expect.stringMatching(/^v1\.[A-Za-z0-9_-]+$/u),
         createdAt: firstGrant.createdAt,
       });
-      expect(resolvePublicSessionShareToken(result.publicShare?.token ?? "")).toEqual({
+      expect(await resolvePublicSessionShareToken(result.publicShare?.token ?? "")).toEqual({
         ...scope,
         sessionId,
         shareId: firstGrant.id,
@@ -104,7 +104,7 @@ describe("world-readable session publication management", () => {
         listed?.[1],
       ).publicShare;
       expect(listedShare?.createdAt).toBe(result.publicShare?.createdAt);
-      expect(resolvePublicSessionShareToken(listedShare?.token ?? "")).toEqual({
+      expect(await resolvePublicSessionShareToken(listedShare?.token ?? "")).toEqual({
         ...scope,
         sessionId,
         shareId: firstGrant.id,
@@ -123,9 +123,9 @@ describe("world-readable session publication management", () => {
         "republished public share grant",
       );
       expect(republishedGrant.id).not.toBe(firstGrantId);
-      expect(resolvePublicSessionShareToken(republished.publicShare?.token ?? "")?.shareId).toBe(
-        republishedGrant.id,
-      );
+      expect(
+        (await resolvePublicSessionShareToken(republished.publicShare?.token ?? ""))?.shareId,
+      ).toBe(republishedGrant.id);
     });
   });
 

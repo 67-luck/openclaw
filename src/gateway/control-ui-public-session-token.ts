@@ -2,12 +2,12 @@ import { createCipheriv, createDecipheriv, hkdfSync, randomBytes } from "node:cr
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { containsAsciiControlCharacter } from "@openclaw/normalization-core/string-normalization";
 import { CONTROL_UI_PUBLIC_SESSION_SHARE_TOKEN_MAX_LENGTH } from "@openclaw/session-url-contract/public-share";
-import { resolveDeviceIdentityStore } from "../infra/device-identity-store.js";
 import {
-  loadDeviceIdentityIfPresent,
-  loadOrCreateProcessDeviceIdentity,
-  type DeviceIdentity,
-} from "../infra/device-identity.js";
+  loadDeviceIdentityIfPresentAsync,
+  loadOrCreateProcessDeviceIdentityAsync,
+} from "../infra/device-identity-async.js";
+import { resolveDeviceIdentityStore } from "../infra/device-identity-store.js";
+import type { DeviceIdentity } from "../infra/device-identity.js";
 import { deriveCanonicalEd25519PrivateKeyRaw } from "../infra/ed25519-signature.js";
 import { pruneMapToMaxSize } from "../infra/map-size.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
@@ -186,6 +186,10 @@ const codecsByDatabasePath = new Map<string, PublicSessionShareTokenCodec>();
 const missingIdentityDatabasePaths = new Map<string, true>();
 
 function cacheCodec(databasePath: string, identity: DeviceIdentity): PublicSessionShareTokenCodec {
+  const cached = codecsByDatabasePath.get(databasePath);
+  if (cached) {
+    return cached;
+  }
   const codec = createPublicSessionShareTokenCodec(identity);
   pruneMapToMaxSize(codecsByDatabasePath, PUBLIC_SESSION_TOKEN_CODEC_CACHE_LIMIT - 1);
   codecsByDatabasePath.set(databasePath, codec);
@@ -193,10 +197,10 @@ function cacheCodec(databasePath: string, identity: DeviceIdentity): PublicSessi
   return codec;
 }
 
-function resolveProcessCodec(params: {
+async function resolveProcessCodec(params: {
   create: boolean;
   env?: NodeJS.ProcessEnv;
-}): PublicSessionShareTokenCodec | null {
+}): Promise<PublicSessionShareTokenCodec | null> {
   const options = params.env ? { env: params.env } : {};
   const { databasePath } = resolveDeviceIdentityStore(options);
   const cached = codecsByDatabasePath.get(databasePath);
@@ -207,9 +211,14 @@ function resolveProcessCodec(params: {
     return null;
   }
   const identity = params.create
-    ? loadOrCreateProcessDeviceIdentity(options)
-    : loadDeviceIdentityIfPresent(options);
+    ? await loadOrCreateProcessDeviceIdentityAsync({ ...options, path: databasePath })
+    : await loadDeviceIdentityIfPresentAsync({ ...options, path: databasePath });
   if (!identity) {
+    // Creation can finish while the read-only identity lookup is pending.
+    const created = codecsByDatabasePath.get(databasePath);
+    if (created) {
+      return created;
+    }
     pruneMapToMaxSize(missingIdentityDatabasePaths, PUBLIC_SESSION_TOKEN_CODEC_CACHE_LIMIT - 1);
     missingIdentityDatabasePaths.set(databasePath, true);
     return null;
@@ -218,10 +227,10 @@ function resolveProcessCodec(params: {
 }
 
 /** Loads the process codec before a session-store commit that will publish a grant. */
-export function loadPublicSessionShareTokenCodec(
+export async function loadPublicSessionShareTokenCodec(
   options: { env?: NodeJS.ProcessEnv } = {},
-): PublicSessionShareTokenCodec {
-  const codec = resolveProcessCodec({
+): Promise<PublicSessionShareTokenCodec> {
+  const codec = await resolveProcessCodec({
     create: true,
     ...(options.env ? { env: options.env } : {}),
   });
@@ -232,14 +241,16 @@ export function loadPublicSessionShareTokenCodec(
 }
 
 /** Resolves an opaque locator without letting anonymous traffic create durable identity state. */
-export function resolvePublicSessionShareToken(
+export async function resolvePublicSessionShareToken(
   token: string,
   options: { env?: NodeJS.ProcessEnv } = {},
-): PublicSessionShareLocator | null {
+): Promise<PublicSessionShareLocator | null> {
   return (
-    resolveProcessCodec({
-      create: false,
-      ...(options.env ? { env: options.env } : {}),
-    })?.resolve(token) ?? null
+    (
+      await resolveProcessCodec({
+        create: false,
+        ...(options.env ? { env: options.env } : {}),
+      })
+    )?.resolve(token) ?? null
   );
 }

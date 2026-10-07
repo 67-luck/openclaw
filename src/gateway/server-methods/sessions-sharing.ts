@@ -115,11 +115,10 @@ function projectPublicSessionShare(params: {
   agentId: string;
   sessionKey: string;
   grant: NonNullable<ReturnType<typeof resolveSessionPublicShare>>;
-  codec?: PublicSessionShareTokenCodec;
+  codec: PublicSessionShareTokenCodec;
 }): SessionPublicShare {
-  const codec = params.codec ?? loadPublicSessionShareTokenCodec();
   return {
-    token: codec.mint({
+    token: params.codec.mint({
       agentId: params.agentId,
       sessionKey: params.sessionKey,
       sessionId: params.grant.sessionId,
@@ -212,9 +211,10 @@ function createSessionMembersListHandler(
       if (!entry) {
         throw new Error("session changed before sharing read");
       }
+      const publicShareGrant = resolveSessionPublicShare(entry);
+      const tokenCodec = publicShareGrant ? await loadPublicSessionShareTokenCodec() : undefined;
       const currentCfg = context.getRuntimeConfig();
       const { target, role } = access.current(entry);
-      const publicShareGrant = resolveSessionPublicShare(entry);
       const actor = actorIdentity(client);
       const members = evidenceAware
         ? evidenceMembers
@@ -261,11 +261,12 @@ function createSessionMembersListHandler(
           ? { type: storedOwner.type, id: storedOwner.id, label: storedOwner.label }
           : undefined;
       const publicShare =
-        publicShareGrant?.sessionId === target.entry.sessionId
+        publicShareGrant?.sessionId === target.entry.sessionId && tokenCodec
           ? projectPublicSessionShare({
               agentId: target.agentId,
               sessionKey: target.canonicalKey,
               grant: publicShareGrant,
+              codec: tokenCodec,
             })
           : undefined;
       respond(
@@ -323,8 +324,8 @@ export const sessionSharingHandlers: GatewayRequestHandlers = {
       }
       let publicShare: SessionPublicShare | undefined;
       await runExclusiveSharingMutation(managed, access.lifecycleStorePath, async () => {
+        const tokenCodec = params.enabled ? await loadPublicSessionShareTokenCodec() : undefined;
         const { target: current } = access.current();
-        const tokenCodec = params.enabled ? loadPublicSessionShareTokenCodec() : undefined;
         let changed = false;
         let inspected = false;
         await patchSessionEntryCore(

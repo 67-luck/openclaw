@@ -89,13 +89,13 @@ type NormalizeChatSendRequestResult =
   | { ok: false; error: string; reason?: string };
 
 /** Validate and normalize the wire request before session or lifecycle work begins. */
-export function normalizeChatSendRequest(params: {
+export async function normalizeChatSendRequest(params: {
   params: Record<string, unknown>;
   client: GatewayRequestHandlerOptions["client"];
   trustedSystemInput?: boolean;
   goalResume?: SessionGoalOperation & { action: "resume" };
   providerReviewAcknowledgment?: ProviderReviewAcknowledgment;
-}): NormalizeChatSendRequestResult {
+}): Promise<NormalizeChatSendRequestResult> {
   const chatSendReceivedAtMs = performance.now();
   const client = params.client;
   const clientInfo = client?.connect?.client;
@@ -213,7 +213,10 @@ export function normalizeChatSendRequest(params: {
           operationId: p.idempotencyKey,
           issuedAtMs: p.intent.issuedAtMs,
           objective: p.message,
-          requestFingerprint: fingerprintSessionGoalRequest([p, hasGatewayAdminScope(client)]),
+          requestFingerprint: await fingerprintSessionGoalRequest([
+            p,
+            hasGatewayAdminScope(client),
+          ]),
         }
       : undefined);
   const commandInterpretationSuppressed =

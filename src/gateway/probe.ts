@@ -284,8 +284,8 @@ export async function probeGateway(opts: {
       if (remote && loopback && !route.bound && !hasProbeAuth(opts.auth)) {
         return null;
       }
-      const identityModule = await import("../infra/device-identity.js");
-      const identity = identityModule.loadDeviceIdentityIfPresent({ env: opts.env });
+      const identityModule = await import("../infra/device-identity-async.js");
+      const identity = await identityModule.loadDeviceIdentityIfPresentAsync({ env: opts.env });
       if (!identity) {
         return null;
       }
