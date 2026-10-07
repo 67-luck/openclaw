@@ -1563,7 +1563,6 @@ describe("CLI attempt execution", () => {
     const sessionEntry: SessionEntry = {
       sessionId: "session-cli-transcript",
       updatedAt: 1,
-      status: "running",
       startedAt: 2,
     };
     const sessionStore: Record<string, SessionEntry> = { [sessionKey]: sessionEntry };
