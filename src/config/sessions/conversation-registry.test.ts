@@ -1,13 +1,17 @@
+import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { executeSqliteQuerySync } from "../../infra/kysely-sync.js";
 import { normalizeLegacySessionEntryDelivery } from "../../infra/state-migrations.legacy-session-store.js";
+import { withAgentDatabaseCloseFence } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../../state/openclaw-agent-db.js";
+import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { buildConversationIdentity } from "./conversation-identity.js";
 import {
@@ -15,6 +19,7 @@ import {
   registerConversationAddresses,
   readConversation,
   resolveCurrentSessionPrimaryConversation,
+  withConversationAuthority,
 } from "./conversation-registry.js";
 import {
   commitReplySessionInitialization,
@@ -157,6 +162,100 @@ describe("conversation registry", () => {
       lastSeenAt: 200,
     });
   });
+
+  it.each(["registration", "authority"] as const)(
+    "releases %s resources when a queued database target is replaced",
+    async (operation) => {
+      const databasePath = path.join(tempDir, "registry.sqlite");
+      fs.writeFileSync(databasePath, "");
+      const scope = {
+        agentId: "main",
+        databaseAgentId: "main",
+        storePath: databasePath,
+        env: { OPENCLAW_STATE_DIR: tempDir },
+      };
+      const entered = createDeferred();
+      const release = createDeferred();
+      const held = runOpenClawAgentWorkerWrite(
+        { agentId: "main", path: databasePath, env: scope.env },
+        async () => {
+          entered.resolve();
+          await release.promise;
+        },
+      );
+      let pending: Promise<unknown> | undefined;
+      try {
+        await awaitGateBeforeSettlement(entered.promise, held, "Writer did not acquire its lane");
+        const identity = buildConversationIdentity({
+          channel: "reef",
+          kind: "direct",
+          peerId: "peer-a",
+          deliveryTarget: "reef:peer-a",
+        });
+        expect(identity).not.toBeNull();
+        pending =
+          operation === "registration"
+            ? registerConversationAddresses(scope, [identity!])
+            : withConversationAuthority(
+                scope,
+                { conversationRef: identity!.conversationRef },
+                () => {
+                  throw new Error("A replaced target must not grant conversation authority");
+                },
+              );
+        const rejected = expect(pending).rejects.toThrow(
+          "Agent database target changed before write admission",
+        );
+        fs.renameSync(databasePath, `${databasePath}.previous`);
+        fs.writeFileSync(databasePath, "");
+        release.resolve();
+        await rejected;
+        await held;
+        await withAgentDatabaseCloseFence({ path: databasePath }, async (resources) => {
+          expect(resources).toEqual([]);
+        });
+      } finally {
+        release.resolve();
+        await Promise.allSettled([held, pending]);
+      }
+    },
+  );
+
+  it.each(["registration", "authority"] as const)(
+    "does not retain %s resources when input capture fails",
+    async (operation) => {
+      const databasePath = path.join(tempDir, "registry.sqlite");
+      const scope = {
+        agentId: "main",
+        databaseAgentId: "main",
+        storePath: databasePath,
+        env: { OPENCLAW_STATE_DIR: tempDir },
+      };
+      const failure = new Error("Synthetic conversation input capture failure");
+      const identity = {
+        get conversationRef(): string {
+          throw failure;
+        },
+        channel: "reef",
+        accountId: "default",
+        kind: "direct" as const,
+        peerId: "peer-a",
+        deliveryTarget: "reef:peer-a",
+      };
+      await expect(
+        Promise.resolve().then(() =>
+          operation === "registration"
+            ? registerConversationAddresses(scope, [identity])
+            : withConversationAuthority(scope, identity, () => {
+                throw new Error("Uncaptured input must not grant conversation authority");
+              }),
+        ),
+      ).rejects.toBe(failure);
+      await withAgentDatabaseCloseFence({ path: databasePath }, async (resources) => {
+        expect(resources).toEqual([]);
+      });
+    },
+  );
 
   it("rejects an empty conversation reference instead of widening the lookup", async () => {
     const identity = buildConversationIdentity({

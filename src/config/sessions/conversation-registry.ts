@@ -182,7 +182,7 @@ function selectConversationRows(
 }
 
 /** Catalogs routable addresses in the existing agent writer without creating sessions. */
-export function registerConversationAddresses(
+export async function registerConversationAddresses(
   scope: ConversationRegistryScope,
   identities: readonly ConversationIdentity[],
   discoveredAt = Date.now(),
@@ -191,10 +191,9 @@ export function registerConversationAddresses(
   query?: ConversationReadQuery,
 ): Promise<ConversationRecord[] | undefined> {
   if (identities.length === 0) {
-    return Promise.resolve(undefined);
+    return undefined;
   }
   const { options } = pinConversationDatabaseScope(scope);
-  const execution = captureOpenClawAgentDatabaseExecution(options);
   const input = {
     identities: structuredClone(identities),
     discoveredAt,
@@ -229,8 +228,9 @@ export function registerConversationAddresses(
       });
     },
   };
-  return runOpenClawAgentWorkerWrite(options, async () => {
-    try {
+  const execution = captureOpenClawAgentDatabaseExecution(options);
+  try {
+    return await runOpenClawAgentWorkerWrite(options, async () => {
       const eligible = selectCurrent();
       input.identities = input.identities.filter((_, index) => eligible[index]);
       if (input.identities.length === 0) {
@@ -243,10 +243,10 @@ export function registerConversationAddresses(
       return await execution.runExisting(source, (worker) =>
         worker.execute({ type: "conversation.register", input }),
       );
-    } finally {
-      await execution.release();
-    }
-  });
+    });
+  } finally {
+    await execution.release();
+  }
 }
 
 /** Initiate under the writer grant; settle network work after releasing its transaction and FIFO. */
@@ -258,12 +258,12 @@ export async function withConversationAuthority<T>(
   ) => () => T | Promise<T>,
 ): Promise<T> {
   const { options } = pinConversationDatabaseScope(scope);
-  const execution = captureOpenClawAgentDatabaseExecution(options);
   const input = structuredClone(query);
+  const execution = captureOpenClawAgentDatabaseExecution(options);
   let consumed: Promise<{ ok: true; value: T } | { ok: false; error: unknown }> | undefined;
   try {
-    await runOpenClawAgentWorkerWrite(options, async () => {
-      try {
+    try {
+      await runOpenClawAgentWorkerWrite(options, async () => {
         const settled = await execution.runExisting(
           {
             assertCurrent() {},
@@ -308,10 +308,10 @@ export async function withConversationAuthority<T>(
         if (!consumed && settled !== undefined) {
           throw new Error("Conversation authority omitted its transaction grant");
         }
-      } finally {
-        await execution.release();
-      }
-    });
+      });
+    } finally {
+      await execution.release();
+    }
   } catch (cause) {
     if (!consumed) {
       throw cause;
