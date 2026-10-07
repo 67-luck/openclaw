@@ -167,9 +167,7 @@ it("keeps legacy bundles without a provable owner, record, or draft until every 
   ]);
   expect(first.warningDisposition).toBe("recoverable");
   expect(first.warnings.toSorted()).toEqual([
-    expect.stringMatching(
-      /^Could not tell which agent owns Skill Workshop proposal unowned-procedure-1;/,
-    ),
+    expect.stringMatching(/^No configured agent owns Skill Workshop proposal unowned-procedure-1;/),
     expect.stringMatching(/^Skill Workshop proposal draftless-procedure-1 has no draft; kept /),
     expect.stringMatching(/^Skill Workshop proposal orphan-procedure-1 has no record;/),
   ]);
@@ -222,7 +220,7 @@ it.each([
   expect(first).toEqual({
     changes: [],
     warnings: [
-      `Could not tell which agent owns Skill Workshop proposal unowned-procedure-1; kept ${proposalDir}. To keep it, ask the owning agent to save that whole directory (draft and support files) with /learn; then delete the directory and rerun openclaw doctor --fix.`,
+      `No configured agent owns Skill Workshop proposal unowned-procedure-1; kept ${proposalDir}. To keep it, add its agent back to your config and rerun openclaw doctor --fix, or have an agent save that whole directory (draft and support files) with /learn and then delete the directory; otherwise delete the directory and rerun openclaw doctor --fix.`,
     ],
     warningDisposition: "recoverable",
   });

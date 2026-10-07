@@ -179,12 +179,15 @@ then drops the proposal tables. Exported drafts are not live skills; to keep
 one, ask the agent to save it with `/learn` so it goes through the normal
 validated, versioned Workshop write.
 
-Doctor keeps the proposal tables and files, with a recoverable warning, when it
-cannot prove which agent owns a proposal, cannot export a draft, or finds a
+Doctor keeps the proposal tables and files, with a recoverable warning, when no
+configured agent owns a proposal, it cannot export a draft, or it finds a
 half-finished apply it cannot safely undo. That is a deliberate holdback, not a
-failed migration: follow the warning, keeping the whole proposal directory
-(draft and support files) until its content is saved with `/learn`, then rerun
-`openclaw doctor --fix` to finish the retirement.
+failed migration, and Doctor still exits successfully: follow the warning. For
+an unowned draft, add its agent back to the config, or save the whole proposal
+directory (draft and support files) with `/learn` and delete it; then rerun
+`openclaw doctor --fix` to finish the retirement. The pre-apply contents of a
+half-finished apply are in the `skill_workshop_proposal_rollbacks` table until
+then.
 
 Plugin migrations with declared files outside the copied state are deferred as
 one plugin operation. Doctor leaves their files and pending markers intact and

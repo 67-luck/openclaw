@@ -518,7 +518,7 @@ async function retireProposals(params: {
     if (!proposal.ownerAgentId) {
       blocked = true;
       warnings.push(
-        `Could not tell which agent owns Skill Workshop proposal ${proposal.id}; kept ${proposalDir}. To keep it, ask the owning agent to save that whole directory (draft and support files) with /learn; then delete the directory and rerun openclaw doctor --fix.`,
+        `No configured agent owns Skill Workshop proposal ${proposal.id}; kept ${proposalDir}. To keep it, add its agent back to your config and rerun openclaw doctor --fix, or have an agent save that whole directory (draft and support files) with /learn and then delete the directory; otherwise delete the directory and rerun openclaw doctor --fix.`,
       );
       continue;
     }
