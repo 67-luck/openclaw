@@ -88,6 +88,65 @@ export function isSameSessionSharingTarget(
   );
 }
 
+export function createSessionSharingFacts(
+  params: Omit<Parameters<typeof prepareCurrentSessionSharing>[0], "isMember"> & {
+    cfg: ReturnType<GatewayRequestHandlerOptions["context"]["getRuntimeConfig"]>;
+    targetRef: { sessionKey: string; agentId: string };
+    assertRouting: ReturnType<typeof captureSessionMutationRouting>;
+  },
+) {
+  const { cfg, projection, targetRef } = params;
+  const query = { key: targetRef.sessionKey, agentId: targetRef.agentId };
+  const resident = projection.sharingTarget(query);
+  const source = resident && projection.readSource({ ...query, storePath: resident.storePath });
+  const configuredStorePath = resolveSessionStorePathCore(cfg.session?.store, {
+    agentId: targetRef.agentId,
+  });
+  const configuredSource = captureSessionStoreReadCandidate(
+    resolveUnsuffixedSqliteTargetFromSessionStorePath(configuredStorePath).path,
+  );
+  // Readiness may yield across a reset or store replacement. Capture the locator first;
+  // membership is not authority until the same projection reports it ready below.
+  const captured =
+    resident &&
+    source?.path === resident.storePath &&
+    typeof source.databaseIdentity === "string" &&
+    isConfiguredSessionStoreAgentId(cfg, resident.agentId) &&
+    source.path === configuredSource.physicalPath
+      ? { ...resident, readSource: source }
+      : undefined;
+  return {
+    query,
+    captured,
+    configuredStorePath,
+    readCurrent(retained?: SessionFactsRead<PreparedSessionMutationFacts>) {
+      let membership: ReadonlySet<string> | undefined;
+      const { currentCfg, sharing } = prepareCurrentSessionSharing({
+        ...params,
+        isMember: (target, identityId) =>
+          retained
+            ? membership!.has(identityId)
+            : projection.hasMembership(target.storePath, target.storeKey, identityId),
+      });
+      params.assertRouting(currentCfg);
+      let target: SessionSharingTarget | null;
+      if (retained) {
+        const facts = retained.readCurrent(currentCfg);
+        target = facts.target;
+        membership = facts.membership;
+      } else {
+        assertSessionStoreReadCandidate(configuredSource.path, [configuredSource]);
+        const current = readProjectedSessionMutationTarget(targetRef, currentCfg, projection);
+        if (current.status !== "ready") {
+          throw new SessionMutationFactsUnavailableError();
+        }
+        target = current.target;
+      }
+      return { target, sharing };
+    },
+  };
+}
+
 /** Retain one facts owner through management reads, writer grants, and publication. */
 export async function prepareManagedSessionAccess(
   params: Pick<
@@ -133,25 +192,17 @@ export async function prepareManagedSessionAccess(
   let retained: SessionFactsRead<PreparedSessionMutationFacts> | undefined;
   try {
     assertCaller();
-    const query = { key: targetRef.sessionKey, agentId: targetRef.agentId };
-    const resident = projection.sharingTarget(query);
-    const source = resident && projection.readSource({ ...query, storePath: resident.storePath });
-    const configuredStorePath = resolveSessionStorePathCore(cfg.session?.store, {
-      agentId: requestedAgent.agentId,
+    const facts = createSessionSharingFacts({
+      client,
+      context,
+      cfg,
+      projection,
+      targetRef,
+      actorId,
+      runAuthority,
+      assertRouting,
     });
-    const configuredSource = captureSessionStoreReadCandidate(
-      resolveUnsuffixedSqliteTargetFromSessionStorePath(configuredStorePath).path,
-    );
-    // Readiness may yield across a reset or store replacement. Capture the locator first;
-    // membership is not authority until the same projection reports it ready below.
-    const captured =
-      resident &&
-      source?.path === resident.storePath &&
-      typeof source.databaseIdentity === "string" &&
-      isConfiguredSessionStoreAgentId(cfg, resident.agentId) &&
-      source.path === configuredSource.physicalPath
-        ? { ...resident, readSource: source }
-        : undefined;
+    const { captured, configuredStorePath } = facts;
     if (!captured) {
       retained = await prepareSessionMutationFacts({ cfg, ...targetRef, allowMissing: true });
     } else {
@@ -162,32 +213,7 @@ export async function prepareManagedSessionAccess(
     }
     const readCurrent = (selected?: SessionSharingTarget) => {
       assertCaller();
-      let membership: ReadonlySet<string> | undefined;
-      const { currentCfg, sharing } = prepareCurrentSessionSharing({
-        client,
-        context,
-        projection,
-        actorId,
-        runAuthority,
-        isMember: (target, identityId) =>
-          retained
-            ? membership!.has(identityId)
-            : projection.hasMembership(target.storePath, target.storeKey, identityId),
-      });
-      assertRouting(currentCfg);
-      let target: SessionSharingTarget | null;
-      if (retained) {
-        const facts = retained.readCurrent(currentCfg);
-        target = facts.target;
-        membership = facts.membership;
-      } else {
-        assertSessionStoreReadCandidate(configuredSource.path, [configuredSource]);
-        const current = readProjectedSessionMutationTarget(targetRef, currentCfg, projection);
-        if (current.status !== "ready") {
-          throw new SessionMutationFactsUnavailableError();
-        }
-        target = current.target;
-      }
+      const { target, sharing } = facts.readCurrent(retained);
       if (selected && !isSameSessionSharingTarget(target, selected)) {
         throw new Error(`session changed before sharing ${operation}`);
       }
