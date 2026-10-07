@@ -28,6 +28,7 @@ describe("public session share token", () => {
       const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
       const exec = vi.spyOn(DatabaseSync.prototype, "exec");
       const codec = await loadPublicSessionShareTokenCodec();
+      expect(loadPublicSessionShareTokenCodec()).toBe(codec);
       const token = codec.mint(LOCATOR);
       expect(codec.resolve(token)).toEqual(LOCATOR);
       for (const identifier of Object.values(LOCATOR)) {

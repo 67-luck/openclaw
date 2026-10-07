@@ -160,6 +160,9 @@ cache lifetimes; codec creation clears cached absence. Warm cache hits execute n
 SQLite. Client shutdown joins accepted identity preparation and
 refuses connection effects after its lifetime ends. Sharing and APNs callers
 recheck current authority after preparation; cron planners share one prepared seed.
+Sharing reads prepare codecs before their final authoritative row read. Warm
+codecs remain synchronous; a late cold miss starts one fresh row-read phase under
+the original target guard before authorization and response.
 Native identity access remains limited to Gateway/node boot, connect CLI,
 configuration preflight, and Doctor identity/cadence migration. Schemas, stored
 bytes, retention, the public client API, and update behavior are unchanged.

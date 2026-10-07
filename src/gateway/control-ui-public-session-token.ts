@@ -197,10 +197,10 @@ function cacheCodec(databasePath: string, identity: DeviceIdentity): PublicSessi
   return codec;
 }
 
-async function resolveProcessCodec(params: {
+function resolveProcessCodec(params: {
   create: boolean;
   env?: NodeJS.ProcessEnv;
-}): Promise<PublicSessionShareTokenCodec | null> {
+}): PublicSessionShareTokenCodec | null | Promise<PublicSessionShareTokenCodec | null> {
   const options = params.env ? { env: params.env } : {};
   const { databasePath } = resolveDeviceIdentityStore(options);
   const cached = codecsByDatabasePath.get(databasePath);
@@ -211,33 +211,43 @@ async function resolveProcessCodec(params: {
     return null;
   }
   const identity = params.create
-    ? await loadOrCreateProcessDeviceIdentityAsync({ ...options, path: databasePath })
-    : await loadDeviceIdentityIfPresentAsync({ ...options, path: databasePath });
-  if (!identity) {
-    // Creation can finish while the read-only identity lookup is pending.
-    const created = codecsByDatabasePath.get(databasePath);
-    if (created) {
-      return created;
+    ? loadOrCreateProcessDeviceIdentityAsync({ ...options, path: databasePath })
+    : loadDeviceIdentityIfPresentAsync({ ...options, path: databasePath });
+  return identity.then((loaded) => {
+    if (!loaded) {
+      // Creation can finish while the read-only identity lookup is pending.
+      const created = codecsByDatabasePath.get(databasePath);
+      if (created) {
+        return created;
+      }
+      pruneMapToMaxSize(missingIdentityDatabasePaths, PUBLIC_SESSION_TOKEN_CODEC_CACHE_LIMIT - 1);
+      missingIdentityDatabasePaths.set(databasePath, true);
+      return null;
     }
-    pruneMapToMaxSize(missingIdentityDatabasePaths, PUBLIC_SESSION_TOKEN_CODEC_CACHE_LIMIT - 1);
-    missingIdentityDatabasePaths.set(databasePath, true);
-    return null;
-  }
-  return cacheCodec(databasePath, identity);
+    return cacheCodec(databasePath, loaded);
+  });
 }
 
-/** Loads the process codec before a session-store commit that will publish a grant. */
-export async function loadPublicSessionShareTokenCodec(
-  options: { env?: NodeJS.ProcessEnv } = {},
-): Promise<PublicSessionShareTokenCodec> {
-  const codec = await resolveProcessCodec({
-    create: true,
-    ...(options.env ? { env: options.env } : {}),
-  });
+function requirePublicSessionShareTokenCodec(
+  codec: PublicSessionShareTokenCodec | null,
+): PublicSessionShareTokenCodec {
   if (!codec) {
     throw new Error("public session token identity is unavailable");
   }
   return codec;
+}
+
+/** Warm codecs remain synchronous so a prepared session row needs no new read phase. */
+export function loadPublicSessionShareTokenCodec(
+  options: { env?: NodeJS.ProcessEnv } = {},
+): PublicSessionShareTokenCodec | Promise<PublicSessionShareTokenCodec> {
+  const codec = resolveProcessCodec({
+    create: true,
+    ...(options.env ? { env: options.env } : {}),
+  });
+  return codec instanceof Promise
+    ? codec.then(requirePublicSessionShareTokenCodec)
+    : requirePublicSessionShareTokenCodec(codec);
 }
 
 /** Resolves an opaque locator without letting anonymous traffic create durable identity state. */

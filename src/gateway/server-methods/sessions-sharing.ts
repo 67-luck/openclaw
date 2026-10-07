@@ -199,20 +199,37 @@ function createSessionMembersListHandler(
           Promise.resolve(projection.prepareSelection()),
         );
       } while (projection.needsSelectionPreparation());
-      const entry = await readSessionEntryReadOnlyInWorker(
-        {
-          agentId: managed.agentId,
-          sessionKey: managed.storeKey,
-          storePath: managed.storePath,
-          projection: "list",
-        },
-        access.assertCurrent,
-      );
-      if (!entry) {
-        throw new Error("session changed before sharing read");
+      let tokenCodec = resolveSessionPublicShare(managed.entry)
+        ? await loadPublicSessionShareTokenCodec()
+        : undefined;
+      const readEntry = async () => {
+        const entry = await readSessionEntryReadOnlyInWorker(
+          {
+            agentId: managed.agentId,
+            sessionKey: managed.storeKey,
+            storePath: managed.storePath,
+            projection: "list",
+          },
+          access.assertCurrent,
+        );
+        if (!entry) {
+          throw new Error("session changed before sharing read");
+        }
+        return entry;
+      };
+      let entry = await readEntry();
+      if (resolveSessionPublicShare(entry) && !tokenCodec) {
+        const prepared = loadPublicSessionShareTokenCodec();
+        if (prepared instanceof Promise) {
+          tokenCodec = await prepared;
+          // Foreign publication can reveal a cold codec after discovery. Its wait
+          // ends the read phase; authorize only the fresh row from the same target.
+          entry = await readEntry();
+        } else {
+          tokenCodec = prepared;
+        }
       }
       const publicShareGrant = resolveSessionPublicShare(entry);
-      const tokenCodec = publicShareGrant ? await loadPublicSessionShareTokenCodec() : undefined;
       const currentCfg = context.getRuntimeConfig();
       const { target, role } = access.current(entry);
       const actor = actorIdentity(client);
