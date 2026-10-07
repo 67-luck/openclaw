@@ -327,6 +327,54 @@ it("maintenance cleanup preserves foreground custody with an older sequence", as
   expect(observed.unregister).toHaveBeenCalledTimes(2);
 });
 
+it("accepts a missing reader settling during discovery cleanup", async () => {
+  const request = input();
+  const target = {
+    kind: "session-store-target" as const,
+    logicalAgentId: "main",
+    sourcePath: request.database.path,
+    database: request.database,
+  };
+  const readerReply = createDeferredCore<unknown>();
+  const cleanupStarted = createDeferredCore();
+  const cleanupFinished = createDeferredCore();
+  observed.run
+    .mockResolvedValueOnce({ ok: true, value: target })
+    .mockReturnValueOnce(readerReply.promise);
+  observed.closeResources.mockImplementationOnce(async () => {
+    cleanupStarted.resolve();
+    await cleanupFinished.promise;
+  });
+  let missingRead: Promise<boolean> | undefined;
+  const discovery = withSessionHistoryWorkerReadCandidates(
+    [{ path: request.database.path, physicalPath: request.database.path }],
+    async (owner) => {
+      const selected = await owner.readStoreTarget({
+        agentId: "main",
+        storePath: request.database.path,
+        env: {},
+        registeredDatabases: [],
+      });
+      missingRead = withSessionHistoryWorkerDatabase(request.database, (reader) =>
+        reader.readEntryPresence(request.scope),
+      );
+      return selected;
+    },
+  );
+  try {
+    await cleanupStarted.promise;
+    readerReply.resolve({ ok: true, value: false, closedHistoryDatabase: request.database });
+    await expect(missingRead).resolves.toBe(false);
+    cleanupFinished.resolve();
+    await expect(discovery).resolves.toEqual(target);
+    expect(observed.rotate).not.toHaveBeenCalled();
+  } finally {
+    readerReply.resolve({ ok: true, value: false, closedHistoryDatabase: request.database });
+    cleanupFinished.resolve();
+    await Promise.allSettled([discovery, missingRead]);
+  }
+});
+
 it("joins full retirement if retained reader custody is revoked during discovery cleanup", async () => {
   const request = input();
   observed.run.mockResolvedValue({ ok: true, value: false });

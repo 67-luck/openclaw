@@ -485,7 +485,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     };
     const releases: Array<() => void> = [];
     const release = () => {
-      for (const unregister of releases.toReversed()) {
+      for (const unregister of releases.splice(0).toReversed()) {
         unregister();
       }
     };
@@ -552,10 +552,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
         );
         if (
           revoked ||
-          [...retained.values()].some(
-            (resource) =>
-              resource.revoked || Boolean(resource.closing) || !resource.nativeSequences.has(lane),
-          )
+          [...retained.values()].some((resource) => resource.revoked || Boolean(resource.closing))
         ) {
           throw new WorkerTaskError(
             "Session reader custody was revoked during discovery cleanup",

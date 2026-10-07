@@ -15,6 +15,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { recordSessionParticipant } from "../../config/sessions/session-accessor.sqlite-participants.native.js";
+import {
+  historyLane,
+  rotateDatabaseWorkers,
+} from "../../config/sessions/session-transcript-worker-resources.js";
 import { hasOpenClawAgentDatabaseAsyncResources } from "../../state/openclaw-agent-db-resources.js";
 import {
   closeOpenClawAgentDatabasesAsync,
@@ -672,6 +676,8 @@ it.each([
             message: "Session changed while preparing its metadata. Retry the request.",
           });
           expect(changed.respond).not.toHaveBeenCalled();
+          // Retire cached readers without releasing request-owned registrations.
+          await rotateDatabaseWorkers(historyLane);
           expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
           return;
         }
@@ -679,9 +685,10 @@ it.each([
         await invoke(fresh);
         // Fresh preparation agrees before asserting the held request, including on the old source.
         expect(fresh.mock.calls).toEqual(control.respond.mock.calls);
-        expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
         expect(changed.error).toBeUndefined();
         expect(changed.respond.mock.calls).toEqual(control.respond.mock.calls);
+        await rotateDatabaseWorkers(historyLane);
+        expect(hasOpenClawAgentDatabaseAsyncResources()).toBe(false);
       } finally {
         release?.();
         await pending?.catch(() => {});
