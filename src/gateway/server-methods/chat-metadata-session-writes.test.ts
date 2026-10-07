@@ -21,6 +21,7 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { publishUserProfileAliasChange } from "../../state/user-profile-events.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -207,9 +208,13 @@ it.each(
       } else if (write === "tracked sibling update") {
         await upsertSessionEntryCore(sibling, { label: "changed sibling" });
       } else if (write === "raw sibling update" || write === "sibling cache replacement") {
-        database.db
-          .prepare("UPDATE session_nodes SET updated_at = updated_at + 1 WHERE session_key = ?")
-          .run(sibling.sessionKey);
+        await runOpenClawAgentWriteAdmission(
+          { agentId: selected.agentId, path: database.path, env: state.env },
+          () =>
+            database.db
+              .prepare("UPDATE session_nodes SET updated_at = updated_at + 1 WHERE session_key = ?")
+              .run(sibling.sessionKey),
+        );
         if (write === "sibling cache replacement") {
           listSessionEntriesCore({ ...sibling, projection: "list" });
         }
