@@ -683,51 +683,47 @@ describe("gateway server chat", () => {
     "%s projects the session's durable worker placement",
     async (method) => {
       openDirectChatSession();
-      try {
-        await writeMainSessionStore();
-        const placement = {
-          sessionId: "sess-main",
-          agentId: "main",
-          sessionKey: "agent:main:main",
-          executionMode: "worker-turn",
-          state: "active",
-          environmentId: "env-placement",
-          generation: 7,
-          activeOwnerEpoch: 12,
-          workspaceBaseManifestRef: "manifest-base",
-          remoteWorkspaceDir: "/workspace/main",
-          workerBundleHash: "ab".repeat(32),
-          recoveryError: null,
-          terminalReason: null,
-          terminalAtMs: null,
-          turnClaim: null,
-          createdAtMs: 100,
-          updatedAtMs: 300,
-          stateChangedAtMs: 200,
-        };
-        const context = createDirectChatContext({
-          workerSessionPlacementService: {
-            getMany: () => new Map([[placement.sessionId, placement]]),
-          },
-        } as unknown as Partial<GatewayRequestContext>);
-        const responses: Array<{ ok: boolean; payload?: unknown }> = [];
-        await callDirectChat(method, {
-          id: method,
-          params: makeMainSessionParams(),
-          respond: captureChatResult(responses),
-          context,
-        });
+      await writeMainSessionStore();
+      const placement = {
+        sessionId: "sess-main",
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        executionMode: "worker-turn",
+        state: "active",
+        environmentId: "env-placement",
+        generation: 7,
+        activeOwnerEpoch: 12,
+        workspaceBaseManifestRef: "manifest-base",
+        remoteWorkspaceDir: "/workspace/main",
+        workerBundleHash: "ab".repeat(32),
+        recoveryError: null,
+        terminalReason: null,
+        terminalAtMs: null,
+        turnClaim: null,
+        createdAtMs: 100,
+        updatedAtMs: 300,
+        stateChangedAtMs: 200,
+      };
+      const context = createDirectChatContext({
+        workerSessionPlacementService: {
+          getMany: () => new Map([[placement.sessionId, placement]]),
+        },
+      } as unknown as Partial<GatewayRequestContext>);
+      const responses: Array<{ ok: boolean; payload?: unknown }> = [];
+      await callDirectChat(method, {
+        id: method,
+        params: makeMainSessionParams(),
+        respond: captureChatResult(responses),
+        context,
+      });
 
-        expect(responses[0]?.ok).toBe(true);
-        // Clients merge this row into the same store sessions.list fills, so a
-        // missing placement here silently erases a live worker placement.
-        expect(
-          (responses[0]?.payload as { sessionInfo?: { placement?: { state?: string } } })
-            ?.sessionInfo?.placement,
-        ).toMatchObject({ state: "active", environmentId: "env-placement" });
-      } finally {
-        testState.sessionStorePath = undefined;
-      }
+      expect(responses[0]?.ok).toBe(true);
+      // Clients merge this row into the same store sessions.list fills, so a
+      // missing placement here silently erases a live worker placement.
+      expect(
+        (responses[0]?.payload as { sessionInfo?: { placement?: { state?: string } } })?.sessionInfo
+          ?.placement,
+      ).toMatchObject({ state: "active", environmentId: "env-placement" });
     },
   );
 
@@ -911,7 +907,6 @@ describe("gateway server chat", () => {
         expect(JSON.stringify(inFlightRun)).not.toContain("SECRET");
       } finally {
         clearActiveEmbeddedRun("sess-main", handle, "main");
-        testState.sessionStorePath = undefined;
       }
     },
   );
@@ -1186,7 +1181,6 @@ describe("gateway server chat", () => {
         });
       } finally {
         await handler.dispose();
-        testState.sessionStorePath = undefined;
       }
     },
   );
@@ -1382,7 +1376,6 @@ describe("gateway server chat", () => {
         }
       } finally {
         testState.agentConfig = undefined;
-        testState.sessionStorePath = undefined;
       }
     },
   );
@@ -1634,7 +1627,6 @@ describe("gateway server chat", () => {
       preparedThinkingPolicy.fallback = "off";
       testState.agentConfig = undefined;
       testState.agentsConfig = undefined;
-      testState.sessionStorePath = undefined;
     }
   });
 
@@ -3087,7 +3079,6 @@ describe("gateway server chat", () => {
     } finally {
       dispatchInboundMessageMock.mockReset();
       testState.agentConfig = undefined;
-      testState.sessionStorePath = undefined;
     }
   });
 
@@ -3192,7 +3183,6 @@ describe("gateway server chat", () => {
       } finally {
         dispatchInboundMessageMock.mockReset();
         testState.agentConfig = undefined;
-        testState.sessionStorePath = undefined;
       }
     },
   );
@@ -5635,6 +5625,7 @@ describe("gateway server chat", () => {
       await prepareMainHistoryHarness({ ws, createSessionDir });
       const projectedSiblingCount = 70;
       const projectedMessageId = "history-sibling-group";
+      const olderMessageId = "history-older-message";
       const maxBytes = 512 * 1024;
       const captured: Extract<DiagnosticEventPayload, { type: "payload.large" }>[] = [];
       const unsubscribe = onDiagnosticEvent((event) => {
@@ -5644,15 +5635,18 @@ describe("gateway server chat", () => {
       });
       try {
         await writeMainSessionTranscript([
-          createTextTranscriptEvent("user", "reachable older message", {
-            id: "history-older-message",
-            parentId: null,
-            timestamp: Date.now(),
-          }),
+          {
+            type: "message",
+            ...createTextTranscriptEvent("user", "reachable older message", {
+              id: olderMessageId,
+              parentId: null,
+              timestamp: Date.now(),
+            }),
+          },
           JSON.stringify({
             type: "message",
             id: projectedMessageId,
-            parentId: "history-older-message",
+            parentId: olderMessageId,
             message: {
               role: "assistant",
               // Replay metadata repeats the text; keep each row below the per-message byte cap.
@@ -5672,7 +5666,7 @@ describe("gateway server chat", () => {
 
         type HistoryPage = {
           messages?: Array<{
-            __openclaw?: { id?: string; seq?: number; truncated?: boolean; reason?: string };
+            __openclaw?: { id?: string; truncated?: boolean; reason?: string };
           }>;
           nextOffset?: number;
           hasMore?: boolean;
@@ -5693,7 +5687,6 @@ describe("gateway server chat", () => {
           expect.objectContaining({
             __openclaw: expect.objectContaining({
               id: projectedMessageId,
-              seq: 2,
               truncated: true,
               reason: "oversized",
             }),
@@ -5706,7 +5699,7 @@ describe("gateway server chat", () => {
         let page = firstPage;
         let offset = 0;
         let complete = false;
-        const messages: unknown[] = [];
+        const messages: NonNullable<HistoryPage["messages"]> = [];
         for (let pageIndex = 0; pageIndex < 3; pageIndex += 1) {
           expect(page.ok).toBe(true);
           const pageMessages = page.payload?.messages ?? [];
@@ -5728,10 +5721,14 @@ describe("gateway server chat", () => {
           );
         }
         expect(complete).toBe(true);
-        const olderMessages = messages.filter((message) => readOpenClawSeq(message) === 1);
+        const olderMessages = messages.filter(
+          (message) => message["__openclaw"]?.id === olderMessageId,
+        );
         expect(olderMessages).toHaveLength(1);
         expect(JSON.stringify(olderMessages)).toContain("reachable older message");
-        expect(messages.filter((message) => readOpenClawSeq(message) === 2)).toHaveLength(1);
+        expect(
+          messages.filter((message) => message["__openclaw"]?.id === projectedMessageId),
+        ).toHaveLength(1);
       } finally {
         unsubscribe();
       }
