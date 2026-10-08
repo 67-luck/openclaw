@@ -54,6 +54,7 @@ export function fenceScheduledGatewayContextResolver(
 /** Capture host resources; detached runs replace inherited request and tool-caller scopes. */
 export function createScheduledGatewayRunner(
   resolveGatewayContext?: ScheduledGatewayContextResolver,
+  resolvePluginRegistry?: () => PluginRegistry | undefined,
 ) {
   const spawnBroker = getSpawnBroker();
   const runWithReadOnlyWorkers = captureSqliteReadOnlyWorkerScope();
@@ -61,12 +62,14 @@ export function createScheduledGatewayRunner(
     await withoutGatewayToolCallerIdentity(() =>
       runWithSpawnBroker(spawnBroker, async () => {
         const runWithWorkers = () => runWithReadOnlyWorkers(run);
-        let inheritedRegistry: PluginRegistry | undefined;
-        try {
-          inheritedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
-        } catch (error) {
-          if (!(error instanceof ExpiredPluginRegistryScopeError)) {
-            throw error;
+        let inheritedRegistry: PluginRegistry | undefined = resolvePluginRegistry?.();
+        if (!resolvePluginRegistry) {
+          try {
+            inheritedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+          } catch (error) {
+            if (!(error instanceof ExpiredPluginRegistryScopeError)) {
+              throw error;
+            }
           }
         }
         const runWithRegistry = () =>

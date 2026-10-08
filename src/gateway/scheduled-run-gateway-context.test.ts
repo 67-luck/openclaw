@@ -13,6 +13,7 @@ import {
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../process/spawn-broker/host.test-support.js";
 import { spawnWithFallback } from "../process/spawn-utils.js";
+import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { createScheduledGatewayRunner } from "./scheduled-run-gateway-context.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 
@@ -21,18 +22,22 @@ describe.skipIf(process.platform === "win32")("scheduled Gateway broker ownershi
   it("preserves the lifecycle-owned plugin registry while dropping request context", async () => {
     const registry = createEmptyPluginRegistry();
     const requestContext = {} as GatewayRequestContext;
-    const runScheduled = createScheduledGatewayRunner(() => undefined);
+    const runScheduled = createScheduledGatewayRunner(
+      () => undefined,
+      () => registry,
+    );
 
     await withPluginRuntimeGatewayRequestScope(
-      { context: requestContext, isWebchatConnect: false, pluginRegistry: registry },
-      async () => {
-        await runScheduled(async () => {
-          const scope = getPluginRuntimeGatewayRequestScope();
-          expect(scope?.pluginRegistry).toBe(registry);
-          expect(scope?.context).toBeUndefined();
-          expect(scope?.resolveGatewayContext?.()).toBeUndefined();
-        });
-      },
+      { context: requestContext, isWebchatConnect: () => false, pluginRegistry: registry },
+      () =>
+        runInDetachedAsyncContext(() =>
+          runScheduled(async () => {
+            const scope = getPluginRuntimeGatewayRequestScope();
+            expect(scope?.pluginRegistry).toBe(registry);
+            expect(scope?.context).toBeUndefined();
+            expect(scope?.resolveGatewayContext?.()).toBeUndefined();
+          }),
+        ),
     );
   });
 
