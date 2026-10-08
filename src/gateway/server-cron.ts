@@ -166,8 +166,6 @@ export function buildGatewayCronService(params: {
 }): GatewayCronState {
   const cronLogger = getChildLogger({ module: "cron" });
   const cronServiceLogger = toPinoLikeLogger(cronLogger, getResolvedLoggerSettings().level);
-  // Fence the raw context reference behind its Gateway instance lifecycle so a
-  // long-running scheduled turn cannot resolve a retired context after shutdown.
   const scheduledGatewayContextResolver = fenceScheduledGatewayContextResolver(
     params.resolveGatewayContext,
   );

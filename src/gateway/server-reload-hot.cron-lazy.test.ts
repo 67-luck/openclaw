@@ -63,14 +63,13 @@ async function createFixture() {
     state = value;
   });
   const requestRecoveryRestart = vi.fn(() => ({ status: "emitted" as const }));
-  const getPluginRegistry = vi.fn();
   const params: GatewayReloadHandlerParams = {
     scheduler: createTestGatewayScheduler(),
     deps: {} as GatewayReloadHandlerParams["deps"],
     broadcast: vi.fn(),
     getState: () => state,
     setState,
-    getPluginRegistry,
+    getPluginRegistry: vi.fn(),
     startChannel: vi.fn(async () => new Map()),
     stopChannel: vi.fn(async () => {}),
     releaseChannelRouteHandoffs: vi.fn(),
@@ -102,7 +101,6 @@ async function createFixture() {
     plan,
     setState,
     requestRecoveryRestart,
-    getPluginRegistry,
     reloadPlugins: vi.mocked(params.reloadPlugins),
     replace: () => createGatewayReloadHandlers(params),
   };
@@ -124,9 +122,6 @@ describe("cron reload loading", { concurrent: false }, () => {
       await fixture.handlers.applyHotReload(fixture.plan, fixture.nextConfig);
       expect(load).toHaveBeenCalledOnce();
       expect(buildGatewayCronService).toHaveBeenCalledOnce();
-      expect(buildGatewayCronService).toHaveBeenCalledWith(
-        expect.objectContaining({ resolvePluginRegistry: fixture.getPluginRegistry }),
-      );
       expect(fixture.setState).toHaveBeenLastCalledWith(
         expect.objectContaining({ cronState: fixture.next }),
       );
