@@ -8,9 +8,13 @@
  */
 import { withoutGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import { captureSqliteReadOnlyWorkerScope } from "../infra/sqlite-readonly-worker-context.js";
+import type { PluginRegistry } from "../plugins/registry-types.js";
 import {
   bindGatewayContextResolver,
+  ExpiredPluginRegistryScopeError,
+  getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayContextResolver,
+  withPluginRuntimeRegistryScope,
 } from "../plugins/runtime/gateway-request-scope.js";
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
@@ -57,12 +61,22 @@ export function createScheduledGatewayRunner(
     await withoutGatewayToolCallerIdentity(() =>
       runWithSpawnBroker(spawnBroker, async () => {
         const runWithWorkers = () => runWithReadOnlyWorkers(run);
+        let inheritedRegistry: PluginRegistry | undefined;
+        try {
+          inheritedRegistry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+        } catch (error) {
+          if (!(error instanceof ExpiredPluginRegistryScopeError)) {
+            throw error;
+          }
+        }
+        const runWithRegistry = () =>
+          withPluginRuntimeRegistryScope(inheritedRegistry, runWithWorkers);
         if (!resolveGatewayContext) {
-          return await runWithWorkers();
+          return await runWithRegistry();
         }
         return await withPluginRuntimeGatewayContextResolver(
           resolveGatewayContext,
-          runWithWorkers,
+          runWithRegistry,
           {
             inheritRequestScope: false,
           },
