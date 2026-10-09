@@ -1171,12 +1171,21 @@ function createRawOllamaStreamFn(
             ...toolCallNameOptions,
             sanitizeVisibleContent: false,
           });
-          if (accumulatedToolCalls.length === 0) {
+          if (finalResponse.done_reason !== "length" && accumulatedToolCalls.length === 0) {
             const fencedToolCall = detectFencedOllamaToolCall(
               accumulatedVisibleContent,
               availableToolNames,
             );
-            if (fencedToolCall) {
+            const lastUserMessage = [...ollamaMessages]
+              .reverse()
+              .find((message) => message.role === "user");
+            const userPrompt =
+              typeof lastUserMessage?.content === "string"
+                ? lastUserMessage.content
+                : JSON.stringify(lastUserMessage?.content ?? "");
+            const requestsExample =
+              /\b(example|sample|snippet|literal|show|print|explain|documentation|code block)\b/i.test(userPrompt);
+            if (fencedToolCall && !requestsExample) {
               throw new Error(formatFencedOllamaToolCallDiagnostic(fencedToolCall.name));
             }
           }
