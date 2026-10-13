@@ -370,7 +370,7 @@ describe("createOllamaStreamFn thinking events", () => {
     });
   });
 
-  it("surfaces a diagnostic for a fenced Ollama text tool call", async () => {
+  it("preserves a fenced Ollama text tool call as visible text", async () => {
     const events = await streamOllamaEvents(
       [
         makeOllamaResponse({
@@ -388,13 +388,23 @@ describe("createOllamaStreamFn thinking events", () => {
       } as never,
     );
 
-    expect(events.some((event) => event.type === "error")).toBe(true);
-    expect(events.find((event) => event.type === "error")).toMatchObject({
-      type: "error",
-      error: {
-        errorMessage: expect.stringContaining('returned tool "exec" as fenced PowerShell text'),
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    const done = events.find((event) => event.type === "done") as {
+      reason?: string;
+      message?: { content?: Array<Record<string, unknown>>; stopReason?: string };
+    };
+    expect(done.reason).toBe("stop");
+    expect(done.message?.stopReason).toBe("stop");
+    expect(done.message?.content).toEqual([
+      {
+        type: "text",
+        text: [
+          "```powershell",
+          'exec(command="echo hello", title="Echo command", workdir="C:\\Users\\shail")',
+          "```",
+        ].join("\n"),
       },
-    });
+    ]);
   });
 
   it("promotes standalone Harmony local-model tool text to a structured tool call", async () => {
