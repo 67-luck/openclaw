@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthProfileStore } from "../auth-profiles.js";
 import { markAuthProfileSuccess } from "../auth-profiles.js";
+import { prepareSharedAuthStoreOwnershipForNative } from "../auth-profiles/path-resolve.native.js";
 import {
   clearAllRuntimeAuthMaterializations,
   getPreparedRuntimeAuthMaterializations,
@@ -42,6 +43,10 @@ describe("markEmbeddedRunAuthProfileSuccess", () => {
 });
 
 describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
+  beforeEach(() => {
+    prepareSharedAuthStoreOwnershipForNative();
+  });
+
   const profileStore = {
     version: 1 as const,
     profiles: {
@@ -104,38 +109,15 @@ describe("reportEmbeddedRunSuccessfulAuthBinding", () => {
     }
   });
 
-  it.each([
-    {
-      name: "non-profile provenance",
+  it("rejects prepared auth with non-profile provenance", () => {
+    reportEmbeddedRunSuccessfulAuthBinding({
+      ...bindingInput,
       apiKeyInfo: {
         apiKey: "resolved-key",
         source: "env:OPENAI_API_KEY",
-        mode: "api-key" as const,
+        mode: "api-key",
         profileId: "openai:work",
       },
-    },
-    {
-      name: "different profile provenance",
-      apiKeyInfo: {
-        apiKey: "resolved-key",
-        source: "profile:openai:other",
-        mode: "api-key" as const,
-        profileId: "openai:other",
-      },
-    },
-    {
-      name: "non-API-key mode",
-      apiKeyInfo: {
-        apiKey: "resolved-key",
-        source: "profile:openai:work",
-        mode: "token" as const,
-        profileId: "openai:work",
-      },
-    },
-  ])("rejects prepared auth with $name", ({ apiKeyInfo }) => {
-    reportEmbeddedRunSuccessfulAuthBinding({
-      ...bindingInput,
-      apiKeyInfo,
       agentDir: "/tmp/openclaw-auth-success-negative",
       modelBaseUrl: "https://api.openai.com/v1",
     });

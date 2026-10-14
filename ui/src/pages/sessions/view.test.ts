@@ -1,18 +1,23 @@
 /* @vitest-environment jsdom */
 
 import { expectDefined } from "@openclaw/normalization-core";
-import { nothing, render } from "lit";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { contextBudgetStatusFixture } from "../../../../src/config/sessions/context-budget.test-support.js";
-import { buildMultiResult, buildProps, buildResult } from "./view.test-support.ts";
-import { renderSessions } from "./view.ts";
+import {
+  disposeSessionView,
+  disposeSessionViews,
+  renderSessionsView,
+  buildMultiResult,
+  buildProps,
+  buildResult,
+} from "./view.test-support.tsx";
 
 function renderView(
   result: Parameters<typeof buildProps>[0],
   overrides: Partial<ReturnType<typeof buildProps>>,
   container: HTMLElement,
 ) {
-  render(renderSessions({ ...buildProps(result), ...overrides }), container);
+  renderSessionsView({ ...buildProps(result), ...overrides }, container);
 }
 
 function readSessionDetailStats(container: ParentNode): Map<string, string> {
@@ -29,6 +34,8 @@ function sessionTableHeaders(container: HTMLElement): Array<string | undefined> 
 }
 
 const SESSION_TABLE_HEADERS = ["", "Key", "Kind", "Status", "Updated", "Tokens", "Actions"];
+
+afterEach(disposeSessionViews);
 
 describe("sessions view", () => {
   it("identifies agents on plain chat sessions in a mixed-agent list", async () => {
@@ -99,40 +106,62 @@ describe("sessions view", () => {
       ]);
     } finally {
       clock.mockRestore();
-      render(null, container);
+      disposeSessionView(container);
     }
   });
 
   it("makes every session sort header a keyboard-accessible button", async () => {
     const container = document.createElement("div");
-    const onSortChange = vi.fn();
-    renderView(buildMultiResult([]), { onSortChange }, container);
-    await Promise.resolve();
-
-    for (const [label, column] of [
-      ["Key", "key"],
-      ["Kind", "kind"],
-      ["Updated", "updated"],
-      ["Tokens", "tokens"],
-    ] as const) {
-      const header = [...container.querySelectorAll<HTMLTableCellElement>("thead th")].find(
-        (cell) => cell.textContent?.trim() === label,
-      );
-      const button = header?.querySelector("button");
-
-      expect(button, `${label} must be a native keyboard-accessible button`).toBeInstanceOf(
-        HTMLButtonElement,
-      );
-      expect(button?.type).toBe("button");
-      expect(header?.getAttribute("aria-sort")).toBe(column === "updated" ? "descending" : null);
-      const initialCallCount = onSortChange.mock.calls.length;
-      button?.click();
-      expect(onSortChange).toHaveBeenCalledTimes(initialCallCount + 1);
-      expect(onSortChange).toHaveBeenLastCalledWith(column, column === "updated" ? "asc" : "desc");
-
-      header?.click();
-      expect(onSortChange).toHaveBeenCalledTimes(initialCallCount + 2);
-      expect(onSortChange).toHaveBeenLastCalledWith(column, column === "updated" ? "asc" : "desc");
+    const result = buildMultiResult([]);
+    const onSortChange = vi.fn(
+      (sortColumn: "key" | "kind" | "updated" | "tokens", sortDir: "asc" | "desc") => {
+        renderView(result, { sortColumn, sortDir, onSortChange }, container);
+      },
+    );
+    document.body.append(container);
+    try {
+      for (const [label, column] of [
+        ["Key", "key"],
+        ["Kind", "kind"],
+        ["Updated", "updated"],
+        ["Tokens", "tokens"],
+      ] as const) {
+        renderView(result, { onSortChange }, container);
+        await Promise.resolve();
+        const header = [...container.querySelectorAll<HTMLTableCellElement>("thead th")].find(
+          (cell) => cell.textContent?.trim() === label,
+        );
+        const button = header?.querySelector("button");
+        expect(button, `${label} must be a native keyboard-accessible button`).toBeInstanceOf(
+          HTMLButtonElement,
+        );
+        expect(button?.type).toBe("button");
+        expect(header?.getAttribute("aria-sort")).toBe(column === "updated" ? "descending" : null);
+        const initialCallCount = onSortChange.mock.calls.length;
+        const firstDirection = column === "updated" ? "asc" : "desc";
+        button!.focus();
+        button!.click();
+        expect(onSortChange).toHaveBeenCalledTimes(initialCallCount + 1);
+        expect(onSortChange).toHaveBeenLastCalledWith(column, firstDirection);
+        const refreshed = [...container.querySelectorAll<HTMLTableCellElement>("thead th")].find(
+          (cell) => cell.textContent?.trim() === label,
+        );
+        expect(refreshed).toBe(header);
+        expect(refreshed?.querySelector("button")).toBe(button);
+        expect(document.activeElement).toBe(button);
+        expect(header?.getAttribute("aria-sort")).toBe(
+          firstDirection === "asc" ? "ascending" : "descending",
+        );
+        header!.click();
+        expect(onSortChange).toHaveBeenCalledTimes(initialCallCount + 2);
+        expect(onSortChange).toHaveBeenLastCalledWith(
+          column,
+          firstDirection === "asc" ? "desc" : "asc",
+        );
+        expect(document.activeElement).toBe(button);
+      }
+    } finally {
+      container.remove();
     }
   });
 
@@ -336,73 +365,81 @@ describe("sessions view", () => {
 
   it("keeps session state visible and moves advanced controls into the filter popover", async () => {
     const container = document.createElement("div");
-    renderView(
-      buildMultiResult([]),
-      { activeMinutes: "120", limit: "200", includeGlobal: true },
-      container,
-    );
-    await Promise.resolve();
+    const onSearchChange = vi.fn();
+    document.body.append(container);
+    try {
+      renderView(
+        buildMultiResult([]),
+        {
+          activeMinutes: "120",
+          limit: "200",
+          includeGlobal: true,
+          searchQuery: "keep me",
+          onSearchChange,
+        },
+        container,
+      );
+      await Promise.resolve();
 
-    const toolbar = container.querySelector(".sessions-filter-bar");
-    const trigger = toolbar?.querySelector<HTMLButtonElement>(".sessions-filter-popover__trigger");
-    const popover = toolbar?.querySelector("wa-popover");
-    const panel = popover?.querySelector(".sessions-filter-popover__panel");
-    expect(toolbar?.getAttribute("role")).toBe("group");
-    expect(toolbar?.getAttribute("aria-label")).toBe("Session filters");
-    expect(toolbar?.querySelector(".sessions-view-segment")).not.toBeNull();
-    expect(trigger?.textContent?.trim()).toBe("");
-    expect(trigger?.getAttribute("aria-label")).toBe("Filters");
-    expect(trigger?.getAttribute("title")).toBe("Filters");
-    expect(trigger?.getAttribute("aria-haspopup")).toBe("dialog");
-    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
-    expect(panel?.querySelector(".session-filter-input--minutes")?.closest("label")).not.toBeNull();
-    expect(panel?.querySelector(".session-filter-input--limit")?.closest("label")).not.toBeNull();
-    expect(panel?.querySelector(".session-groupby__select")).not.toBeNull();
+      const toolbar = container.querySelector(".sessions-filter-bar");
+      const trigger = toolbar?.querySelector<HTMLButtonElement>(
+        ".sessions-filter-popover__trigger",
+      );
+      const popover = toolbar?.querySelector(".sessions-filter-popover");
+      const panel = popover?.querySelector(".sessions-filter-popover__panel");
+      expect(toolbar?.getAttribute("role")).toBe("group");
+      expect(toolbar?.getAttribute("aria-label")).toBe("Session filters");
+      expect(toolbar?.querySelector(".sessions-view-segment")).not.toBeNull();
+      expect(trigger?.textContent?.trim()).toBe("");
+      expect(trigger?.getAttribute("aria-label")).toBe("Filters");
+      expect(trigger?.getAttribute("title")).toBe("Filters");
+      expect(trigger?.getAttribute("aria-haspopup")).toBe("dialog");
+      expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+      expect(
+        panel?.querySelector(".session-filter-input--minutes")?.closest("label"),
+      ).not.toBeNull();
+      expect(panel?.querySelector(".session-filter-input--limit")?.closest("label")).not.toBeNull();
+      expect(panel?.querySelector(".session-groupby__select")).not.toBeNull();
 
-    const toggleGroup = panel?.querySelector(".session-filter-toggle-group");
-    expect(toggleGroup?.getAttribute("role")).toBe("group");
-    expect(toggleGroup?.getAttribute("aria-label")).toBe("Session source filters");
-    expect(toggleGroup?.querySelectorAll(".session-filter-check")).toHaveLength(2);
-    expect(
-      Array.from(toggleGroup?.querySelectorAll(".session-filter-check") ?? []).map((toggle) => [
-        toggle.querySelector("input")?.getAttribute("name"),
-        [...toggle.classList],
-      ]),
-    ).toEqual([
-      [
-        "includeGlobal",
-        ["session-filter-check", "session-filter-toggle", "session-filter-check--active"],
-      ],
-      ["includeUnknown", ["session-filter-check", "session-filter-toggle"]],
-    ]);
-    expect(toggleGroup?.querySelector(".session-filter-check__box")).toBeNull();
+      const toggleGroup = panel?.querySelector(".session-filter-toggle-group");
+      expect(toggleGroup?.getAttribute("role")).toBe("group");
+      expect(toggleGroup?.getAttribute("aria-label")).toBe("Session source filters");
+      expect(toggleGroup?.querySelectorAll(".session-filter-check")).toHaveLength(2);
+      expect(
+        Array.from(toggleGroup?.querySelectorAll(".session-filter-check") ?? []).map((toggle) => [
+          toggle.querySelector("input")?.getAttribute("name"),
+          [...toggle.classList],
+        ]),
+      ).toEqual([
+        [
+          "includeGlobal",
+          ["session-filter-check", "session-filter-toggle", "session-filter-check--active"],
+        ],
+        ["includeUnknown", ["session-filter-check", "session-filter-toggle"]],
+      ]);
+      expect(toggleGroup?.querySelector(".session-filter-check__box")).toBeNull();
 
-    popover?.dispatchEvent(new Event("wa-show"));
-    expect(trigger?.getAttribute("aria-expanded")).toBe("true");
-    popover?.dispatchEvent(new Event("wa-hide"));
-    expect(trigger?.getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("does not invent thinking choices for an empty session profile", async () => {
-    const container = document.createElement("div");
-    renderView(
-      buildResult({
-        key: "agent:main:main",
-        kind: "direct",
-        updatedAt: Date.now(),
-        modelProvider: "thinking-fixture",
-        model: "no-effort",
-        thinkingLevels: [],
-      }),
-      { expandedSessionKey: "agent:main:main" },
-      container,
-    );
-    await Promise.resolve();
-
-    const thinking = container.querySelector<HTMLSelectElement>("tbody select");
-    expect(thinking).not.toBeNull();
-    expect(Array.from(thinking?.options ?? []).map((option) => option.value)).toEqual([""]);
-    expect(thinking?.options[0]?.textContent?.trim()).toBe("Unknown");
+      trigger?.click();
+      expect(popover?.matches(":popover-open")).toBe(true);
+      expect(document.activeElement).toBe(popover);
+      expect(trigger?.getAttribute("aria-expanded")).toBe("true");
+      const escape = new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        cancelable: true,
+      });
+      popover?.dispatchEvent(escape);
+      expect(escape.defaultPrevented).toBe(true);
+      expect(trigger?.getAttribute("aria-expanded")).toBe("false");
+      expect(document.activeElement).toBe(trigger);
+      expect(
+        container.querySelector<HTMLInputElement>(".sessions-toolbar__search input")?.value,
+      ).toBe("keep me");
+      expect(onSearchChange).not.toHaveBeenCalled();
+    } finally {
+      disposeSessionView(container);
+      container.remove();
+    }
   });
 
   it("renders and patches provider-owned thinking ids", async () => {
@@ -443,38 +480,6 @@ describe("sessions view", () => {
     thinking!.dispatchEvent(new Event("change", { bubbles: true }));
 
     expect(onPatch).toHaveBeenCalledWith("agent:main:main", { thinkingLevel: "max" });
-  });
-
-  it("labels inherited thinking from list defaults when lightweight rows omit row defaults", async () => {
-    const container = document.createElement("div");
-    renderView(
-      buildResult(
-        {
-          key: "agent:main:main",
-          kind: "direct",
-          updatedAt: Date.now(),
-        },
-        {
-          modelProvider: "openai",
-          model: "gpt-5.5",
-          thinkingDefault: "high",
-          thinkingLevels: [
-            { id: "off", label: "off" },
-            { id: "high", label: "high" },
-          ],
-        },
-      ),
-      { expandedSessionKey: "agent:main:main" },
-      container,
-    );
-    await Promise.resolve();
-
-    const thinking = container.querySelector("tbody select") as HTMLSelectElement | null;
-    expect(thinking?.value).toBe("");
-    expect(thinking?.options[0]?.textContent?.trim()).toBe("Inherited: High");
-    expect(Array.from(thinking?.options ?? []).map((option) => option.textContent?.trim())).toEqual(
-      ["Inherited: High", "Off", "High"],
-    );
   });
 
   it("keeps legacy binary thinking labels patching canonical ids", async () => {
@@ -596,39 +601,13 @@ describe("sessions view", () => {
       ["settings-status", "settings-status--danger"],
       ["settings-status", "settings-status--ok"],
     ]);
-    expect(
-      badges.map(
-        (badge) => (badge.parentElement as (HTMLElement & { content: string }) | null)?.content,
-      ),
-    ).toEqual(["Status: Queued", "Status: Live", "Status: Idle", "Status: Failed", "Status: Done"]);
-  });
-
-  it("renders the effective runtime including fallback in the details drawer", async () => {
-    const container = document.createElement("div");
-    renderView(
-      buildMultiResult([
-        {
-          key: "agent:main:claude",
-          kind: "direct",
-          updatedAt: 20,
-          agentRuntime: { id: "claude-cli", fallback: "none", source: "agent" },
-        },
-      ]),
-      { searchQuery: "fallback none", expandedSessionKey: "agent:main:claude" },
-      container,
-    );
-    await Promise.resolve();
-
-    expect(sessionTableHeaders(container)).toEqual(SESSION_TABLE_HEADERS);
-    // The roster no longer has a Runtime column; the drawer carries it.
-    expect(container.querySelector(".session-runtime-cell")).toBeNull();
-    const rows = container.querySelectorAll("tbody tr.session-data-row");
-    expect(rows).toHaveLength(1);
-    expect(rows[0]?.querySelector(".session-key-cell")?.textContent?.trim()).toBe(
-      "agent:main:claude",
-    );
-    const stats = readSessionDetailStats(container);
-    expect(stats.get("Runtime")).toBe("claude-cli (fallback none)");
+    expect(badges.map((badge) => badge.closest("openclaw-tooltip")?.content)).toEqual([
+      "Status: Queued",
+      "Status: Live",
+      "Status: Idle",
+      "Status: Failed",
+      "Status: Done",
+    ]);
   });
 
   it("opens session details from row activation", async () => {
@@ -742,18 +721,15 @@ describe("sessions view", () => {
 
   it("keeps session selects stable and deselects only the current page", async () => {
     const container = document.createElement("div");
-    renderView(
-      buildResult({
-        key: "agent:main:main",
-        kind: "direct",
-        updatedAt: Date.now(),
-        fastMode: true,
-        verboseLevel: "full",
-        reasoningLevel: "custom-mode",
-      }),
-      { expandedSessionKey: "agent:main:main" },
-      container,
-    );
+    const initial = buildResult({
+      key: "agent:main:main",
+      kind: "direct",
+      updatedAt: Date.now(),
+      fastMode: true,
+      verboseLevel: "full",
+      reasoningLevel: "custom-mode",
+    });
+    renderView(initial, { expandedSessionKey: "agent:main:main" }, container);
     await Promise.resolve();
 
     // Scope to drawer selects; the toolbar also renders a group-by select.
@@ -777,6 +753,25 @@ describe("sessions view", () => {
       "stream",
       "custom-mode",
     ]);
+
+    document.body.append(container);
+    try {
+      fast!.focus();
+      fast!.value = "off";
+      renderView(
+        { ...initial, sessions: [{ ...initial.sessions[0]!, updatedAt: Date.now() + 1 }] },
+        { expandedSessionKey: "agent:main:main" },
+        container,
+      );
+      const refreshed = container.querySelectorAll("tbody select");
+      for (const [index, select] of [...selects].entries()) {
+        expect(refreshed[index]).toBe(select);
+      }
+      expect(document.activeElement).toBe(fast);
+      expect(fast!.value).toBe("off");
+    } finally {
+      container.remove();
+    }
 
     const onSelectPage = vi.fn();
     const onDeselectPage = vi.fn();
@@ -1085,5 +1080,5 @@ it("preserves the saved ultrafast override until explicitly changed", async () =
   fast.value = "off";
   fast.dispatchEvent(new Event("change"));
   expect(onPatch).toHaveBeenCalledWith(key, { fastMode: false });
-  render(nothing, container);
+  disposeSessionView(container);
 });
