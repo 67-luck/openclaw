@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { expectDefined } from "@openclaw/normalization-core";
 import { onLlmRequestActivity } from "openclaw/plugin-sdk/provider-stream-shared";
+import { Type } from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { fetchWithSsrFGuardMock } = vi.hoisted(() => ({
@@ -494,40 +495,31 @@ describe("createOllamaStreamFn thinking events", () => {
   });
 
   it("preserves a fenced Ollama text tool call as visible text", async () => {
+    const text = [
+      "```powershell",
+      'exec(command="echo hello", title="Echo command", workdir="C:\\workspace")',
+      "```",
+    ].join("\n");
     const events = await streamOllamaEvents(
-      [
-        makeOllamaResponse({
-          content: [
-            "```powershell",
-            'exec(command="echo hello", title="Echo command", workdir="C:\\Users\\shail")',
-            "```",
-          ].join("\n"),
-        }),
-      ],
+      [makeOllamaResponse({ content: text })],
       {},
       {
-        messages: [{ role: "user", content: "Use exec to run echo hello" }],
-        tools: [{ name: "exec", description: "Run a command", parameters: { type: "object" } }],
-      } as never,
+        messages: [{ role: "user", content: "Use exec to run echo hello", timestamp: 0 }],
+        tools: [{ name: "exec", description: "Run a command", parameters: Type.Object({}) }],
+      },
     );
 
-    expect(events.some((event) => event.type === "error")).toBe(false);
-    const done = events.find((event) => event.type === "done") as {
-      reason?: string;
-      message?: { content?: Array<Record<string, unknown>>; stopReason?: string };
-    };
-    expect(done.reason).toBe("stop");
-    expect(done.message?.stopReason).toBe("stop");
-    expect(done.message?.content).toEqual([
-      {
-        type: "text",
-        text: [
-          "```powershell",
-          'exec(command="echo hello", title="Echo command", workdir="C:\\Users\\shail")',
-          "```",
-        ].join("\n"),
-      },
+    expect(events.map((event) => event.type)).toEqual([
+      "start",
+      "text_start",
+      "text_delta",
+      "text_end",
+      "done",
     ]);
+    expect(events.find((event) => event.type === "done")).toMatchObject({
+      reason: "stop",
+      message: { stopReason: "stop", content: [{ type: "text", text }] },
+    });
   });
 
   it("promotes standalone Harmony local-model tool text to a structured tool call", async () => {
