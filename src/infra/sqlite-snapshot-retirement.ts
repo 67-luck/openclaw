@@ -13,7 +13,6 @@ export const SQLITE_SNAPSHOT_LEGACY_MARKER = new RegExp(
   "u",
 );
 const tokenMarker = new RegExp(`^${SQLITE_SNAPSHOT_PREFIX}${suffix}`, "u");
-const SQLITE_SNAPSHOT_FOREIGN_DIRECTORY_NAMES = new Set(["backups", "plugins", "workshop-skills"]);
 export const SQLITE_SNAPSHOT_LEGACY_AGE_MS = 24 * 60 * 60 * 1000;
 const pendingTokenReleases = new Map<string, Set<SqliteStagingToken>>();
 
@@ -143,13 +142,6 @@ export function beginSqliteSnapshotRetirement(
       }
       newest = Math.max(newest, item.mtimeMs);
       if (item.isDirectory()) {
-        if (
-          options.cutoff !== undefined &&
-          SQLITE_SNAPSHOT_FOREIGN_DIRECTORY_NAMES.has(entry.name) &&
-          (layout === "" || layout === "openclaw")
-        ) {
-          continue;
-        }
         const nested = isSqliteSnapshotStagingName(entry.name);
         const childLayout = nested ? "" : [layout, entry.name].filter(Boolean).join("/");
         if (
