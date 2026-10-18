@@ -132,29 +132,27 @@ it.skipIf(process.platform === "win32").each(["", "openclaw"])(
   },
 );
 
-it("ignores known foreign directories while retaining snapshot payload", () => {
-  const { cache, source } = createFixture();
-  const parent = path.join(cache, "openclaw-sqlite-readonly-v2-Foreign");
-  fs.mkdirSync(path.join(parent, "backups", "foreign"), { recursive: true });
-  fs.copyFileSync(source, path.join(parent, "database.sqlite"));
-  fs.writeFileSync(path.join(parent, "backups", "foreign", "metadata.json"), "{}");
-  const token = acquireSqliteStagingToken(parent, "create");
-  try {
-    const retirement = beginSqliteSnapshotRetirement(parent, {
-      token,
-      cutoff: Date.now() + 1_000,
-    });
+it.each(["backups", "plugins", "workshop-skills", "session-sqlite-import-archive"])(
+  "retains foreign directory contents when the snapshot layout is unknown (%s)",
+  (foreignDirectory) => {
+    const { cache, source } = createFixture();
+    const parent = path.join(cache, "openclaw-sqlite-readonly-v2-ABC123");
+    const foreignFile = path.join(parent, foreignDirectory, "foreign", "metadata.json");
+    fs.mkdirSync(path.dirname(foreignFile), { recursive: true });
+    fs.copyFileSync(source, path.join(parent, "database.sqlite"));
+    fs.writeFileSync(foreignFile, "{}");
+    const token = acquireSqliteStagingToken(parent, "create");
     try {
-      expect(retirement.payload).toContain(path.join(parent, "database.sqlite"));
-      expect(fs.existsSync(path.join(parent, "backups", "foreign", "metadata.json"))).toBe(true);
+      expect(() =>
+        beginSqliteSnapshotRetirement(parent, { token, cutoff: Date.now() + 1_000 }),
+      ).toThrow("Unrecognized snapshot directory");
+      expect(fs.existsSync(foreignFile)).toBe(true);
+      expect(fs.existsSync(path.join(parent, "database.sqlite"))).toBe(true);
     } finally {
-      retirement.release();
+      token();
     }
-  } finally {
-    token();
-  }
-});
-
+  },
+);
 it.each([
   {
     parentName: "openclaw-sqlite-readonly-v2-Parent",
